@@ -1,0 +1,15 @@
+# SuperTask 官方模板：最小起步（Spring Boot 单模块 + Node）
+# backend 未写 health，由引擎 apply_defaults 兜底为 actuator 健康检查
+version: 1
+root: "."
+services:
+  backend:
+    kind: spring-boot
+    module: backend
+    port: 8080
+  web:
+    kind: node
+    dir: web
+    port: 5173
+    depends_on:
+      - backend

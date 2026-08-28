@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://supertask.dev/schema/supertask.v1.json",
+  "title": "SuperTask workspace file",
+  "type": "object",
+  "required": ["version", "services"],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string" },
+    "name": { "type": "string", "maxLength": 80 },
+    "description": { "type": "string" },
+    "root": { "type": "string", "const": "." },
+    "env": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+    "services": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "additionalProperties": { "$ref": "#/$defs/service" },
+      "propertyNames": { "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" }
+    },
+    "scripts": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/script" },
+      "propertyNames": { "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" }
+    },
+    "logging": { "$ref": "#/$defs/logging" },
+    "secrets": { "type": "object", "additionalProperties": true },
+    "profiles": { "type": "object", "additionalProperties": true },
+    "toolchain": { "type": "object", "additionalProperties": true },
+    "templates": { "type": "object", "additionalProperties": true },
+    "git": { "type": "object", "additionalProperties": true },
+    "docker": { "type": "object", "additionalProperties": true },
+    "gateway": { "type": "object", "additionalProperties": true },
+    "cloud": { "type": "object", "additionalProperties": true },
+    "ai": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "logging": {
+      "type": "object",
+      "properties": {
+        "max_bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+        "ring_lines": { "type": "integer", "minimum": 1, "maximum": 20000 },
+        "retain_tail_bytes": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "health": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["none", "tcp", "http"] },
+        "http": { "type": "string" },
+        "interval_secs": { "type": "integer", "minimum": 1 },
+        "timeout_secs": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "script": {
+      "type": "object",
+      "required": ["cmds"],
+      "properties": {
+        "desc": { "type": "string" },
+        "cmds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cwd": { "type": "string" },
+        "env": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+        "timeout_secs": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "service": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "enabled": { "type": "boolean" },
+        "group": { "type": "string" },
+        "labels": { "type": "object" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "ports": { "type": "array", "items": { "type": "integer" } },
+        "env": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+        "env_file": { "type": "array", "items": { "type": "string" } },
+        "depends_on": { "type": "array", "items": { "type": "string" } },
+        "grace_secs": { "type": "integer", "minimum": 0 },
+        "health": { "$ref": "#/$defs/health" },
+        "restart": { "type": "string" },
+        "extra_args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "launch": { "type": "string" },
+        "module": { "type": "string" },
+        "jvm_args": { "type": "array", "items": { "type": "string" } },
+        "dir": { "type": "string" },
+        "package_manager": { "type": "string", "enum": ["npm", "pnpm", "yarn"] },
+        "script": { "type": "string" },
+        "logging": { "$ref": "#/$defs/logging" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

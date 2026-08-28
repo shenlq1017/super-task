@@ -1,0 +1,23 @@
+# SuperTask 官方模板：Spring Boot 多模块后端 + 零依赖 Node 前端
+# backend 在 Maven reactor 根执行 mvn -pl backend spring-boot:run
+version: 1
+kind: workspace
+name: demo-multimodule
+description: Spring Boot 多模块后端（完整示例）+ Node 前端
+root: "."
+services:
+  backend:
+    kind: spring-boot
+    module: backend
+    port: 8081
+    health:
+      type: http
+      http: "http://127.0.0.1:8081/actuator/health"
+  web:
+    kind: node
+    dir: web
+    port: 5173
+    depends_on:
+      - backend
+    health:
+      type: tcp

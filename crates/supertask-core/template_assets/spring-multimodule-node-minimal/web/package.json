@@ -1,0 +1,9 @@
+{
+  "name": "demo-web",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  }
+}

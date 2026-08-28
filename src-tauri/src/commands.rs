@@ -1,0 +1,1141 @@
+//! Thin Tauri IPC over `supertask-core::Engine`.
+//! Business logic lives in the engine; commands only (de)serialize + translate.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use indexmap::IndexMap;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use supertask_core::engine::ScriptState;
+use supertask_core::error::ErrorCode;
+use supertask_core::git;
+use supertask_core::ide;
+use supertask_core::ipc::{IpcError, LogSource, LogSourceKind, PROTOCOL};
+use supertask_core::merge;
+use supertask_core::runtime::RtState;
+use supertask_core::scan::scan_draft;
+use supertask_core::template;
+use supertask_core::Engine;
+use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_updater::UpdaterExt;
+
+use crate::state;
+use crate::state::{AppDataHandle, Exiting, HubHandle, PendingUpdate, TrayItems};
+
+pub type EngineState<'a> = State<'a, Arc<Engine>>;
+pub type HubState<'a> = State<'a, HubHandle>;
+pub type AppDataRef<'a> = State<'a, AppDataHandle>;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// 长操作事件名（core 未定义常量，见 docs/spec/ipc.md §10.0）。
+const EVENT_OPERATION: &str = "st.operation";
+
+/// 托盘图标 id（lib.rs build_tray 构建时指定）。
+pub(crate) const TRAY_ID: &str = "main";
+
+/// 退出中拦截（v1.1 规格 §8.3）：置位后拒绝新的启动/模板/Git 操作。
+fn ensure_not_exiting(exiting: &Exiting) -> Result<(), IpcError> {
+    if state::is_exiting(exiting) {
+        Err(err(
+            ErrorCode::AlreadyInProgress,
+            "应用正在退出，已拒绝新操作",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn ipc_err(e: supertask_core::Error) -> IpcError {
+    IpcError::from(&e)
+}
+
+fn err(code: ErrorCode, message: impl Into<String>) -> IpcError {
+    IpcError::from(&supertask_core::Error::new(code, message))
+}
+
+/// 把 JSON 值反序列化成 operation result。
+/// src-tauri 不直接依赖 serde_yaml（约定不改 Cargo.toml），目标类型
+/// `serde_yaml::Value` 由 `hub.spawn` 闭包签名的返回类型推断，这里不点名。
+fn json_into<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> supertask_core::error::Result<T> {
+    T::deserialize(v).map_err(|e| {
+        supertask_core::Error::new(
+            ErrorCode::Protocol,
+            format!("构造 operation result 失败: {e}"),
+        )
+    })
+}
+
+fn soon(cmd: &str) -> IpcError {
+    let e = supertask_core::features::reject_soon_command(cmd)
+        .unwrap_or_else(|| supertask_core::Error::new(ErrorCode::FeatureSoon, format!("{cmd} 尚未提供")));
+    IpcError::from(&e)
+}
+
+fn warnings_to_strings(w: Vec<supertask_core::spec::ParseWarning>) -> Vec<String> {
+    w.into_iter()
+        .map(|p| {
+            let code: ErrorCode = p.code;
+            format!("[{code:?}] {}", p.message)
+        })
+        .collect()
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SourceArg {
+    pub kind: String,
+    pub id: String,
+}
+
+fn source_from_arg(a: Option<SourceArg>) -> Option<LogSource> {
+    a.map(|s| {
+        let kind = match s.kind.as_str() {
+            "script" => LogSourceKind::Script,
+            "system" => LogSourceKind::System,
+            _ => LogSourceKind::Service,
+        };
+        LogSource { kind, id: s.id }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Workspace
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct WorkspaceOpenOut {
+    pub workspace_id: String,
+    pub spec: supertask_core::spec::SuperTaskFile,
+    pub warnings: Vec<String>,
+}
+
+#[tauri::command(rename = "workspace.add")]
+pub fn workspace_add(path: String) -> Result<WorkspaceOpenOut, IpcError> {
+    let root = fs_canonicalize(&path)?;
+    let (spec, warnings) = scan_draft(&root).map_err(ipc_err)?;
+    Ok(WorkspaceOpenOut {
+        workspace_id: root.to_string_lossy().into_owned(),
+        spec,
+        warnings,
+    })
+}
+
+#[tauri::command(rename = "workspace.open")]
+pub fn workspace_open(
+    state: EngineState<'_>,
+    app: AppHandle,
+    path: String,
+) -> Result<WorkspaceOpenOut, IpcError> {
+    let root = fs_canonicalize(&path)?;
+    let (warnings, _) = state.open(&root).map_err(ipc_err)?;
+    let spec = state.spec().map_err(ipc_err)?;
+    let workspace_id = state.workspace_id().map_err(ipc_err)?;
+    refresh_tray_from_engine(&app, &state);
+    Ok(WorkspaceOpenOut {
+        workspace_id,
+        spec,
+        warnings: warnings_to_strings(warnings),
+    })
+}
+
+#[tauri::command(rename = "workspace.close")]
+pub fn workspace_close(
+    state: EngineState<'_>,
+    app: AppHandle,
+    workspace_id: String,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    let _ = workspace_id;
+    state.close().map_err(ipc_err)?;
+    refresh_tray_from_engine(&app, &state);
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+/// 切换工作区专用：不停进程，活服务移交后台注册表（重开同根工作区时接管）。
+#[tauri::command(rename = "workspace.detach")]
+pub fn workspace_detach(
+    state: EngineState<'_>,
+    app: AppHandle,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    state.detach().map_err(ipc_err)?;
+    refresh_tray_from_engine(&app, &state);
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+#[tauri::command(rename = "workspace.forget")]
+pub fn workspace_forget(
+    state: EngineState<'_>,
+    app: AppHandle,
+    path: String,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    // 1.0 keeps no recents file; if forgetting the open workspace, close it first.
+    if let Ok(cur) = state.workspace_id() {
+        if cur == path {
+            let _ = state.close();
+        }
+    }
+    refresh_tray_from_engine(&app, &state);
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+#[tauri::command(rename = "workspace.scanDraft")]
+pub fn workspace_scan_draft(path: String) -> Result<WorkspaceOpenOut, IpcError> {
+    let root = fs_canonicalize(&path)?;
+    let (spec, warnings) = scan_draft(&root).map_err(ipc_err)?;
+    Ok(WorkspaceOpenOut {
+        workspace_id: root.to_string_lossy().into_owned(),
+        spec,
+        warnings,
+    })
+}
+
+#[tauri::command(rename = "workspace.init")]
+pub fn workspace_init(
+    state: EngineState<'_>,
+    path: String,
+    spec: supertask_core::spec::SuperTaskFile,
+) -> Result<WorkspaceOpenOut, IpcError> {
+    let root = fs_canonicalize(&path)?;
+    let (warnings, _) = state.init(&root, spec).map_err(ipc_err)?;
+    let spec = state.spec().map_err(ipc_err)?;
+    let workspace_id = state.workspace_id().map_err(ipc_err)?;
+    Ok(WorkspaceOpenOut {
+        workspace_id,
+        spec,
+        warnings: warnings_to_strings(warnings),
+    })
+}
+
+/// 打开工作区目录（资源管理器）；`workspace.openExplorer` 命令与托盘菜单共用。
+pub(crate) fn open_in_explorer(workspace_id: &str, rel: Option<&str>) -> Result<(), IpcError> {
+    let root = PathBuf::from(workspace_id);
+    let target = match rel {
+        Some(r) => sandbox_join(&root, r)?,
+        None => root,
+    };
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(&target).spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&target).spawn();
+    }
+    Ok(())
+}
+
+#[tauri::command(rename = "workspace.openExplorer")]
+pub fn workspace_open_explorer(
+    _state: EngineState<'_>,
+    workspace_id: String,
+    rel: Option<String>,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    open_in_explorer(&workspace_id, rel.as_deref())?;
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+fn fs_canonicalize(path: &str) -> Result<PathBuf, IpcError> {
+    // canonicalize 在 Windows 上返回 verbatim 路径（\\?\C:\…），剥掉前缀，
+    // 避免 workspace_id 等进入 UI 的字符串带着机器内部表示。
+    Ok(supertask_core::sandbox::strip_verbatim(
+        std::fs::canonicalize(path).map_err(|e| {
+            IpcError::from(&supertask_core::Error::new(
+                ErrorCode::CwdMissing,
+                format!("目录不存在或无法访问: {e}"),
+            ))
+        })?,
+    ))
+}
+
+fn sandbox_join(root: &Path, rel: &str) -> Result<PathBuf, IpcError> {
+    let candidate = if rel.is_empty() || rel == "." {
+        root.to_path_buf()
+    } else {
+        root.join(rel)
+    };
+    let canon = supertask_core::sandbox::strip_verbatim(
+        candidate.canonicalize().unwrap_or_else(|_| candidate.clone()),
+    );
+    if !canon.starts_with(root) {
+        return Err(IpcError::from(&supertask_core::Error::new(
+            ErrorCode::PathEscape,
+            "rel 逃出了工作区",
+        )));
+    }
+    Ok(canon)
+}
+
+// ---------------------------------------------------------------------------
+// YAML
+// ---------------------------------------------------------------------------
+
+/// 系统服务发现：列出正在监听端口的 java/node/python 等进程。
+/// 端口表 / 进程快照读取失败显式报错（DISCOVER），不静默空列表。
+#[tauri::command(rename = "system.discover")]
+pub fn system_discover() -> Result<Vec<supertask_core::discover::ForeignService>, IpcError> {
+    supertask_core::discover::discover_services().map_err(ipc_err)
+}
+
+#[derive(Serialize)]
+pub struct KillProcessOut {
+    pub ok: bool,
+}
+
+/// `system.killProcess`：终止发现列表中的监听进程（taskkill /T /F 杀整棵树）。
+/// 护栏在 core：pid ≤ 4 / SuperTask 自身 / 当前无 LISTEN 端口一律拒绝。
+#[tauri::command(rename = "system.killProcess")]
+pub fn system_kill_process(pid: u32) -> Result<KillProcessOut, IpcError> {
+    supertask_core::discover::kill_tree(pid).map_err(ipc_err)?;
+    Ok(KillProcessOut { ok: true })
+}
+
+#[tauri::command(rename = "yaml.get")]
+pub fn yaml_get(state: EngineState<'_>) -> Result<supertask_core::YamlView, IpcError> {
+    state.yaml_get().map_err(ipc_err)
+}
+
+#[tauri::command(rename = "yaml.saveText")]
+pub fn yaml_save_text(
+    state: EngineState<'_>,
+    _workspace_id: String,
+    text: String,
+    base_hash: String,
+) -> Result<YamlSaveOut, IpcError> {
+    let (spec, hash, warnings) = state.save_text(&text, &base_hash).map_err(ipc_err)?;
+    Ok(YamlSaveOut {
+        spec,
+        hash,
+        warnings: warnings_to_strings(warnings),
+    })
+}
+
+#[tauri::command(rename = "yaml.saveForm")]
+pub fn yaml_save_form(
+    state: EngineState<'_>,
+    _workspace_id: String,
+    spec: supertask_core::spec::SuperTaskFile,
+    base_hash: String,
+) -> Result<YamlSaveOut, IpcError> {
+    let (spec, hash, warnings) = state.save_form(&spec, &base_hash).map_err(ipc_err)?;
+    Ok(YamlSaveOut {
+        spec,
+        hash,
+        warnings: warnings_to_strings(warnings),
+    })
+}
+
+#[derive(Serialize)]
+pub struct YamlSaveOut {
+    pub spec: supertask_core::spec::SuperTaskFile,
+    pub hash: String,
+    pub warnings: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Runtime
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct Accepted {
+    pub accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<Vec<String>>,
+}
+
+#[tauri::command(rename = "runtime.snapshot")]
+pub fn runtime_snapshot(state: EngineState<'_>) -> Result<supertask_core::RuntimeSnapshot, IpcError> {
+    state.snapshot().map_err(ipc_err)
+}
+
+#[tauri::command(rename = "runtime.startOne")]
+pub fn runtime_start_one(
+    state: EngineState<'_>,
+    exiting: State<'_, Exiting>,
+    _workspace_id: String,
+    id: String,
+) -> Result<Accepted, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    state.start_one(&id).map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+#[tauri::command(rename = "runtime.startAll")]
+pub fn runtime_start_all(
+    state: EngineState<'_>,
+    exiting: State<'_, Exiting>,
+    _workspace_id: String,
+) -> Result<Accepted, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    let order = state.start_all().map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: Some(order) })
+}
+
+#[tauri::command(rename = "runtime.stopOne")]
+pub fn runtime_stop_one(state: EngineState<'_>, _workspace_id: String, id: String) -> Result<Accepted, IpcError> {
+    state.stop_one(&id).map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+#[tauri::command(rename = "runtime.stopAll")]
+pub fn runtime_stop_all(state: EngineState<'_>, _workspace_id: String) -> Result<Accepted, IpcError> {
+    state.stop_all().map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+#[tauri::command(rename = "runtime.restartOne")]
+pub fn runtime_restart_one(
+    state: EngineState<'_>,
+    exiting: State<'_, Exiting>,
+    _workspace_id: String,
+    id: String,
+) -> Result<Accepted, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    state.restart_one(&id).map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+// ---------------------------------------------------------------------------
+// Scripts
+// ---------------------------------------------------------------------------
+
+#[tauri::command(rename = "script.run")]
+pub fn script_run(
+    state: EngineState<'_>,
+    exiting: State<'_, Exiting>,
+    _workspace_id: String,
+    id: String,
+) -> Result<Accepted, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    state.run_script(&id).map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+#[tauri::command(rename = "script.cancel")]
+pub fn script_cancel(state: EngineState<'_>, _workspace_id: String, id: String) -> Result<Accepted, IpcError> {
+    let _ = id;
+    state.cancel_script().map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+// ---------------------------------------------------------------------------
+// Toolchain + prefs
+// ---------------------------------------------------------------------------
+
+#[tauri::command(rename = "toolchain.probe")]
+pub fn toolchain_probe() -> supertask_core::probe::ToolchainProbe {
+    supertask_core::probe::probe_toolchain()
+}
+
+#[tauri::command(rename = "app.savePrefs")]
+pub fn app_save_prefs(
+    app: AppHandle,
+    appdata: AppDataRef<'_>,
+    theme: Option<String>,
+    restore_last: Option<bool>,
+    close_to_tray: Option<bool>,
+    start_on_login: Option<bool>,
+    update_check: Option<bool>,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    let mut autostart_change: Option<bool> = None;
+    {
+        let mut data = appdata.lock().expect("appdata lock");
+        if let Some(v) = theme {
+            data.theme = v;
+        }
+        if let Some(v) = restore_last {
+            data.restore_last = v;
+        }
+        if let Some(v) = close_to_tray {
+            data.close_to_tray = v;
+        }
+        if let Some(v) = start_on_login {
+            data.start_on_login = v;
+            autostart_change = Some(v);
+        }
+        if let Some(v) = update_check {
+            data.update_check = v;
+        }
+    }
+    // 先落盘偏好，再注册/注销开机自启（v1.1 规格 §8.4）
+    state::save_appdata(&appdata).map_err(ipc_err)?;
+
+    if let Some(v) = autostart_change {
+        // 只按需调用：系统注册状态与偏好一致时不重复操作，
+        // 避免「未注册时 disable」在 Windows 注册表上误报失败。
+        let result = apply_autostart(&app, v);
+        if let Err(e) = result {
+            // 回滚偏好为 false 并回写，UI 保持未开启状态
+            {
+                let mut data = appdata.lock().expect("appdata lock");
+                data.start_on_login = false;
+            }
+            let _ = state::save_appdata(&appdata);
+            return Err(err(ErrorCode::AutostartFailed, format!("开机启动注册失败: {e}")));
+        }
+    }
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+/// 把开机启动注册状态对齐到 `enable`；失败返回插件错误（由调用方映射 AUTOSTART_FAILED）。
+fn apply_autostart(app: &AppHandle, enable: bool) -> Result<(), tauri_plugin_autostart::Error> {
+    let mgr = app.autolaunch();
+    let registered = mgr.is_enabled().unwrap_or(false);
+    if enable == registered {
+        return Ok(());
+    }
+    if enable {
+        mgr.enable()
+    } else {
+        mgr.disable()
+    }
+}
+
+/// localStorage 一次性迁移：并入 recents / last_workspace 后落盘。
+#[tauri::command(rename = "app.importRecents")]
+pub fn app_import_recents(
+    appdata: AppDataRef<'_>,
+    recents: Vec<String>,
+    last: Option<String>,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    {
+        let mut data = appdata.lock().expect("appdata lock");
+        data.merge_import(&recents, last.as_deref());
+    }
+    state::save_appdata(&appdata).map_err(ipc_err)?;
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct LogSubOut {
+    pub ok: bool,
+    pub cursor: CursorOut,
+}
+
+#[derive(Serialize)]
+pub struct CursorOut {
+    pub next_seq: u64,
+}
+
+#[tauri::command(rename = "logs.subscribe")]
+pub fn logs_subscribe(state: EngineState<'_>) -> Result<LogSubOut, IpcError> {
+    let next = state.subscribe_logs().map_err(ipc_err)?;
+    Ok(LogSubOut {
+        ok: true,
+        cursor: CursorOut { next_seq: next },
+    })
+}
+
+#[tauri::command(rename = "logs.unsubscribe")]
+pub fn logs_unsubscribe(state: EngineState<'_>) -> Result<HashMap<&'static str, bool>, IpcError> {
+    state.unsubscribe_logs().map_err(ipc_err)?;
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+#[tauri::command(rename = "logs.snapshot")]
+pub fn logs_snapshot(
+    state: EngineState<'_>,
+    source: Option<SourceArg>,
+    limit: Option<usize>,
+) -> Result<LogSnapshotOut, IpcError> {
+    let src = source_from_arg(source);
+    let (items, next_seq) = state
+        .logs_snapshot(src.as_ref(), limit.unwrap_or(2000))
+        .map_err(ipc_err)?;
+    Ok(LogSnapshotOut { items, next_seq })
+}
+
+#[tauri::command(rename = "logs.clearView")]
+pub fn logs_clear_view(state: EngineState<'_>, source: SourceArg) -> Result<HashMap<&'static str, bool>, IpcError> {
+    let src = match source.kind.as_str() {
+        "script" => LogSourceKind::Script,
+        "system" => LogSourceKind::System,
+        _ => LogSourceKind::Service,
+    };
+    state
+        .clear_logs(&LogSource { kind: src, id: source.id })
+        .map_err(ipc_err)?;
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+#[derive(Serialize)]
+pub struct LogSnapshotOut {
+    pub items: Vec<supertask_core::log::LogLine>,
+    pub next_seq: u64,
+}
+
+// ---------------------------------------------------------------------------
+// 1.1 Templates / Git / IDE / 扫描合并
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct OperationOut {
+    pub operation_id: String,
+}
+
+#[derive(Serialize)]
+pub struct TemplatesListOut {
+    pub templates: Vec<template::TemplateSummary>,
+}
+
+#[tauri::command(rename = "templates.list")]
+pub fn templates_list() -> Result<TemplatesListOut, IpcError> {
+    Ok(TemplatesListOut {
+        templates: template::list_templates(),
+    })
+}
+
+/// 用内置模板创建新工作区（长操作，立即返回 operation_id）。
+#[tauri::command(rename = "templates.create")]
+pub fn templates_create(
+    hub: HubState<'_>,
+    appdata: AppDataRef<'_>,
+    exiting: State<'_, Exiting>,
+    template_id: String,
+    parent_path: String,
+    directory_name: String,
+) -> Result<OperationOut, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    // 同步快速校验：目录名非空（完整校验在 core 的 create_template 内）
+    if directory_name.is_empty() {
+        return Err(err(ErrorCode::PathEscape, "目录名不能为空"));
+    }
+    let appdata = appdata.inner().clone();
+    let parent = PathBuf::from(&parent_path);
+    let dir = directory_name;
+    let op_id = hub.spawn("templates.create", move |_ctx| {
+        let target = template::create_template(&template_id, &parent, &dir)?;
+        let ws = target.to_string_lossy().into_owned();
+        {
+            let mut data = appdata.lock().expect("appdata lock");
+            data.record_open(&ws);
+        }
+        state::save_appdata(&appdata)?;
+        Ok(json_into(serde_json::json!({ "workspace_id": ws }))?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
+/// clone 远端仓库为新工作区（长操作，立即返回 operation_id）。
+#[tauri::command(rename = "git.clone")]
+pub fn git_clone(
+    hub: HubState<'_>,
+    appdata: AppDataRef<'_>,
+    url: String,
+    target_path: String,
+    branch: Option<String>,
+) -> Result<OperationOut, IpcError> {
+    // 同步快速校验：URL 不允许内嵌凭据
+    git::check_url(&url).map_err(ipc_err)?;
+    let appdata = appdata.inner().clone();
+    let target = PathBuf::from(&target_path);
+    let op_id = hub.spawn("git.clone", move |_ctx| {
+        let canonical =
+            git::clone(&git::ProcessRunner::default(), &url, &target, branch.as_deref())?;
+        let ws = canonical.to_string_lossy().into_owned();
+        {
+            let mut data = appdata.lock().expect("appdata lock");
+            data.record_open(&ws);
+        }
+        state::save_appdata(&appdata)?;
+        Ok(json_into(serde_json::json!({ "workspace_id": ws }))?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
+/// 校验 workspace_id 与引擎当前打开的工作区一致，否则 `NoWorkspace`。
+fn require_current_workspace(state: &EngineState<'_>, workspace_id: &str) -> Result<(), IpcError> {
+    let current = state.workspace_id().map_err(ipc_err)?;
+    if current != workspace_id {
+        return Err(err(
+            ErrorCode::NoWorkspace,
+            "workspace_id 与当前打开的工作区不一致",
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command(rename = "git.status")]
+pub fn git_status(state: EngineState<'_>, workspace_id: String) -> Result<git::GitStatus, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    git::status(
+        &git::ProcessRunner::default(),
+        &workspace_id,
+        Path::new(&workspace_id),
+    )
+    .map_err(ipc_err)
+}
+
+/// 拉取远端更新（长操作）；服务/脚本运行中或有未提交修改时同步拒绝。
+#[tauri::command(rename = "git.pull")]
+pub fn git_pull(
+    state: EngineState<'_>,
+    hub: HubState<'_>,
+    exiting: State<'_, Exiting>,
+    workspace_id: String,
+    remote: Option<String>,
+    branch: Option<String>,
+    allow_dirty: Option<bool>,
+) -> Result<OperationOut, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    require_current_workspace(&state, &workspace_id)?;
+
+    // 有服务处于 starting/running/unhealthy/stopping 或脚本运行中 → 拒绝
+    let snap = state.snapshot().map_err(ipc_err)?;
+    let service_busy = snap.services.values().any(|s| {
+        matches!(
+            s.state,
+            RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+        )
+    });
+    let script_busy = snap
+        .script
+        .as_ref()
+        .is_some_and(|s| s.state == ScriptState::Running);
+    if service_busy || script_busy {
+        return Err(err(
+            ErrorCode::GitWorkspaceBusy,
+            "有服务或脚本正在运行，停止后再拉取",
+        ));
+    }
+
+    // dirty 且未显式允许 → 拒绝（不发 operation）
+    let allow_dirty = allow_dirty.unwrap_or(false);
+    let st = git::status(
+        &git::ProcessRunner::default(),
+        &workspace_id,
+        Path::new(&workspace_id),
+    )
+    .map_err(ipc_err)?;
+    if st.dirty && !allow_dirty {
+        return Err(err(
+            ErrorCode::GitDirty,
+            "工作区有未提交修改，已阻止拉取；确认后可带 allow_dirty 重试",
+        ));
+    }
+
+    let root = PathBuf::from(&workspace_id);
+    let ws = workspace_id.clone();
+    let op_id = hub.spawn("git.pull", move |_ctx| {
+        git::pull(
+            &git::ProcessRunner::default(),
+            &root,
+            remote.as_deref(),
+            branch.as_deref(),
+            allow_dirty,
+        )?;
+        Ok(json_into(serde_json::json!({ "workspace_id": ws }))?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
+#[derive(Serialize)]
+pub struct OpenIdeOut {
+    pub accepted: bool,
+    pub ide: ide::Ide,
+    pub path: String,
+}
+
+/// 用指定 IDE 打开当前工作区根目录；返回命中 exe 仅展示用。
+#[tauri::command(rename = "workspace.openIde")]
+pub fn workspace_open_ide(
+    state: EngineState<'_>,
+    workspace_id: String,
+    ide: String,
+) -> Result<OpenIdeOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let parsed = ide::parse_ide(&ide)
+        .ok_or_else(|| err(ErrorCode::NotFound, format!("未知 IDE: {ide}")))?;
+    let exe = ide::open(parsed, Path::new(&workspace_id)).map_err(ipc_err)?;
+    Ok(OpenIdeOut {
+        accepted: true,
+        ide: parsed,
+        path: exe.to_string_lossy().into_owned(),
+    })
+}
+
+#[derive(Serialize)]
+pub struct ScanPreviewOut {
+    pub items: Vec<merge::ScanMergeItem>,
+    pub warnings: Vec<String>,
+}
+
+/// 增量扫描预览：当前 spec 与重新发现的候选做可重复比对。
+#[tauri::command(rename = "workspace.scanPreview")]
+pub fn workspace_scan_preview(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<ScanPreviewOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    let (discovered, warnings) = scan_draft(Path::new(&workspace_id)).map_err(ipc_err)?;
+    let preview = merge::preview(&current, &discovered, warnings);
+    Ok(ScanPreviewOut {
+        items: preview.items,
+        warnings: preview.warnings,
+    })
+}
+
+/// 按用户选择应用扫描结果；写回走 saveForm 机制（base_hash 冲突 → YAML_CONFLICT）。
+#[tauri::command(rename = "workspace.scanApply")]
+pub fn workspace_scan_apply(
+    state: EngineState<'_>,
+    workspace_id: String,
+    choices: Vec<merge::MergeChoice>,
+    base_hash: String,
+) -> Result<YamlSaveOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    // 扫描可重复：应用前重新发现，与预览共用同一匹配规则
+    let (discovered, _) = scan_draft(Path::new(&workspace_id)).map_err(ipc_err)?;
+    let merged = merge::apply(&current, &discovered, &choices).map_err(ipc_err)?;
+    let (spec, hash, warnings) = state.save_form(&merged, &base_hash).map_err(ipc_err)?;
+    Ok(YamlSaveOut {
+        spec,
+        hash,
+        warnings: warnings_to_strings(warnings),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 1.1 Desktop: 自动更新（v1.1 规格 §9，ipc.md §10.6）
+// ---------------------------------------------------------------------------
+
+/// `app.update.check` 内核：构建 updater → check → 结果写 pending 供 install 消费。
+/// 网络不可达 / manifest 不合法 / 配置错误统一映射 `UPDATE_FAILED`。
+fn update_check_once(app: &AppHandle) -> supertask_core::error::Result<serde_yaml::Value> {
+    let updater = app
+        .updater_builder()
+        .build()
+        .map_err(|e| supertask_core::Error::new(ErrorCode::UpdateFailed, format!("初始化更新器失败: {e}")))?;
+    match tauri::async_runtime::block_on(updater.check()) {
+        Ok(None) => Ok(json_into(serde_json::json!({ "status": "up_to_date" }))?),
+        Ok(Some(update)) => {
+            // 先复制展示字段（json! 按值取用），Update 整体存入 pending 供 install 消费
+            let payload = serde_json::json!({
+                "status": "available",
+                "version": update.version.clone(),
+                "notes": update.body.clone(),
+                "date": update.date.map(|d| d.to_string()),
+            });
+            let pending = app.state::<PendingUpdate>();
+            *pending.lock().expect("pending update lock") = Some(update);
+            Ok(json_into(payload)?)
+        }
+        Err(e) => Err(supertask_core::Error::new(
+            ErrorCode::UpdateFailed,
+            format!("检查更新失败: {e}"),
+        )),
+    }
+}
+
+/// 更新检查入口：`app.update.check` 命令与启动时静默检查共用。
+/// 检查不修改工作区，允许与其它 operation 并发（结果经 `st.operation` 事件流送达）。
+pub(crate) fn spawn_update_check(app: AppHandle, silent: bool) -> String {
+    let hub = app.state::<HubHandle>().inner().clone();
+    hub.spawn("app.update", move |_ctx| match update_check_once(&app) {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            if silent {
+                eprintln!("[supertask] 启动时检查更新失败（已忽略）: {e}");
+            }
+            Err(e)
+        }
+    })
+}
+
+/// 检查更新（长操作，立即返回 operation_id）。
+#[tauri::command(rename = "app.update.check")]
+pub fn app_update_check(
+    app: AppHandle,
+    exiting: State<'_, Exiting>,
+) -> Result<OperationOut, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    let operation_id = spawn_update_check(app, false);
+    Ok(OperationOut { operation_id })
+}
+
+/// 下载并安装更新（长操作）。Windows 上 install 拉起安装器后进程退出，其后代码不可达。
+#[tauri::command(rename = "app.update.install")]
+pub fn app_update_install(
+    app: AppHandle,
+    hub: HubState<'_>,
+    engine: EngineState<'_>,
+    exiting: State<'_, Exiting>,
+    version: String,
+) -> Result<OperationOut, IpcError> {
+    ensure_not_exiting(&exiting)?;
+
+    // 前置 1：Git/模板/扫描等 operation 进行中 → 阻止（§9.2）
+    if hub.has_active() {
+        return Err(err(
+            ErrorCode::UpdateBlockedRunning,
+            "有其他操作正在进行，请稍后再试",
+        ));
+    }
+
+    // 前置 2：服务 starting/running/unhealthy/stopping 或脚本运行中 → 阻止并给出下一步（§9.2）
+    if let Ok(snap) = engine.snapshot() {
+        let service_busy = snap.services.values().any(|s| {
+            matches!(
+                s.state,
+                RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+            )
+        });
+        let script_busy = snap
+            .script
+            .as_ref()
+            .is_some_and(|s| s.state == ScriptState::Running);
+        if service_busy || script_busy {
+            return Err(err(
+                ErrorCode::UpdateBlockedRunning,
+                "服务或脚本仍在运行，请先停止全部服务再安装更新",
+            ));
+        }
+    }
+
+    // 前置 3：必须存在版本匹配的可用更新（来自此前 app.update.check）
+    let pending = app.state::<PendingUpdate>();
+    let mut guard = pending.lock().expect("pending update lock");
+    if !guard.as_ref().is_some_and(|u| u.version == version) {
+        drop(guard);
+        return Err(err(
+            ErrorCode::UpdateFailed,
+            "没有可安装的更新，请先检查更新",
+        ));
+    }
+    let update = guard.take().expect("checked above");
+    drop(guard);
+
+    let op_id = hub.spawn("app.update", move |ctx| {
+        let reporter = ctx.clone();
+        let mut downloaded: u64 = 0;
+        let bytes = tauri::async_runtime::block_on(update.download(
+            move |chunk, total| {
+                downloaded += chunk as u64;
+                let progress = total
+                    .filter(|t| *t > 0)
+                    .map(|t| (downloaded as f64 / t as f64).clamp(0.0, 1.0));
+                reporter.report(progress, "正在下载更新");
+            },
+            || {},
+        ))
+        .map_err(|e| {
+            supertask_core::Error::new(ErrorCode::UpdateFailed, format!("下载更新失败: {e}"))
+        })?;
+        ctx.report(None, "正在安装更新，应用即将退出");
+        // Windows：install 拉起安装器并 std::process::exit(0)，其后的代码不可达；
+        // 早期失败时把更新放回 pending，用户可重试安装。
+        if let Err(e) = update.install(&bytes) {
+            let pending = app.state::<PendingUpdate>();
+            *pending.lock().expect("pending update lock") = Some(update);
+            return Err(supertask_core::Error::new(
+                ErrorCode::UpdateFailed,
+                format!("安装更新失败: {e}"),
+            ));
+        }
+        Ok(json_into(serde_json::json!({ "status": "installed" }))?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
+// ---------------------------------------------------------------------------
+// FEATURE_SOON placeholders
+// ---------------------------------------------------------------------------
+
+#[tauri::command(rename = "docker.ps")]
+pub fn docker_ps() -> Result<(), IpcError> {
+    Err(soon("docker.ps"))
+}
+#[tauri::command(rename = "docker.build")]
+pub fn docker_build() -> Result<(), IpcError> {
+    Err(soon("docker.build"))
+}
+#[tauri::command(rename = "gateway.apply")]
+pub fn gateway_apply() -> Result<(), IpcError> {
+    Err(soon("gateway.apply"))
+}
+#[tauri::command(rename = "cloud.login")]
+pub fn cloud_login() -> Result<(), IpcError> {
+    Err(soon("cloud.login"))
+}
+#[tauri::command(rename = "cloud.sync")]
+pub fn cloud_sync() -> Result<(), IpcError> {
+    Err(soon("cloud.sync"))
+}
+#[tauri::command(rename = "ai.complete")]
+pub fn ai_complete() -> Result<(), IpcError> {
+    Err(soon("ai.complete"))
+}
+#[tauri::command(rename = "toolchain.install")]
+pub fn toolchain_install() -> Result<(), IpcError> {
+    Err(soon("toolchain.install"))
+}
+
+// ---------------------------------------------------------------------------
+// Event bridge: drain Engine events -> Tauri events
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+struct RuntimeEventPayload {
+    protocol: u32,
+    event: &'static str,
+    workspace_id: String,
+    ts_ms: u64,
+    payload: RuntimePayloadInner,
+}
+
+#[derive(Serialize, Clone)]
+struct RuntimePayloadInner {
+    reason: &'static str,
+    services: IndexMap<String, supertask_core::ServiceRuntimeView>,
+    script: Option<supertask_core::ScriptRuntimeView>,
+}
+
+#[derive(Serialize, Clone)]
+struct LogsEventPayload {
+    protocol: u32,
+    event: &'static str,
+    workspace_id: String,
+    ts_ms: u64,
+    payload: LogsPayloadInner,
+}
+
+#[derive(Serialize, Clone)]
+struct LogsPayloadInner {
+    items: Vec<supertask_core::log::LogLine>,
+}
+
+/// `st.operation` 信封：workspace_id 恒为 null，负载为 hub 的 OperationEvent。
+#[derive(Serialize, Clone)]
+struct OperationEventPayload {
+    protocol: u32,
+    event: &'static str,
+    workspace_id: Option<String>,
+    ts_ms: u64,
+    payload: supertask_core::operation::OperationEvent,
+}
+
+/// 刷新托盘状态（v1.1 规格 §8.1/§8.2）：tooltip 按当前工作区总体状态更新；
+/// 「打开当前工作区 / 启动全部」随有无工作区启/禁。
+/// 事件桥传收到的快照；命令侧传 engine 最新快照（无工作区时为空表）。
+pub(crate) fn update_tray(
+    app: &AppHandle,
+    workspace: Option<&str>,
+    services: &IndexMap<String, supertask_core::ServiceRuntimeView>,
+) {
+    let tooltip = if workspace.is_none() {
+        "SuperTask".to_string()
+    } else if services.values().any(|s| matches!(s.state, RtState::Unhealthy)) {
+        "SuperTask — 存在异常".to_string()
+    } else if services.values().any(|s| {
+        matches!(s.state, RtState::Starting | RtState::Running | RtState::Stopping)
+    }) {
+        "SuperTask — 运行中".to_string()
+    } else {
+        "SuperTask — 已停止".to_string()
+    };
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(&tooltip));
+    }
+    if let Some(items) = app.try_state::<TrayItems>() {
+        let enabled = workspace.is_some();
+        let _ = items.open_workspace.set_enabled(enabled);
+        let _ = items.start_all.set_enabled(enabled);
+    }
+}
+
+/// 命令侧托盘刷新：从 engine 重新读取工作区与快照（open/close/detach/forget 后调用）。
+fn refresh_tray_from_engine(app: &AppHandle, state: &EngineState<'_>) {
+    let workspace = state.workspace_id().ok();
+    let services = state.snapshot().map(|s| s.services).unwrap_or_default();
+    update_tray(app, workspace.as_deref(), &services);
+}
+
+pub fn spawn_event_bridge(app: AppHandle, engine: Arc<Engine>, hub: HubHandle) {
+    std::thread::Builder::new()
+        .name("st-event-bridge".into())
+        .spawn(move || loop {
+            let mut handled = false;
+            match engine.try_recv_event() {
+                Some(supertask_core::EngineEvent::Runtime(snap)) => {
+                    // §8.1：托盘 tooltip / 菜单可用性随运行时事件更新（先借用后 move）
+                    update_tray(&app, Some(&snap.workspace_id), &snap.services);
+                    let payload = RuntimeEventPayload {
+                        protocol: PROTOCOL,
+                        event: supertask_core::ipc::event::RUNTIME,
+                        workspace_id: snap.workspace_id.clone(),
+                        ts_ms: now_ms(),
+                        payload: RuntimePayloadInner {
+                            reason: "full",
+                            services: snap.services,
+                            script: snap.script,
+                        },
+                    };
+                    let _ = app.emit(supertask_core::ipc::event::RUNTIME, &payload);
+                    handled = true;
+                }
+                Some(supertask_core::EngineEvent::Logs { workspace_id, items }) => {
+                    let payload = LogsEventPayload {
+                        protocol: PROTOCOL,
+                        event: supertask_core::ipc::event::LOGS,
+                        workspace_id,
+                        ts_ms: now_ms(),
+                        payload: LogsPayloadInner { items },
+                    };
+                    let _ = app.emit(supertask_core::ipc::event::LOGS, &payload);
+                    handled = true;
+                }
+                None => {}
+            }
+            match hub.try_recv_event() {
+                Some(ev) => {
+                    let payload = OperationEventPayload {
+                        protocol: PROTOCOL,
+                        event: EVENT_OPERATION,
+                        workspace_id: None,
+                        ts_ms: now_ms(),
+                        payload: ev,
+                    };
+                    let _ = app.emit(EVENT_OPERATION, &payload);
+                    handled = true;
+                }
+                None => {}
+            }
+            if !handled {
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        })
+        .expect("spawn event bridge");
+}

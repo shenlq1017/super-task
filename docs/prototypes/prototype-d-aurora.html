@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SuperTask 原型 D · Aurora 领航台（浅色）</title>
+<style>
+  /* ============ 设计令牌：浅色 Aurora · 玻璃白 ============ */
+  :root {
+    --bg: #f6f8fc;
+    --surface: rgb(255 255 255 / .68);
+    --surface-2: rgb(255 255 255 / .9);
+    --border: rgb(15 23 42 / .08);
+    --border-strong: rgb(15 23 42 / .14);
+    --text-1: #0f172a;
+    --text-2: #475569;
+    --text-3: #94a3b8;
+    --cyan: #0891b2;
+    --violet: #7c6cf5;
+    --emerald: #059669;
+    --amber: #d97706;
+    --rose: #e11d48;
+    --grad: linear-gradient(120deg, #06b6d4, #7c6cf5);
+    --mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    --radius: .9rem;
+    --blur: blur(18px) saturate(1.35);
+    --shadow-panel: 0 1px 2px rgb(15 23 42 / .04), 0 12px 32px -14px rgb(15 23 42 / .14);
+    --shadow-lift: 0 2px 4px rgb(15 23 42 / .05), 0 18px 40px -16px rgb(15 23 42 / .22);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { font-size: clamp(13px, .55vw + 9px, 16px); }
+  body {
+    font-family: var(--sans); background: var(--bg); color: var(--text-1);
+    font-size: 1rem; line-height: 1.55; min-height: 100vh; overflow-x: hidden;
+  }
+  svg.icon { width: 1.1em; height: 1.1em; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ============ 浅色 Aurora 背景：白底上的柔彩极光 ============ */
+  .aurora { position: fixed; inset: 0; z-index: -1; overflow: hidden;
+    background:
+      radial-gradient(1100px 600px at 88% -12%, rgb(124 108 245 / .10), transparent 60%),
+      radial-gradient(900px 560px at -8% 108%, rgb(6 182 212 / .09), transparent 62%),
+      var(--bg); }
+  .blob { position: absolute; border-radius: 50%; filter: blur(90px); will-change: transform; }
+  .blob.b1 { width: 32rem; height: 32rem; left: -12rem; top: -14rem; background: rgb(124 108 245 / .16); animation: drift1 30s ease-in-out infinite alternate; }
+  .blob.b2 { width: 28rem; height: 28rem; right: -10rem; top: 6rem; background: rgb(6 182 212 / .13); animation: drift2 36s ease-in-out infinite alternate; }
+  .blob.b3 { width: 24rem; height: 24rem; left: 34%; bottom: -13rem; background: rgb(16 185 129 / .11); animation: drift3 40s ease-in-out infinite alternate; }
+  @keyframes drift1 { to { transform: translate(9rem, 7rem) scale(1.12); } }
+  @keyframes drift2 { to { transform: translate(-8rem, 9rem) scale(.92); } }
+  @keyframes drift3 { to { transform: translate(6rem, -7rem) scale(1.08); } }
+  @media (prefers-reduced-motion: reduce) { .blob, .orb.run::before, .orb.err::before, .cursor { animation: none !important; } }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    backdrop-filter: var(--blur); box-shadow: var(--shadow-panel); }
+
+  /* ============ 顶部导航 ============ */
+  .topbar {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; align-items: center; gap: 1.1rem;
+    padding: .6rem 1.4rem;
+    background: rgb(246 248 252 / .72); backdrop-filter: var(--blur);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: .6rem; flex: none; }
+  .brand-mark { width: 2rem; height: 2rem; border-radius: .6rem; background: var(--grad); color: #fff;
+    display: grid; place-items: center; font-weight: 800; font-size: 1rem; box-shadow: 0 4px 14px rgb(124 108 245 / .35); }
+  .brand-name { font-weight: 800; font-size: 1.05rem; letter-spacing: .01em; }
+  .nav { display: flex; gap: .25rem; overflow-x: auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .pill { display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap;
+    padding: .38rem .78rem; border-radius: 99px; font-size: .84rem; color: var(--text-2);
+    cursor: pointer; transition: all .18s ease; text-decoration: none; border: 1px solid transparent; }
+  .pill:hover { color: var(--text-1); background: rgb(255 255 255 / .8); }
+  .pill.active { color: #4338ca; background: rgb(255 255 255 / .92); border-color: rgb(124 108 245 / .35);
+    box-shadow: 0 2px 10px rgb(124 108 245 / .18); font-weight: 600; }
+  .pill.disabled { color: var(--text-3); cursor: not-allowed; }
+  .pill .ver { font-family: var(--mono); font-size: .62rem; padding: .04rem .32rem; border-radius: 99px; background: rgb(15 23 42 / .06); color: var(--text-3); }
+  .pill .lock { width: .8em; height: .8em; }
+  .top-actions { margin-left: auto; display: flex; gap: .5rem; flex: none; }
+
+  /* ============ 按钮 ============ */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: .38rem;
+    font-family: var(--sans); font-size: .84rem; font-weight: 600;
+    padding: .44rem .92rem; border-radius: .6rem;
+    border: 1px solid var(--border-strong); background: rgb(255 255 255 / .85); color: var(--text-1);
+    cursor: pointer; transition: all .18s ease; white-space: nowrap; }
+  .btn:hover { border-color: rgb(6 182 212 / .5); box-shadow: 0 4px 14px rgb(6 182 212 / .18); }
+  .btn.primary { background: var(--grad); border: none; color: #fff; box-shadow: 0 4px 16px rgb(124 108 245 / .35); }
+  .btn.primary:hover { filter: brightness(1.06); box-shadow: 0 6px 22px rgb(124 108 245 / .45); }
+  .btn.danger:hover { border-color: rgb(225 29 72 / .45); box-shadow: 0 4px 14px rgb(225 29 72 / .16); }
+  .btn.sm { padding: .32rem .68rem; font-size: .78rem; border-radius: .5rem; }
+  .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+  /* ============ 主内容 ============ */
+  .page { max-width: 74rem; margin: 0 auto; padding: 1.2rem 1.4rem 7rem; }
+
+  /* ---- 工作区条：统计降级为一行 ---- */
+  .ws { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; padding: .7rem 1.05rem; margin-bottom: .7rem; }
+  .ws-id { display: flex; flex-direction: column; min-width: 0; }
+  .ws-id b { font-size: 1rem; }
+  .ws-id span { font-family: var(--mono); font-size: .68rem; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ws-chips { display: flex; gap: .4rem; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: .35rem; font-size: .74rem; color: var(--text-2);
+    padding: .18rem .6rem; border-radius: 99px; border: 1px solid var(--border); background: rgb(255 255 255 / .6); white-space: nowrap; }
+  .chip .d { width: .45em; height: .45em; border-radius: 50%; }
+  .chip.run .d { background: var(--emerald); box-shadow: 0 0 6px rgb(5 150 105 / .6); }
+  .chip.err .d { background: var(--rose); box-shadow: 0 0 6px rgb(225 29 72 / .5); }
+  .chip.stop .d { background: var(--text-3); }
+  .chip b { font-weight: 700; color: var(--text-1); }
+  .ws-actions { margin-left: auto; display: flex; gap: .45rem; }
+
+  /* ---- 工具链探测（一行细条） ---- */
+  .probe { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .5rem 1.05rem; margin-bottom: 1.3rem; }
+  .probe-title { font-size: .74rem; color: var(--text-3); display: inline-flex; gap: .35rem; align-items: center; flex: none; }
+  .probe-chip { display: inline-flex; align-items: center; gap: .35rem; font-family: var(--mono); font-size: .7rem; font-weight: 600;
+    padding: .16rem .55rem; border-radius: 99px; border: 1px solid var(--border); background: rgb(255 255 255 / .6); }
+  .probe-chip .d { width: .42em; height: .42em; border-radius: 50%; }
+  .probe-chip.ok { color: #047857; } .probe-chip.ok .d { background: var(--emerald); box-shadow: 0 0 6px rgb(5 150 105 / .55); }
+  .probe-chip.warn { color: #b45309; border-color: rgb(217 119 6 / .3); } .probe-chip.warn .d { background: var(--amber); box-shadow: 0 0 6px rgb(217 119 6 / .5); }
+  .probe-note { margin-left: auto; font-size: .7rem; color: var(--text-3); }
+
+  /* ============ 服务列表：页面主角 ============ */
+  .section-head { display: flex; align-items: baseline; gap: .6rem; margin-bottom: .8rem; }
+  .section-head h2 { font-size: 1.02rem; font-weight: 700; }
+  .section-head .count { font-size: .74rem; color: var(--text-3); }
+  .list { display: grid; gap: .7rem; }
+
+  .row { display: flex; align-items: center; gap: .95rem; padding: .85rem 1.1rem; flex-wrap: wrap;
+    cursor: pointer; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+  .row:hover { transform: translateY(-2px); border-color: var(--border-strong); box-shadow: var(--shadow-lift); }
+  .row.selected { border-color: rgb(6 182 212 / .5); box-shadow: 0 0 0 1px rgb(6 182 212 / .3), 0 14px 34px -14px rgb(6 182 212 / .3); }
+
+  .orb { position: relative; width: 2.4rem; height: 2.4rem; border-radius: 50%; flex: none; display: grid; place-items: center; }
+  .orb::before { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1.5px solid currentColor; opacity: .35; }
+  .orb.run { color: var(--emerald); background: rgb(16 185 129 / .1); box-shadow: 0 0 0 4px rgb(16 185 129 / .08); }
+  .orb.run::before { animation: pulseRing 2.2s ease-out infinite; }
+  .orb.err { color: var(--rose); background: rgb(225 29 72 / .08); box-shadow: 0 0 0 4px rgb(225 29 72 / .07); }
+  .orb.err::before { animation: pulseRing 1.4s ease-out infinite; }
+  .orb.stop { color: var(--text-3); background: rgb(15 23 42 / .04); }
+  @keyframes pulseRing { 0% { transform: scale(.9); opacity: .5; } 100% { transform: scale(1.35); opacity: 0; } }
+  .orb svg.icon { width: 1rem; height: 1rem; }
+
+  .row-main { min-width: 13rem; flex: 1.2; }
+  .row-title { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  .row-title .name { font-weight: 700; font-size: .98rem; }
+  .kind { font-size: .62rem; font-weight: 700; font-family: var(--mono); padding: .14rem .5rem; border-radius: 99px; letter-spacing: .04em; }
+  .kind.spring { color: #047857; background: rgb(16 185 129 / .1); border: 1px solid rgb(16 185 129 / .35); }
+  .kind.node { color: #0369a1; background: rgb(56 189 248 / .12); border: 1px solid rgb(56 189 248 / .4); }
+  .layer { font-family: var(--mono); font-size: .64rem; color: var(--violet); background: rgb(124 108 245 / .1);
+    border: 1px solid rgb(124 108 245 / .3); padding: .1rem .45rem; border-radius: .35rem; }
+  .cmd { font-family: var(--mono); font-size: .68rem; color: var(--text-3); margin-top: .2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .row-metrics { display: flex; gap: 1.1rem; flex-wrap: wrap; font-size: .76rem; color: var(--text-2); flex: 2; min-width: 16rem; }
+  .row-metrics .k { color: var(--text-3); margin-right: .25rem; }
+  .row-metrics .mono { font-family: var(--mono); font-size: .72rem; }
+  .ok-text { color: #047857; font-weight: 600; }
+  .err-text { color: var(--rose); font-weight: 600; }
+
+  .row-spark { width: 4.2rem; height: 1.7rem; flex: none; opacity: .9; }
+  .row-spark polyline { fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  .row-actions { display: flex; gap: .4rem; flex: none; margin-left: auto; }
+
+  .why { flex-basis: 100%; font-family: var(--mono); font-size: .7rem; color: #be123c;
+    background: rgb(225 29 72 / .05); border: 1px solid rgb(225 29 72 / .25); border-radius: .5rem; padding: .32rem .6rem; }
+
+  /* ============ 悬浮日志台 ============ */
+  .console { position: fixed; left: 1.4rem; right: 1.4rem; bottom: 2.6rem; z-index: 30;
+    display: flex; flex-direction: column; overflow: hidden; }
+  .console-head { display: flex; align-items: center; gap: .5rem; padding: .55rem 1rem; border-bottom: 1px solid var(--border); background: rgb(255 255 255 / .5); }
+  .console-tabs { display: flex; gap: .2rem; overflow-x: auto; scrollbar-width: none; }
+  .console-tabs::-webkit-scrollbar { display: none; }
+  .ctab { font-family: var(--mono); font-size: .72rem; color: var(--text-3); padding: .22rem .58rem; border-radius: .4rem; cursor: pointer; white-space: nowrap; transition: all .15s ease; }
+  .ctab:hover { color: var(--text-2); }
+  .ctab.active { color: #0e7490; background: rgb(6 182 212 / .12); }
+  .console-note { margin-left: auto; font-size: .68rem; color: var(--text-3); flex: none; }
+  .console-body { font-family: var(--mono); font-size: .72rem; line-height: 1.8; color: #c9d2e3;
+    padding: .7rem 1rem; height: 8.5rem; overflow-y: auto; background: #0b1220; }
+  .console-body .t { color: #4b5568; } .console-body .ok { color: #34d399; }
+  .console-body .info { color: #7dd3fc; } .console-body .warn { color: #fbbf24; } .console-body .err { color: #fb7185; }
+  .cursor { display: inline-block; width: .55em; height: 1em; vertical-align: text-bottom; background: #22d3ee; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ============ 状态栏 ============ */
+  .statusbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 35; height: 2.2rem;
+    display: flex; align-items: center; gap: 1.1rem; padding: 0 1.4rem;
+    font-family: var(--mono); font-size: .68rem; color: var(--text-3);
+    background: rgb(255 255 255 / .82); backdrop-filter: blur(14px);
+    border-top: 1px solid var(--border); overflow: hidden; white-space: nowrap; }
+  .statusbar .sync { color: #047857; }
+  .statusbar .sep { opacity: .35; }
+  .statusbar .push { margin-left: auto; }
+
+  /* ============ 响应式断点 ============ */
+  @media (max-width: 75rem) {   /* ≤1200px：指标区换行、隐藏 PID */
+    .row-metrics .hide-m { display: none; }
+    .row-spark { display: none; }
+  }
+  @media (max-width: 50rem) {   /* ≤800px：导航收图标、动作换行到卡片底 */
+    .topbar { gap: .7rem; padding: .55rem .9rem; }
+    .brand-name, .pill span:not(.ver), .top-actions .btn span, .console-note, .probe-note { display: none; }
+    .page { padding: 1rem .9rem 7.5rem; }
+    .row { gap: .7rem; }
+    .row-main { min-width: 100%; }
+    .row-actions { margin-left: 0; width: 100%; }
+    .row-actions .btn { flex: 1; }
+    .console { left: .9rem; right: .9rem; bottom: 2.5rem; }
+    .console-body { height: 6.5rem; }
+    .statusbar .hide-s { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 浅色极光背景 -->
+<div class="aurora" aria-hidden="true">
+  <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+</div>
+
+<!-- ================= 顶部导航 ================= -->
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">S</div>
+    <div class="brand-name">SuperTask</div>
+  </div>
+  <nav class="nav">
+    <a class="pill active" href="#"><svg class="icon" viewBox="0 0 24 24"><path d="M5 4l14 8-14 8z"/></svg><span>运行</span></a>
+    <a class="pill" href="#"><svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg><span>日志</span></a>
+    <a class="pill" href="#"><svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg><span>配置</span></a>
+    <a class="pill disabled"><svg class="icon lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><span>模板</span><span class="ver">1.1</span></a>
+    <a class="pill disabled"><svg class="icon lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><span>环境</span><span class="ver">1.2</span></a>
+    <a class="pill disabled"><svg class="icon lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><span>Git</span><span class="ver">1.1</span></a>
+    <a class="pill disabled"><svg class="icon lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><span>容器</span><span class="ver">1.3</span></a>
+    <a class="pill disabled"><svg class="icon lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><span>网关</span><span class="ver">1.6</span></a>
+    <a class="pill disabled"><svg class="icon lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><span>云</span><span class="ver">2.0</span></a>
+    <a class="pill disabled"><svg class="icon lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><span>AI</span><span class="ver">2.1</span></a>
+  </nav>
+  <div class="top-actions">
+    <button class="btn"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06A1.7 1.7 0 0015 19.4a1.7 1.7 0 00-1 1.55V21a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.7 1.7 0 004.6 15a1.7 1.7 0 00-1.55-1H3a2 2 0 110-4h.09a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06A1.7 1.7 0 009 4.6a1.7 1.7 0 001-1.55V3a2 2 0 114 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06A1.7 1.7 0 0019.4 9c.23.6.82 1 1.46 1H21a2 2 0 110 4h-.09a1.7 1.7 0 00-1.51 1z"/></svg><span>设置</span></button>
+    <button class="btn primary"><svg class="icon" viewBox="0 0 24 24"><path d="M5 3l14 9-14 9z"/></svg><span>启动全部</span></button>
+  </div>
+</header>
+
+<!-- ================= 主内容 ================= -->
+<main class="page">
+
+  <!-- 工作区条：统计压缩为一行内联 -->
+  <div class="panel ws">
+    <div class="ws-id">
+      <b>orivex</b>
+      <span>C:\dev\orivex · supertask.yaml 已同步</span>
+    </div>
+    <div class="ws-chips">
+      <span class="chip run"><span class="d"></span>运行 <b>3</b></span>
+      <span class="chip err"><span class="d"></span>异常 <b>1</b></span>
+      <span class="chip stop"><span class="d"></span>停止 <b>1</b></span>
+      <span class="chip">健康延迟 <b>46ms</b></span>
+      <span class="chip">进程树内存 <b>812MB</b></span>
+    </div>
+    <div class="ws-actions">
+      <button class="btn sm"><svg class="icon" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>打开目录</button>
+      <button class="btn sm danger"><svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>停止全部</button>
+    </div>
+  </div>
+
+  <!-- 工具链探测 -->
+  <div class="panel probe">
+    <span class="probe-title"><svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4L14.5 12l-2.5-2.5z"/></svg>工具链</span>
+    <span class="probe-chip ok"><span class="d"></span>JDK 17.0.9</span>
+    <span class="probe-chip ok"><span class="d"></span>Maven 3.9.6</span>
+    <span class="probe-chip ok"><span class="d"></span>Node 20.11</span>
+    <span class="probe-chip warn"><span class="d"></span>pnpm 未在 PATH（可选）</span>
+    <span class="probe-note">只探测不代装 · 安装属 1.2</span>
+  </div>
+
+  <!-- 服务列表：主角 -->
+  <div class="section-head">
+    <h2>服务</h2>
+    <span class="count">按 depends_on 拓扑分层串行启动 · 停止按逆序 · 点选联动底部日志台</span>
+  </div>
+  <div class="list">
+
+    <div class="panel row selected">
+      <div class="orb run"><svg class="icon" viewBox="0 0 24 24"><path d="M5 4l14 8-14 8z"/></svg></div>
+      <div class="row-main">
+        <div class="row-title"><span class="name">gateway</span><span class="kind spring">SPRING</span><span class="layer" title="拓扑第 1 层，无依赖，最先启动">L1 · 无依赖</span></div>
+        <div class="cmd">mvn -pl gateway -am spring-boot:run</div>
+      </div>
+      <div class="row-metrics">
+        <span><span class="k">端口</span><span class="mono">:8080</span></span>
+        <span><span class="k">健康</span><span class="mono ok-text">200 · 46ms</span></span>
+        <span class="hide-m"><span class="k">PID 树</span><span class="mono">18220 → java ×1</span></span>
+        <span><span class="k">时长</span><span class="mono">2h 14m</span></span>
+      </div>
+      <svg class="row-spark" viewBox="0 0 64 26" preserveAspectRatio="none"><polyline points="0,20 8,17 16,19 24,12 32,14 40,9 48,11 56,7 64,9" stroke="#059669"/></svg>
+      <div class="row-actions">
+        <button class="btn sm"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-14-3M4 15a8 8 0 0014 3"/></svg>重启</button>
+        <button class="btn sm danger"><svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>停止</button>
+      </div>
+    </div>
+
+    <div class="panel row">
+      <div class="orb run"><svg class="icon" viewBox="0 0 24 24"><path d="M5 4l14 8-14 8z"/></svg></div>
+      <div class="row-main">
+        <div class="row-title"><span class="name">auth-service</span><span class="kind spring">SPRING</span><span class="layer" title="拓扑第 1 层，无依赖，最先启动">L1 · 无依赖</span></div>
+        <div class="cmd">mvn -pl auth -am spring-boot:run</div>
+      </div>
+      <div class="row-metrics">
+        <span><span class="k">端口</span><span class="mono">:8081</span></span>
+        <span><span class="k">健康</span><span class="mono ok-text">200 · 31ms</span></span>
+        <span class="hide-m"><span class="k">PID 树</span><span class="mono">18361 → java ×1</span></span>
+        <span><span class="k">时长</span><span class="mono">2h 14m</span></span>
+      </div>
+      <svg class="row-spark" viewBox="0 0 64 26" preserveAspectRatio="none"><polyline points="0,21 8,19 16,20 24,16 32,17 40,13 48,14 56,10 64,11" stroke="#059669"/></svg>
+      <div class="row-actions">
+        <button class="btn sm"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-14-3M4 15a8 8 0 0014 3"/></svg>重启</button>
+        <button class="btn sm danger"><svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>停止</button>
+      </div>
+    </div>
+
+    <div class="panel row">
+      <div class="orb err"><svg class="icon" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.8L2.6 17a2 2 0 001.7 3h15.4a2 2 0 001.7-3L13.7 3.8a2 2 0 00-3.4 0z"/></svg></div>
+      <div class="row-main">
+        <div class="row-title"><span class="name">order-service</span><span class="kind spring">SPRING</span><span class="layer" title="拓扑第 1 层，无依赖">L1 · 无依赖</span></div>
+        <div class="cmd">mvn -pl order -am spring-boot:run</div>
+      </div>
+      <div class="row-metrics">
+        <span><span class="k">端口</span><span class="mono">:8082</span></span>
+        <span><span class="k">健康</span><span class="mono err-text">连接拒绝</span></span>
+        <span><span class="k">状态</span><span class="mono err-text">启动中止</span></span>
+      </div>
+      <div class="row-actions">
+        <button class="btn sm primary"><svg class="icon" viewBox="0 0 24 24"><path d="M5 4l14 8-14 8z"/></svg>重试启动</button>
+        <button class="btn sm"><svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>看日志</button>
+      </div>
+      <div class="why">端口 :8082 被 PID 22344（node.exe）占用 → 服务未完成启动。可在配置页改端口（健康检查自动跟随）后重试。</div>
+    </div>
+
+    <div class="panel row">
+      <div class="orb run"><svg class="icon" viewBox="0 0 24 24"><path d="M5 4l14 8-14 8z"/></svg></div>
+      <div class="row-main">
+        <div class="row-title"><span class="name">web-console</span><span class="kind node">NODE</span><span class="layer" title="依赖 gateway / auth-service / order-service，等其 running 后启动">L2 · 依赖 ×3</span></div>
+        <div class="cmd">npm run dev -- --port 5173</div>
+      </div>
+      <div class="row-metrics">
+        <span><span class="k">端口</span><span class="mono">:5173</span></span>
+        <span><span class="k">健康</span><span class="mono ok-text">tcp OK · 12ms</span></span>
+        <span class="hide-m"><span class="k">PID 树</span><span class="mono">21007 → node ×3</span></span>
+        <span><span class="k">时长</span><span class="mono">1h 03m</span></span>
+      </div>
+      <svg class="row-spark" viewBox="0 0 64 26" preserveAspectRatio="none"><polyline points="0,18 8,15 16,16 24,11 32,13 40,8 48,10 56,6 64,8" stroke="#0891b2"/></svg>
+      <div class="row-actions">
+        <button class="btn sm"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-14-3M4 15a8 8 0 0014 3"/></svg>重启</button>
+        <button class="btn sm danger"><svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>停止</button>
+      </div>
+    </div>
+
+    <div class="panel row">
+      <div class="orb stop"><svg class="icon" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></div>
+      <div class="row-main">
+        <div class="row-title"><span class="name">docs-site</span><span class="kind node">NODE</span><span class="layer" title="拓扑第 1 层，无依赖">L1 · 无依赖</span></div>
+        <div class="cmd">npm run docs:dev</div>
+      </div>
+      <div class="row-metrics">
+        <span><span class="k">端口</span><span class="mono">:3000</span></span>
+        <span><span class="k">健康</span><span class="mono" style="color:var(--text-3)">未探测</span></span>
+        <span><span class="k">上次</span><span class="mono">昨天 18:22</span></span>
+      </div>
+      <div class="row-actions">
+        <button class="btn sm primary"><svg class="icon" viewBox="0 0 24 24"><path d="M5 4l14 8-14 8z"/></svg>启动</button>
+        <button class="btn sm"><svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>看日志</button>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- ================= 悬浮日志台 ================= -->
+<section class="panel console" aria-label="实时日志">
+  <div class="console-head">
+    <div class="console-tabs">
+      <span class="ctab active">gateway</span>
+      <span class="ctab">auth-service</span>
+      <span class="ctab">order-service</span>
+      <span class="ctab">web-console</span>
+      <span class="ctab">scripts/bootstrap</span>
+    </div>
+    <span class="console-note">选中服务联动 · 跟随底部 · 清屏只清视图不清文件 · 每 10MB 截断留尾部 2MB</span>
+  </div>
+  <div class="console-body">
+    <div><span class="t">16:38:04.113</span> <span class="ok">INFO</span>  Tomcat started on port 8080 (http)</div>
+    <div><span class="t">16:38:05.002</span> <span class="ok">INFO</span>  health endpoint → UP</div>
+    <div><span class="t">16:40:11.847</span> <span class="info">INFO</span>  route auth-service refreshed (lb://auth-service)</div>
+    <div><span class="t">16:40:31.230</span> <span class="warn">WARN</span>  order-service :8082 unreachable（端口被 PID 22344 占用）</div>
+    <div><span class="t">16:40:49.901</span> <span class="ok">INFO</span>  health check OK（200 · 46ms）</div>
+    <div><span class="t">16:41:02.556</span> <span class="info">INFO</span>  supertask.yaml 端口 :8080 未变更，健康检查保持跟随 <span class="cursor"></span></div>
+  </div>
+</section>
+
+<!-- ================= 状态栏 ================= -->
+<footer class="statusbar">
+  <span class="sync">supertask.yaml 已同步</span>
+  <span class="sep">|</span>
+  <span>改端口保存后健康检查自动跟随</span>
+  <span class="sep hide-s">|</span>
+  <span class="hide-s">停止 = Job Object 终止整棵进程树（无残留 java / node）</span>
+  <span class="push">环形缓冲 2000 行 · UTF-8</span>
+</footer>
+
+</body>
+</html>

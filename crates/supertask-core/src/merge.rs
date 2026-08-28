@@ -1,0 +1,683 @@
+//! 1.1 扫描结果 merge：`preview` 生成可重复的增量预览，`apply` 按用户选择合并。
+//! 契约：`docs/spec/ipc.md` §10.4、`docs/plans/2026-08-27-v1-1-feature-spec.md` §6。
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, ErrorCode, Result};
+use crate::spec::{ServiceSpec, SuperTaskFile};
+
+/// 扫描器负责的字段。`update` 只覆盖这些字段，其余一律保留 current。
+const SCANNER_OWNED_FIELDS: &[&str] = &["kind", "module", "dir", "package_manager"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeStatus {
+    Added,
+    MatchSame,
+    MatchDiff,
+    Missing,
+    IdConflict,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanMergeItem {
+    /// 候选键（发现侧 id 或冲突时的发现 id）
+    pub service_id: String,
+    pub status: MergeStatus,
+    pub discovered: Option<ServiceSpec>,
+    pub current: Option<ServiceSpec>,
+    /// 有差异的扫描器负责字段名
+    pub field_diffs: Vec<String>,
+    /// IdConflict 时的稳定候选 id
+    pub candidate_id: Option<String>,
+    /// 默认动作：Added=false，其余=true（保留语义）
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanPreview {
+    pub items: Vec<ScanMergeItem>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeAction {
+    Add,
+    Keep,
+    Update,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MergeChoice {
+    pub id: String,
+    pub action: MergeAction,
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
+}
+
+/// 生成扫描合并预览。匹配规则可重复：相同输入两次调用结果完全一致。
+pub fn preview(
+    current: &SuperTaskFile,
+    discovered: &SuperTaskFile,
+    scan_warnings: Vec<String>,
+) -> ScanPreview {
+    ScanPreview {
+        items: build_items(current, discovered),
+        warnings: scan_warnings,
+    }
+}
+
+/// 按用户选择合并。从 current 克隆出发，reserved 段（templates/git/x-* 等）永不丢。
+pub fn apply(
+    current: &SuperTaskFile,
+    discovered: &SuperTaskFile,
+    choices: &[MergeChoice],
+) -> Result<SuperTaskFile> {
+    let mut out = current.clone();
+    if choices.is_empty() {
+        return Ok(out);
+    }
+    let items = build_items(current, discovered);
+    for choice in choices {
+        let item = items
+            .iter()
+            .find(|i| i.service_id == choice.id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("预览项不存在: {}", choice.id)))?;
+        match choice.action {
+            MergeAction::Keep => {}
+            MergeAction::Add => {
+                if !matches!(item.status, MergeStatus::Added | MergeStatus::IdConflict) {
+                    return Err(Error::new(
+                        ErrorCode::NotFound,
+                        format!("{} 不是新增/冲突项，无法 add", choice.id),
+                    ));
+                }
+                let spec = item
+                    .discovered
+                    .as_ref()
+                    .expect("added/conflict 项必带 discovered");
+                let key = item
+                    .candidate_id
+                    .clone()
+                    .unwrap_or_else(|| item.service_id.clone());
+                if out.services.contains_key(&key) {
+                    return Err(Error::new(ErrorCode::SpecInvalid, format!("id 已存在: {key}")));
+                }
+                out.services.insert(key, spec.clone());
+            }
+            MergeAction::Update => {
+                let disc = match (item.discovered.as_ref(), item.current.as_ref()) {
+                    (Some(d), Some(_)) => d,
+                    _ => {
+                        return Err(Error::new(
+                            ErrorCode::NotFound,
+                            format!("{} 没有可更新的匹配项", choice.id),
+                        ))
+                    }
+                };
+                let fields: Vec<&str> = match &choice.fields {
+                    Some(wanted) => SCANNER_OWNED_FIELDS
+                        .iter()
+                        .copied()
+                        .filter(|f| wanted.iter().any(|w| w == f))
+                        .collect(),
+                    None => SCANNER_OWNED_FIELDS.to_vec(),
+                };
+                let cur = out
+                    .services
+                    .get_mut(&item.service_id)
+                    .expect("match/conflict 项的 current 必在表内");
+                for field in fields {
+                    match field {
+                        "kind" => cur.kind = disc.kind.clone(),
+                        "module" => cur.module = disc.module.clone(),
+                        "dir" => cur.dir = disc.dir.clone(),
+                        "package_manager" => cur.package_manager = disc.package_manager,
+                        _ => unreachable!("SCANNER_OWNED_FIELDS 白名单"),
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 身份一致：kind 相同，且 spring-boot 的 module / node 的 dir 相同。
+fn same_identity(a: &ServiceSpec, b: &ServiceSpec) -> bool {
+    if a.kind != b.kind {
+        return false;
+    }
+    match a.kind.as_str() {
+        "spring-boot" => a.module == b.module,
+        "node" => a.dir == b.dir,
+        _ => true,
+    }
+}
+
+/// 只比较扫描器负责字段（None 视为与缺失相同）。
+fn field_diffs(discovered: &ServiceSpec, current: &ServiceSpec) -> Vec<String> {
+    let mut diffs = Vec::new();
+    if discovered.kind != current.kind {
+        diffs.push("kind".into());
+    }
+    if discovered.module != current.module {
+        diffs.push("module".into());
+    }
+    if discovered.dir != current.dir {
+        diffs.push("dir".into());
+    }
+    if discovered.package_manager != current.package_manager {
+        diffs.push("package_manager".into());
+    }
+    diffs
+}
+
+fn push_match_item(
+    items: &mut Vec<ScanMergeItem>,
+    service_id: &str,
+    discovered: &ServiceSpec,
+    current: &ServiceSpec,
+) {
+    let diffs = field_diffs(discovered, current);
+    items.push(ScanMergeItem {
+        service_id: service_id.into(),
+        status: if diffs.is_empty() {
+            MergeStatus::MatchSame
+        } else {
+            MergeStatus::MatchDiff
+        },
+        discovered: Some(discovered.clone()),
+        current: Some(current.clone()),
+        field_diffs: diffs,
+        candidate_id: None,
+        selected: true,
+    });
+}
+
+fn is_claimed(claimed: &[&str], id: &str) -> bool {
+    claimed.iter().any(|c| *c == id)
+}
+
+/// IdConflict 的稳定候选 id：`<id>-2` 起步，避开现有表、发现侧与其他已分配候选。
+fn next_candidate(
+    base: &str,
+    current: &SuperTaskFile,
+    discovered: &SuperTaskFile,
+    used: &[String],
+) -> String {
+    for i in 2..99 {
+        let cand = format!("{base}-{i}");
+        if !current.services.contains_key(&cand)
+            && !discovered.services.contains_key(&cand)
+            && !used.iter().any(|u| u == &cand)
+        {
+            return cand;
+        }
+    }
+    format!("{base}-x")
+}
+
+/// 匹配（顺序固定，保证可重复）：
+/// ① 同 id 且身份一致 → MatchSame/MatchDiff；② 同 id 身份不一致 → IdConflict（占用现有项）；
+/// ③ id 不存在但身份与某未占用现有项一致 → 以现有 id 为键 MatchSame/MatchDiff；
+/// ④ 其余发现 → Added；⑤ 未被任何发现项对应的现有服务 → Missing。
+fn build_items(current: &SuperTaskFile, discovered: &SuperTaskFile) -> Vec<ScanMergeItem> {
+    let mut items = Vec::new();
+    let mut claimed: Vec<&str> = Vec::new();
+    let mut candidates: Vec<String> = Vec::new();
+
+    for (id_d, spec_d) in &discovered.services {
+        if let Some(cur) = current.services.get(id_d) {
+            if same_identity(cur, spec_d) {
+                claimed.push(id_d.as_str());
+                push_match_item(&mut items, id_d, spec_d, cur);
+                continue;
+            }
+            claimed.push(id_d.as_str());
+            let candidate = next_candidate(id_d, current, discovered, &candidates);
+            candidates.push(candidate.clone());
+            items.push(ScanMergeItem {
+                service_id: id_d.clone(),
+                status: MergeStatus::IdConflict,
+                discovered: Some(spec_d.clone()),
+                current: Some(cur.clone()),
+                field_diffs: Vec::new(),
+                candidate_id: Some(candidate),
+                selected: true,
+            });
+            continue;
+        }
+        let matched = current
+            .services
+            .iter()
+            .find(|(id_c, spec_c)| !is_claimed(&claimed, id_c) && same_identity(spec_c, spec_d));
+        if let Some((id_c, spec_c)) = matched {
+            claimed.push(id_c.as_str());
+            push_match_item(&mut items, id_c, spec_d, spec_c);
+            continue;
+        }
+        items.push(ScanMergeItem {
+            service_id: id_d.clone(),
+            status: MergeStatus::Added,
+            discovered: Some(spec_d.clone()),
+            current: None,
+            field_diffs: Vec::new(),
+            candidate_id: None,
+            selected: false,
+        });
+    }
+
+    for (id_c, spec_c) in &current.services {
+        if !is_claimed(&claimed, id_c) {
+            items.push(ScanMergeItem {
+                service_id: id_c.clone(),
+                status: MergeStatus::Missing,
+                discovered: None,
+                current: Some(spec_c.clone()),
+                field_diffs: Vec::new(),
+                candidate_id: None,
+                selected: true,
+            });
+        }
+    }
+    items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indexmap::IndexMap;
+
+    fn parse(text: &str) -> SuperTaskFile {
+        crate::spec::parse_yaml(text).unwrap().0
+    }
+
+    fn yaml(file: &SuperTaskFile) -> String {
+        crate::spec::to_yaml(file).unwrap()
+    }
+
+    fn item<'a>(preview: &'a ScanPreview, id: &str) -> &'a ScanMergeItem {
+        preview
+            .items
+            .iter()
+            .find(|i| i.service_id == id)
+            .unwrap_or_else(|| panic!("预览缺项 {id}"))
+    }
+
+    #[test]
+    fn added_preview_and_apply_add() {
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  web:\n    kind: node\n    dir: web\n    port: 5173\n",
+        );
+        let p = preview(&current, &discovered, vec![]);
+        let web = item(&p, "web");
+        assert_eq!(web.status, MergeStatus::Added);
+        assert!(!web.selected);
+        assert!(web.current.is_none());
+        assert_eq!(item(&p, "api").status, MergeStatus::MatchSame);
+
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "web".into(),
+                action: MergeAction::Add,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        assert_eq!(out.services.len(), 2);
+        let web = out.services.get("web").unwrap();
+        assert_eq!(web.kind, "node");
+        assert_eq!(web.dir.as_deref(), Some("web"));
+    }
+
+    #[test]
+    fn identity_match_uses_existing_id() {
+        // 发现 id 变了但 kind+module 相同 → 视为同一服务，键用现有 id
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  user-api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n",
+        );
+        let p = preview(&current, &discovered, vec![]);
+        assert_eq!(p.items.len(), 1);
+        let m = item(&p, "api");
+        assert_eq!(m.status, MergeStatus::MatchSame);
+        assert_eq!(m.service_id, "api");
+
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "api".into(),
+                action: MergeAction::Keep,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        assert!(out.services.contains_key("api"));
+        assert!(!out.services.contains_key("user-api"));
+    }
+
+    #[test]
+    fn match_same_keep_is_noop() {
+        // port 是用户字段：不一致也不影响 MatchSame
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 9090\n    env:\n      FOO: \"1\"\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n",
+        );
+        let p = preview(&current, &discovered, vec![]);
+        let m = item(&p, "api");
+        assert_eq!(m.status, MergeStatus::MatchSame);
+        assert!(m.field_diffs.is_empty());
+        assert!(m.selected);
+
+        let kept = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "api".into(),
+                action: MergeAction::Keep,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        assert_eq!(yaml(&kept), yaml(&current));
+
+        // 空 choices → 返回 current 克隆
+        let empty = apply(&current, &discovered, &[]).unwrap();
+        assert_eq!(yaml(&empty), yaml(&current));
+    }
+
+    #[test]
+    fn match_diff_update_only_scanner_fields() {
+        // package_manager 是扫描器负责字段但不参与身份 → 同 id 同 dir 可 MatchDiff
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  web:\n    kind: node\n    dir: web\n    port: 5173\n    package_manager: pnpm\n    env:\n      DB_URL: \"jdbc:x\"\n    depends_on: [api]\n    grace_secs: 90\n    extra_args: [\"--port=5173\"]\n    health:\n      type: tcp\n    x-note: 用户备注\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  web:\n    kind: node\n    dir: web\n    port: 5173\n    package_manager: npm\n    x-scan: auto\n",
+        );
+        let p = preview(&current, &discovered, vec![]);
+        assert_eq!(p.items.len(), 2); // web MatchDiff + api Missing
+        let m = item(&p, "web");
+        assert_eq!(m.status, MergeStatus::MatchDiff);
+        assert_eq!(m.field_diffs, vec!["package_manager".to_string()]);
+
+        // update（不限字段）：只覆盖 scanner 字段，其余全部保留
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "web".into(),
+                action: MergeAction::Update,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        let web = out.services.get("web").unwrap();
+        assert_eq!(web.package_manager, Some(crate::spec::PackageManager::Npm));
+        assert_eq!(web.dir.as_deref(), Some("web"));
+        assert_eq!(web.port, Some(5173));
+        assert_eq!(web.env.get("DB_URL").map(String::as_str), Some("jdbc:x"));
+        assert_eq!(web.depends_on, vec!["api"]);
+        assert_eq!(web.grace_secs, Some(90));
+        assert_eq!(web.extra_args, vec!["--port=5173".to_string()]);
+        assert!(web.health.is_some());
+        assert!(web.extra.get("x-note").is_some());
+        // discovered 的服务级 x-* 不串入
+        assert!(web.extra.get("x-scan").is_none());
+
+        // fields 过滤：交集之外不覆盖
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "web".into(),
+                action: MergeAction::Update,
+                fields: Some(vec!["port".into(), "dir".into()]),
+            }],
+        )
+        .unwrap();
+        assert_eq!(yaml(&out), yaml(&current));
+
+        // fields 过滤：命中交集时只覆盖该字段
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "web".into(),
+                action: MergeAction::Update,
+                fields: Some(vec!["kind".into(), "package_manager".into()]),
+            }],
+        )
+        .unwrap();
+        let web = out.services.get("web").unwrap();
+        assert_eq!(web.package_manager, Some(crate::spec::PackageManager::Npm));
+        assert_eq!(web.env.get("DB_URL").map(String::as_str), Some("jdbc:x"));
+        assert_eq!(out.services.get("api").unwrap().port, Some(8080));
+    }
+
+    #[test]
+    fn missing_kept_and_empty_discovered_all_missing() {
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  legacy:\n    kind: spring-boot\n    module: old-mod\n    port: 8081\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n",
+        );
+        let p = preview(&current, &discovered, vec![]);
+        let m = item(&p, "legacy");
+        assert_eq!(m.status, MergeStatus::Missing);
+        assert!(m.discovered.is_none());
+        assert!(m.current.is_some());
+        assert!(m.selected);
+
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "legacy".into(),
+                action: MergeAction::Keep,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        assert!(out.services.contains_key("legacy"));
+        assert!(out.services.contains_key("api"));
+
+        // 空 discovered → 全部 Missing
+        let empty = SuperTaskFile {
+            version: 1,
+            kind: None,
+            name: None,
+            description: None,
+            root: ".".into(),
+            env: IndexMap::new(),
+            services: IndexMap::new(),
+            scripts: IndexMap::new(),
+            logging: None,
+            secrets: None,
+            profiles: None,
+            toolchain: None,
+            templates: None,
+            git: None,
+            docker: None,
+            gateway: None,
+            cloud: None,
+            ai: None,
+            extra: IndexMap::new(),
+        };
+        let p = preview(&current, &empty, vec![]);
+        assert_eq!(p.items.len(), 2);
+        assert!(p
+            .items
+            .iter()
+            .all(|i| i.status == MergeStatus::Missing && i.selected));
+    }
+
+    #[test]
+    fn id_conflict_stable_candidate_and_apply_add() {
+        let current = parse(
+            "version: 1\nservices:\n  app:\n    kind: spring-boot\n    module: mod-a\n    port: 8080\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  app:\n    kind: spring-boot\n    module: mod-b\n    port: 8080\n  web:\n    kind: node\n    dir: web\n    port: 5173\n",
+        );
+        let p1 = preview(&current, &discovered, vec![]);
+        let p2 = preview(&current, &discovered, vec![]);
+        // 可重复：两次 preview 完全一致
+        assert_eq!(
+            serde_yaml::to_string(&p1).unwrap(),
+            serde_yaml::to_string(&p2).unwrap()
+        );
+        let c = item(&p1, "app");
+        assert_eq!(c.status, MergeStatus::IdConflict);
+        assert_eq!(c.candidate_id.as_deref(), Some("app-2"));
+        assert!(c.selected);
+
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "app".into(),
+                action: MergeAction::Add,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        // 现有 app 保留，冲突发现项以 candidate_id 入表
+        assert_eq!(out.services.get("app").unwrap().module.as_deref(), Some("mod-a"));
+        assert_eq!(out.services.get("app-2").unwrap().module.as_deref(), Some("mod-b"));
+    }
+
+    #[test]
+    fn update_overrides_user_modified_scanner_field() {
+        // 用户自己改了 module → 身份不一致 → IdConflict；显式 update 覆盖它，其余保留
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: user-mod\n    port: 9000\n    env:\n      K: v\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: scanner-mod\n    port: 8080\n",
+        );
+        let p = preview(&current, &discovered, vec![]);
+        let c = item(&p, "api");
+        assert_eq!(c.status, MergeStatus::IdConflict);
+        assert_eq!(c.candidate_id.as_deref(), Some("api-2"));
+
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "api".into(),
+                action: MergeAction::Update,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        let api = out.services.get("api").unwrap();
+        assert_eq!(api.module.as_deref(), Some("scanner-mod"));
+        assert_eq!(api.port, Some(9000));
+        assert_eq!(api.env.get("K").map(String::as_str), Some("v"));
+        assert!(!out.services.contains_key("api-2"));
+    }
+
+    #[test]
+    fn roundtrip_reserved_and_x_fields() {
+        let current_text = "version: 1\nkind: workspace\nname: rt\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\ntemplates:\n  source: official/spring-boot\n  version: 3\ngit:\n  remote: https://example.com/x.git\nx-custom:\n  anything: [1, 2, 3]\n";
+        let current = parse(current_text);
+        let (reparsed, _) = crate::spec::parse_yaml(current_text).unwrap();
+        assert_eq!(current.templates, reparsed.templates);
+        assert_eq!(current.git, reparsed.git);
+        assert_eq!(current.extra.get("x-custom"), reparsed.extra.get("x-custom"));
+
+        let discovered = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  web:\n    kind: node\n    dir: web\n    port: 5173\n",
+        );
+        let out = apply(
+            &current,
+            &discovered,
+            &[
+                MergeChoice {
+                    id: "web".into(),
+                    action: MergeAction::Add,
+                    fields: None,
+                },
+                MergeChoice {
+                    id: "api".into(),
+                    action: MergeAction::Keep,
+                    fields: None,
+                },
+            ],
+        )
+        .unwrap();
+        // to_yaml 再 parse_yaml，reserved 段原样存在
+        let (back, _) = crate::spec::parse_yaml(&yaml(&out)).unwrap();
+        assert_eq!(back.templates, current.templates);
+        assert_eq!(back.git, current.git);
+        assert_eq!(back.extra.get("x-custom"), current.extra.get("x-custom"));
+        assert!(back.services.contains_key("web"));
+        assert!(back.services.contains_key("api"));
+    }
+
+    #[test]
+    fn preview_is_deterministic() {
+        // 混合场景：匹配 + 冲突 + 新增 + 未发现，多次 preview 结果一致
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  app:\n    kind: spring-boot\n    module: mod-a\n    port: 8081\n  gone:\n    kind: node\n    dir: old-web\n    port: 5173\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  app:\n    kind: spring-boot\n    module: mod-b\n    port: 8080\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  web:\n    kind: node\n    dir: web\n    port: 5173\n",
+        );
+        let a = serde_yaml::to_string(&preview(&current, &discovered, vec!["w".into()])).unwrap();
+        let b = serde_yaml::to_string(&preview(&current, &discovered, vec!["w".into()])).unwrap();
+        assert_eq!(a, b);
+        let p = preview(&current, &discovered, vec![]);
+        assert_eq!(item(&p, "app").status, MergeStatus::IdConflict);
+        assert_eq!(item(&p, "api").status, MergeStatus::MatchSame);
+        assert_eq!(item(&p, "web").status, MergeStatus::Added);
+        assert_eq!(item(&p, "gone").status, MergeStatus::Missing);
+    }
+
+    #[test]
+    fn apply_errors() {
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  legacy:\n    kind: spring-boot\n    module: old-mod\n    port: 8081\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  web:\n    kind: node\n    dir: web\n    port: 5173\n",
+        );
+        let choice = |id: &str, action: MergeAction| MergeChoice {
+            id: id.into(),
+            action,
+            fields: None,
+        };
+        // 未知 id
+        let err = apply(&current, &discovered, &[choice("nope", MergeAction::Keep)]).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotFound);
+        // add 只对 Added/IdConflict 有效
+        let err = apply(&current, &discovered, &[choice("api", MergeAction::Add)]).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotFound);
+        let err = apply(&current, &discovered, &[choice("legacy", MergeAction::Add)]).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotFound);
+        // update 只对有 discovered+current 的项有效
+        let err = apply(&current, &discovered, &[choice("web", MergeAction::Update)]).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotFound);
+        // 重复 add 同一项 → id 已存在
+        let err = apply(
+            &current,
+            &discovered,
+            &[choice("web", MergeAction::Add), choice("web", MergeAction::Add)],
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::SpecInvalid);
+    }
+}
