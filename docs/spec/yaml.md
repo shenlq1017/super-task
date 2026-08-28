@@ -44,11 +44,13 @@
 | `description` | reserved | string | 工作区说明 |
 | `root` | 可选 | string | 仅 `"."` |
 | `env` | 1.0 | map\<string,string\> | 工作区环境；值一律当字符串 |
-| `secrets` | reserved | object | 见 §7，1.0 若出现非空内容 → 警告不执行 |
-| `profiles` | reserved | object | 见 §7 |
+| `secrets` | reserved | object | 见 §7，1.2 phase 3 起读取 |
+| `profiles` | reserved | object | 见 §7，1.2 phase 6 起生效 |
 | `services` | 必填 | map | 至少一个服务 |
 | `scripts` | 1.0 | map | 可空 |
-| `toolchain` | reserved | object | 1.2 mise/版本钉扎 |
+| `toolchain` | 1.2 | object | typed：`manager`/`java`/`maven`/`node`/`package_manager`，见 1.2 规格 §4 |
+| `network` | 1.2 | object | typed：`proxy`（off/system/custom）/`maven.mirror`/`npm.registry`，见 1.2 规格 §7 |
+| `log_retention` | 1.2 | object | **顶层**保留策略，不要嵌进 `logging` |
 | `templates` | reserved | object | 1.1 来源模板元数据 |
 | `git` | reserved | object | 1.1 |
 | `docker` | reserved | object | 1.3 |
@@ -69,6 +71,7 @@
 | 字段 | 1.0 | 类型 | 默认 | 说明 |
 |------|-----|------|------|------|
 | `kind` | 必填 | string | | 见 §4.2 |
+| `service` | 1.3 | string | | `kind: compose` 专用：compose 文件内的服务名；其余 kind 经 extra round-trip |
 | `enabled` | 1.0 | bool | true | false 则启动全部时跳过 |
 | `group` | reserved | string | | 1.2 UI 分组 |
 | `labels` | reserved | map | {} | 任意标注 |
@@ -97,11 +100,11 @@
 
 ### 4.2 `kind`
 
-| kind | 首次版本 | 1.0 行为 |
+| kind | 首次版本 | 行为 |
 |------|----------|----------|
 | `spring-boot` | 1.0 | 可启动 |
 | `node` | 1.0 | 可启动 |
-| `compose` | 1.3 | 可解析，不可启动 |
+| `compose` | 1.3 | 可解析（`service` 必填、注入类字段非法）；启动 1.3 phase 3 接入，此前 `LAUNCH` 类启动返回 `KIND_UNSUPPORTED` |
 | `python` | 2.2 | 同上 |
 | `go` | 2.2 | 同上 |
 | `generic` | 1.x | argv 通用进程，1.0 不可启动 |
@@ -187,9 +190,11 @@ health:
 
 ---
 
-## 7. Reserved 顶层段（1.0 只存不跑）
+## 7. Reserved 顶层段（只存不跑的版本段落）
 
 引擎必须：反序列化、原样出现在结构化写回（若文件里有）。缺省省略。
+
+> 1.2 起部分段已转 typed 并执行：`toolchain`（版本钉扎 + manager）、`network`（代理/镜像）。`secrets` / `profiles` / `docker` 等仍按版本路线只存不跑；已转 typed 的段未知键走 flatten extra round-trip。
 
 ```yaml
 secrets:

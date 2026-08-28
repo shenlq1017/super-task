@@ -111,6 +111,59 @@ impl Job {
     pub fn has_live_process(&self) -> bool {
         !self.pids().is_empty()
     }
+
+    /// Job 累计 CPU 时间（内核+用户，毫秒）。1.2 §9.3 指标用：
+    /// 差分两次采样即得窗口 CPU。查询失败返回 None（不判服务异常）。
+    pub fn total_cpu_ms(&self) -> Option<u64> {
+        use windows::Win32::System::JobObjects::{
+            JobObjectBasicAccountingInformation, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        };
+        unsafe {
+            let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            let ok = QueryInformationJobObject(
+                self.handle,
+                JobObjectBasicAccountingInformation,
+                std::ptr::from_mut(&mut info).cast(),
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                None,
+            );
+            if ok.is_err() {
+                return None;
+            }
+            let hundred_ns = info.TotalKernelTime.saturating_add(info.TotalUserTime);
+            Some((hundred_ns / 10_000) as u64)
+        }
+    }
+
+    /// Job 内进程工作集之和。单个进程查询失败跳过（部分可用），全部失败 None。
+    pub fn working_set_bytes(&self) -> Option<u64> {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        let pids = self.pids();
+        if pids.is_empty() {
+            return None;
+        }
+        let mut any = false;
+        let mut total: u64 = 0;
+        for pid in pids {
+            unsafe {
+                let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+                    continue;
+                };
+                let mut pmc = PROCESS_MEMORY_COUNTERS::default();
+                pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+                if GetProcessMemoryInfo(handle, &mut pmc, pmc.cb).is_ok() {
+                    total += pmc.WorkingSetSize as u64;
+                    any = true;
+                }
+                let _ = CloseHandle(handle);
+            }
+        }
+        any.then_some(total)
+    }
 }
 
 impl Drop for Job {

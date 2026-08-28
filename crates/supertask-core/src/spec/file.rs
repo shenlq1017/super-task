@@ -5,6 +5,11 @@ use serde_yaml::Value;
 use crate::error::{Error, ErrorCode, Result};
 use crate::ipc::{is_valid_id, MAX_CMDS, MAX_ENV_KEYS, MAX_SERVICES};
 
+/// 1.2: profile 数量上限（规格 §10.1）。
+pub const MAX_PROFILES: usize = 32;
+/// 1.2: services.*.group 显示名最长字符数。
+pub const MAX_GROUP_CHARS: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseWarning {
     pub code: ErrorCode,
@@ -30,17 +35,21 @@ pub struct SuperTaskFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secrets: Option<Value>,
+    pub secrets: Option<SecretsSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profiles: Option<Value>,
+    pub profiles: Option<ProfilesSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub toolchain: Option<Value>,
+    pub toolchain: Option<ToolchainSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_retention: Option<LogRetentionSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub templates: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub docker: Option<Value>,
+    pub docker: Option<DockerSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +68,9 @@ fn default_root() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceSpec {
     pub kind: String,
+    /// 1.3 `kind: compose`：compose 文件内的服务名（非 SuperTask id）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,6 +97,8 @@ pub struct ServiceSpec {
     pub restart: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,6 +131,185 @@ pub enum PackageManager {
     Npm,
     Pnpm,
     Yarn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolchainManager {
+    Auto,
+    Mise,
+    Winget,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolchainSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manager: Option<ToolchainManager>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maven: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_manager: Option<PackageManager>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretsBackend {
+    File,
+    Env,
+    /// 1.0 sample alias: file + default `.env.local`.
+    Local,
+}
+
+impl SecretsBackend {
+    pub fn is_file(self) -> bool {
+        matches!(self, Self::File | Self::Local)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretsSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<SecretsBackend>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    Off,
+    System,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxySpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ProxyMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub https: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_proxy: Vec<String>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MavenNetworkSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpmNetworkSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxySpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maven: Option<MavenNetworkSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub npm: Option<NpmNetworkSpec>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+/// 1.3 `docker.builds` 条目。context/dockerfile 相对 root；tag 格式见 validate。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerBuild {
+    pub name: String,
+    pub context: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dockerfile: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+/// 1.3 顶层 `docker` 段（typed）。compose 文件仍是容器行为唯一真源，
+/// 这里只存 SuperTask 需要的引用与构建入口。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builds: Vec<DockerBuild>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileServiceOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "de_env",
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    pub env: IndexMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileItem {
+    #[serde(
+        default,
+        deserialize_with = "de_env",
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    pub env: IndexMap<String, String>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub services: IndexMap<String, ProfileServiceOverride>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfilesSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub items: IndexMap<String, ProfileItem>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogRetentionSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_files: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_bytes: Option<u64>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,10 +381,6 @@ impl SuperTaskFile {
                         svc.launch = Some("run".into());
                     }
                     if svc.health.is_none() {
-                        // 缺省 TCP：actuator 检测只在扫描层做（scan.rs 查 pom），
-                        // spec 默认值层拿不到 pom；未装 actuator 的应用打
-                        // /actuator/health 永远 404，会把运行中的服务误判为不健康。
-                        // 需要 HTTP 探测时在 yaml 显式写 health.type: http。
                         svc.health = Some(HealthSpec {
                             r#type: HealthType::Tcp,
                             http: None,
@@ -269,7 +458,10 @@ pub fn check_limits(file: &SuperTaskFile) -> Result<()> {
             ));
         }
         if s.env.len() > MAX_ENV_KEYS {
-            return Err(Error::new(ErrorCode::SpecInvalid, format!("脚本 {id} env 过多")));
+            return Err(Error::new(
+                ErrorCode::SpecInvalid,
+                format!("脚本 {id} env 过多"),
+            ));
         }
     }
     for (id, svc) in &file.services {
@@ -280,12 +472,18 @@ pub fn check_limits(file: &SuperTaskFile) -> Result<()> {
             ));
         }
         if svc.env.len() > MAX_ENV_KEYS {
-            return Err(Error::new(ErrorCode::SpecInvalid, format!("服务 {id} env 过多")));
+            return Err(Error::new(
+                ErrorCode::SpecInvalid,
+                format!("服务 {id} env 过多"),
+            ));
         }
     }
     for id in file.scripts.keys() {
         if !is_valid_id(id) {
-            return Err(Error::new(ErrorCode::SpecInvalid, format!("非法脚本 id {id}")));
+            return Err(Error::new(
+                ErrorCode::SpecInvalid,
+                format!("非法脚本 id {id}"),
+            ));
         }
     }
     Ok(())

@@ -1,11 +1,14 @@
 mod file;
-mod validate;
+pub mod validate;
 
 pub use file::{
-    HealthSpec, HealthType, LoggingSpec, PackageManager, ParseWarning, ScriptSpec, ServiceSpec,
-    SuperTaskFile,
+    DockerBuild, DockerSpec, HealthSpec, HealthType, LogRetentionSpec, LoggingSpec,
+    MavenNetworkSpec, NetworkSpec, NpmNetworkSpec, PackageManager, ParseWarning, ProfileItem,
+    ProfileServiceOverride, ProfilesSpec, ProxyMode, ProxySpec, ScriptSpec, SecretsBackend,
+    SecretsSpec, ServiceSpec, SuperTaskFile, ToolchainManager, ToolchainSpec, MAX_GROUP_CHARS,
+    MAX_PROFILES,
 };
-pub use validate::validate;
+pub use validate::{is_valid_secret_key, is_valid_toolchain_version, validate, validate_proxy_url};
 
 use crate::error::{Error, ErrorCode, Result};
 use sha2::{Digest, Sha256};

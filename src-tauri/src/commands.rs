@@ -441,9 +441,196 @@ pub fn script_cancel(state: EngineState<'_>, _workspace_id: String, id: String) 
 // Toolchain + prefs
 // ---------------------------------------------------------------------------
 
+#[derive(Serialize)]
+pub struct ToolchainProbeOut {
+    #[serde(flatten)]
+    pub tools: supertask_core::probe::ToolchainProbe,
+    /// 1.2：mise/winget 可用性（安装按钮态与 provider 元数据）。
+    pub managers: supertask_core::toolchain::ManagerAvailability,
+}
+
+/// `toolchain.probe`：工具探测 + provider 元数据（§13.1）。
 #[tauri::command(rename = "toolchain.probe")]
-pub fn toolchain_probe() -> supertask_core::probe::ToolchainProbe {
-    supertask_core::probe::probe_toolchain()
+pub fn toolchain_probe() -> ToolchainProbeOut {
+    ToolchainProbeOut {
+        tools: supertask_core::probe::probe_toolchain(),
+        managers: supertask_core::toolchain::provider::detect_availability(
+            &supertask_core::toolchain::ProcessRunner,
+        ),
+    }
+}
+
+/// install/upgrade 共用内核：同步快速校验（非法输入立即拒绝，不发 operation），
+/// 再入 hub 长操作跑安装 → 解析 →（可选）结构化写回 YAML。
+#[allow(clippy::too_many_arguments)]
+fn toolchain_spawn_op(
+    state: EngineState<'_>,
+    hub: HubState<'_>,
+    appdata: AppDataRef<'_>,
+    exiting: State<'_, Exiting>,
+    tool: String,
+    version: Option<String>,
+    manager: Option<String>,
+    persist: Option<bool>,
+    base_hash: Option<String>,
+    upgrade: bool,
+) -> Result<OperationOut, IpcError> {
+    use supertask_core::spec::ToolchainManager;
+    use supertask_core::toolchain::{self, manifest};
+
+    ensure_not_exiting(&exiting)?;
+    let input = supertask_core::ipc::ToolchainInstallInput {
+        tool,
+        version,
+        manager,
+        persist: persist.unwrap_or(false),
+        base_hash,
+    };
+    let tool = toolchain::parse_tool(&input.tool).map_err(ipc_err)?;
+    let version = match &input.version {
+        Some(v) => v.clone(),
+        None => manifest::default_version(tool).to_string(),
+    };
+    toolchain::validate_version(&version).map_err(ipc_err)?;
+    let requested = match input.manager.as_deref() {
+        None => None,
+        Some("auto") => Some(ToolchainManager::Auto),
+        Some("mise") => Some(ToolchainManager::Mise),
+        Some("winget") => Some(ToolchainManager::Winget),
+        Some(other) => {
+            return Err(err(
+                ErrorCode::SpecInvalid,
+                format!("未知 manager: {other}"),
+            ))
+        }
+    };
+    if input.persist && input.base_hash.is_none() {
+        return Err(err(
+            ErrorCode::SpecInvalid,
+            "persist=true 必须携带 base_hash",
+        ));
+    }
+
+    // 生效网络：workspace network 覆盖 app 默认（§7.2）；代理供 provider 下载使用
+    let spec_view = if state.workspace_id().is_ok() {
+        state.spec().ok()
+    } else {
+        None
+    };
+    let ws_manager = spec_view
+        .as_ref()
+        .and_then(|s| s.toolchain.as_ref())
+        .and_then(|t| t.manager);
+    let ws_network = spec_view.as_ref().and_then(|s| s.network.clone());
+    let app_network = {
+        let data = appdata.lock().expect("appdata lock");
+        data.network.clone()
+    };
+    let env = supertask_core::network::tool_env(&supertask_core::network::resolve(
+        ws_network.as_ref(),
+        Some(&app_network),
+    )
+    .map_err(ipc_err)?)
+    .map_err(ipc_err)?;
+
+    let engine = state.inner().clone();
+    let ws_root = state.workspace_id().ok().map(PathBuf::from);
+    let persist = input.persist;
+    let base_hash = input.base_hash.clone();
+    let kind = if upgrade { "toolchain.upgrade" } else { "toolchain.install" };
+    let op_id = hub.spawn(kind, move |ctx| {
+        let root = ws_root.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        });
+        let verb = if upgrade { "升级" } else { "安装" };
+        ctx.report(None, format!("正在{verb} {} {version}", tool.as_str()));
+        let req = toolchain::InstallRequest {
+            tool,
+            version: &version,
+            requested,
+            workspace_manager: ws_manager,
+            workspace: &root,
+            env,
+            path_probe: supertask_core::probe::find_on_path,
+        };
+        let outcome = if upgrade {
+            toolchain::upgrade(&toolchain::ProcessRunner, req)
+        } else {
+            toolchain::install(&toolchain::ProcessRunner, req)
+        }?;
+        ctx.report(None, "安装完成，已解析工具路径");
+        let mut result = serde_json::json!({
+            "tool": outcome.tool.as_str(),
+            "version": outcome.version,
+            "manager": outcome.manager.as_str(),
+            "path": outcome.resolved.program.to_string_lossy(),
+        });
+        if persist {
+            // YAML_CONFLICT 时安装结果保留，仅写回失败（§4.3）
+            let hash = base_hash.as_deref().expect("sync-checked above");
+            let hash = persist_toolchain_version(&engine, tool, &outcome.version, hash)?;
+            result["hash"] = serde_json::Value::String(hash);
+        }
+        Ok(json_into(result)?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
+/// persist=true 时把版本要求写回 `toolchain`（npm/pnpm/yarn 写 `package_manager`）。
+fn persist_toolchain_version(
+    engine: &Engine,
+    tool: supertask_core::toolchain::ToolKind,
+    version: &str,
+    base_hash: &str,
+) -> supertask_core::error::Result<String> {
+    use supertask_core::spec::{PackageManager, ToolchainSpec};
+    use supertask_core::toolchain::ToolKind as K;
+    let mut spec = engine.spec()?;
+    let tc = spec.toolchain.get_or_insert_with(ToolchainSpec::default);
+    match tool {
+        K::Java => tc.java = Some(version.to_string()),
+        K::Maven => tc.maven = Some(version.to_string()),
+        K::Node => tc.node = Some(version.to_string()),
+        K::Npm => tc.package_manager = Some(PackageManager::Npm),
+        K::Pnpm => tc.package_manager = Some(PackageManager::Pnpm),
+        K::Yarn => tc.package_manager = Some(PackageManager::Yarn),
+    }
+    let (_, hash, _) = engine.save_form(&spec, base_hash)?;
+    Ok(hash)
+}
+
+/// 安装工具链（长操作，立即返回 operation_id；§13.1）。
+#[tauri::command(rename = "toolchain.install")]
+#[allow(clippy::too_many_arguments)]
+pub fn toolchain_install(
+    state: EngineState<'_>,
+    hub: HubState<'_>,
+    appdata: AppDataRef<'_>,
+    exiting: State<'_, Exiting>,
+    tool: String,
+    version: Option<String>,
+    manager: Option<String>,
+    persist: Option<bool>,
+    base_hash: Option<String>,
+) -> Result<OperationOut, IpcError> {
+    toolchain_spawn_op(state, hub, appdata, exiting, tool, version, manager, persist, base_hash, false)
+}
+
+/// 升级工具链（长操作，立即返回 operation_id；§13.1）。
+#[tauri::command(rename = "toolchain.upgrade")]
+#[allow(clippy::too_many_arguments)]
+pub fn toolchain_upgrade(
+    state: EngineState<'_>,
+    hub: HubState<'_>,
+    appdata: AppDataRef<'_>,
+    exiting: State<'_, Exiting>,
+    tool: String,
+    version: Option<String>,
+    manager: Option<String>,
+    persist: Option<bool>,
+    base_hash: Option<String>,
+) -> Result<OperationOut, IpcError> {
+    toolchain_spawn_op(state, hub, appdata, exiting, tool, version, manager, persist, base_hash, true)
 }
 
 #[tauri::command(rename = "app.savePrefs")]
@@ -716,7 +903,7 @@ pub fn git_pull(
     let service_busy = snap.services.values().any(|s| {
         matches!(
             s.state,
-            RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+            RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping | RtState::Building
         )
     });
     let script_busy = snap
@@ -910,7 +1097,7 @@ pub fn app_update_install(
         let service_busy = snap.services.values().any(|s| {
             matches!(
                 s.state,
-                RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+                RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping | RtState::Building
             )
         });
         let script_busy = snap
@@ -998,10 +1185,266 @@ pub fn cloud_sync() -> Result<(), IpcError> {
 pub fn ai_complete() -> Result<(), IpcError> {
     Err(soon("ai.complete"))
 }
-#[tauri::command(rename = "toolchain.install")]
-pub fn toolchain_install() -> Result<(), IpcError> {
-    Err(soon("toolchain.install"))
+
+// ---------------------------------------------------------------------------
+// 1.2 phase 3–7：端口 / secrets / 日志 / 指标 / profile / runtime.build
+//（core 侧实现；这里只做 IPC 适配）
+// ---------------------------------------------------------------------------
+
+/// `ports.inspect`：每服务端口占用 + 引擎托管判定（§5.1）。
+#[tauri::command(rename = "ports.inspect")]
+pub fn ports_inspect(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::ipc::PortsInspectOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let items = state.ports_inspect().map_err(ipc_err)?;
+    Ok(supertask_core::ipc::PortsInspectOutput { items })
 }
+
+/// `ports.suggest`：建议端口候选（§5.2）。
+#[tauri::command(rename = "ports.suggest")]
+pub fn ports_suggest(
+    state: EngineState<'_>,
+    workspace_id: String,
+    id: String,
+) -> Result<supertask_core::ipc::PortsSuggestOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let candidates = state.ports_suggest(&id).map_err(ipc_err)?;
+    Ok(supertask_core::ipc::PortsSuggestOutput { candidates })
+}
+
+/// `ports.assign`：一键改端口；运行中未确认 restart 时只预览（§5.3/§5.4）。
+#[tauri::command(rename = "ports.assign")]
+pub fn ports_assign(
+    state: EngineState<'_>,
+    workspace_id: String,
+    id: String,
+    port: u16,
+    base_hash: String,
+    restart: Option<bool>,
+) -> Result<supertask_core::ipc::PortsAssignOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let view = state
+        .ports_assign(&id, port, &base_hash, restart.unwrap_or(false))
+        .map_err(ipc_err)?;
+    Ok(supertask_core::ipc::PortsAssignOutput {
+        operation_id: None,
+        spec: serde_yaml::to_value(&view.spec).map_err(|e| {
+            err(ErrorCode::Protocol, format!("序列化 spec 失败: {e}"))
+        })?,
+        hash: view.hash,
+        restart_required: view.restart_required,
+        notes: view.notes,
+    })
+}
+
+/// `secrets.status`：只返回 key 名与状态，绝不返回值（§6.4）。
+#[tauri::command(rename = "secrets.status")]
+pub fn secrets_status(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::ipc::SecretsStatusOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.secrets_status().map_err(ipc_err)
+}
+
+/// `secrets.set`：值只在本次 IPC 中传输；core 不落日志/事件。
+#[tauri::command(rename = "secrets.set")]
+pub fn secrets_set(
+    state: EngineState<'_>,
+    workspace_id: String,
+    key: String,
+    value: String,
+) -> Result<supertask_core::ipc::SecretsKeyOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.secrets_set(&key, &value).map_err(ipc_err)?;
+    Ok(supertask_core::ipc::SecretsKeyOutput { ok: true, key })
+}
+
+/// `secrets.delete`。
+#[tauri::command(rename = "secrets.delete")]
+pub fn secrets_delete(
+    state: EngineState<'_>,
+    workspace_id: String,
+    key: String,
+) -> Result<supertask_core::ipc::SecretsKeyOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.secrets_delete(&key).map_err(ipc_err)?;
+    Ok(supertask_core::ipc::SecretsKeyOutput { ok: true, key })
+}
+
+/// `secrets.validate`：required 缺失只列 key 名（§6.4）。
+#[tauri::command(rename = "secrets.validate")]
+pub fn secrets_validate(
+    state: EngineState<'_>,
+    workspace_id: String,
+    id: Option<String>,
+) -> Result<supertask_core::ipc::SecretsValidateOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.secrets_validate(id.as_deref()).map_err(ipc_err)
+}
+
+/// `logs.search`（长操作）：literal 搜索历史文件（§8.3）。
+#[tauri::command(rename = "logs.search")]
+pub fn logs_search(
+    state: EngineState<'_>,
+    hub: HubState<'_>,
+    workspace_id: String,
+    source: Option<SourceArg>,
+    query: String,
+    case_sensitive: Option<bool>,
+    limit: Option<u32>,
+) -> Result<OperationOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let src = source_from_arg(source);
+    let case = case_sensitive.unwrap_or(false);
+    let engine = state.inner().clone();
+    let op_id = hub.spawn("logs.search", move |_ctx| {
+        let r = engine.search_logs(src.as_ref(), &query, case, limit.map(|l| l as usize))?;
+        Ok(json_into(serde_json::json!({
+            "items": r.items,
+            "truncated": r.truncated,
+        }))?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
+/// `logs.export`（长操作）：text/jsonl 导出，不覆盖已有文件（§8.4）。
+/// destination 应来自 native save dialog（前端负责），core 只做存在性/父目录校验。
+#[tauri::command(rename = "logs.export")]
+pub fn logs_export(
+    state: EngineState<'_>,
+    hub: HubState<'_>,
+    workspace_id: String,
+    source: Option<SourceArg>,
+    query: Option<String>,
+    case_sensitive: Option<bool>,
+    format: String,
+    destination_path: String,
+) -> Result<OperationOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let src = source_from_arg(source);
+    let case = case_sensitive.unwrap_or(false);
+    let dest = PathBuf::from(&destination_path);
+    let engine = state.inner().clone();
+    let op_id = hub.spawn("logs.export", move |_ctx| {
+        let n = engine.export_logs(
+            src.as_ref(),
+            query.as_deref(),
+            case,
+            &format,
+            &dest,
+        )?;
+        Ok(json_into(serde_json::json!({ "count": n, "destination": dest.to_string_lossy() }))?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
+/// `logs.retention.run`（长操作）：按顶层 log_retention 清理轮转文件（§8.2）。
+#[tauri::command(rename = "logs.retention.run")]
+pub fn logs_retention_run(
+    state: EngineState<'_>,
+    hub: HubState<'_>,
+    workspace_id: String,
+) -> Result<OperationOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let engine = state.inner().clone();
+    let op_id = hub.spawn("logs.retention.run", move |_ctx| {
+        let s = engine.run_log_retention()?;
+        Ok(json_into(serde_json::json!({
+            "deleted_files": s.deleted_files,
+            "deleted_bytes": s.deleted_bytes,
+        }))?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
+/// `metrics.snapshot`：最近一次采样（§9.2）。
+#[tauri::command(rename = "metrics.snapshot")]
+pub fn metrics_snapshot(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::ipc::MetricsSnapshotOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.metrics_snapshot().map_err(ipc_err)
+}
+
+#[tauri::command(rename = "metrics.subscribe")]
+pub fn metrics_subscribe(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.metrics_subscribe().map_err(ipc_err)?;
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+#[tauri::command(rename = "metrics.unsubscribe")]
+pub fn metrics_unsubscribe(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.metrics_unsubscribe().map_err(ipc_err)?;
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
+/// `profiles.list`：active + 各 profile enabled 计数（§10）。
+#[tauri::command(rename = "profiles.list")]
+pub fn profiles_list(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::ipc::ProfilesListOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.profiles_list().map_err(ipc_err)
+}
+
+/// `profiles.activate`：忙则 PROFILE_SWITCH_BUSY；base_hash 结构化保存（§10.2）。
+#[tauri::command(rename = "profiles.activate")]
+pub fn profiles_activate(
+    state: EngineState<'_>,
+    workspace_id: String,
+    id: String,
+    base_hash: String,
+) -> Result<supertask_core::ipc::ProfilesActivateOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let (spec, hash) = state.profiles_activate(&id, &base_hash).map_err(ipc_err)?;
+    Ok(supertask_core::ipc::ProfilesActivateOutput {
+        spec: serde_yaml::to_value(&spec)
+            .map_err(|e| err(ErrorCode::Protocol, format!("序列化 spec 失败: {e}")))?,
+        hash,
+        active: id,
+    })
+}
+
+/// `runtime.build`（长操作）：package + artifact 选择，不启动（§11）。
+#[tauri::command(rename = "runtime.build")]
+pub fn runtime_build(
+    state: EngineState<'_>,
+    hub: HubState<'_>,
+    exiting: State<'_, Exiting>,
+    workspace_id: String,
+    id: String,
+) -> Result<OperationOut, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    require_current_workspace(&state, &workspace_id)?;
+    let engine = state.inner().clone();
+    let op_id = hub.spawn("runtime.build", move |ctx| {
+        ctx.report(None, format!("正在构建 {id}（package + artifact 解析）"));
+        let artifact = engine.build_jar(&id)?;
+        Ok(json_into(serde_json::json!({
+            "id": id,
+            "artifact": artifact.to_string_lossy(),
+        }))?)
+    });
+    Ok(OperationOut { operation_id: op_id })
+}
+
 
 // ---------------------------------------------------------------------------
 // Event bridge: drain Engine events -> Tauri events
@@ -1104,6 +1547,12 @@ pub fn spawn_event_bridge(app: AppHandle, engine: Arc<Engine>, hub: HubHandle) {
                         },
                     };
                     let _ = app.emit(supertask_core::ipc::event::RUNTIME, &payload);
+                    handled = true;
+                }
+                Some(supertask_core::EngineEvent::Metrics(payload)) => {
+                    let workspace = engine.workspace_id().unwrap_or_default();
+                    let ev = supertask_core::ipc::MetricsEvent::new(workspace, now_ms(), payload);
+                    let _ = app.emit(supertask_core::ipc::event::METRICS, &ev);
                     handled = true;
                 }
                 Some(supertask_core::EngineEvent::Logs { workspace_id, items }) => {

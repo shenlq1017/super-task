@@ -59,6 +59,13 @@ fn merge_env(ws: &IndexMap<String, String>, svc: &ServiceSpec) -> IndexMap<Strin
 }
 
 fn plan_spring(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<CommandSpec> {
+    let launch = svc.launch.as_deref().unwrap_or("run");
+    if launch != "run" {
+        return Err(Error::new(
+            ErrorCode::LaunchUnsupported,
+            format!("launch '{launch}' 本版尚未实现启动"),
+        ));
+    }
     let module = svc.module.as_deref().unwrap();
     // `-am` runs spring-boot:run on every reactor project, including aggregator
     // POMs that have no plugin. Also-make belongs in extra_args or bootstrap.
@@ -73,8 +80,7 @@ fn plan_spring(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<Comma
         args,
         cwd_rel: svc.cwd.clone().unwrap_or_else(|| ".".into()),
         env,
-    }
-    )
+    })
 }
 
 fn plan_node(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<CommandSpec> {
@@ -95,6 +101,36 @@ fn plan_node(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<Command
         cwd_rel: svc.dir.clone().unwrap(),
         env,
     })
+}
+
+/// 1.2 §11.2：`mvn [-pl module] package -DskipTests` + build_args（不默认 -am）。
+pub fn plan_jar_build(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<CommandSpec> {
+    let module = svc.module.as_deref().unwrap_or(".");
+    let mut args = if module == "." {
+        vec!["package".into()]
+    } else {
+        vec!["-pl".into(), module.into(), "package".into()]
+    };
+    args.push("-DskipTests".into());
+    args.extend(svc.build_args.iter().cloned());
+    Ok(CommandSpec {
+        program: "mvn.cmd".into(),
+        args,
+        cwd_rel: svc.cwd.clone().unwrap_or_else(|| ".".into()),
+        env,
+    })
+}
+
+/// 1.2 §11.2：`java -jar <artifact>` + extra_args；artifact 由 jar 编排插到 args[1]。
+pub fn plan_jar_run(svc: &ServiceSpec, env: IndexMap<String, String>) -> CommandSpec {
+    let mut args = vec!["-jar".into()];
+    args.extend(svc.extra_args.iter().cloned());
+    CommandSpec {
+        program: "java.exe".into(),
+        args,
+        cwd_rel: svc.cwd.clone().unwrap_or_else(|| ".".into()),
+        env,
+    }
 }
 
 pub fn log_file_rel(kind: &str, id: &str) -> PathBuf {
@@ -161,6 +197,7 @@ version: 1
 services:
   db:
     kind: compose
+    service: db
     extra: true
   api:
     kind: spring-boot
@@ -170,9 +207,29 @@ docker: {}
 "#,
         )
         .unwrap();
-        assert!(w.iter().any(|x| x.code == ErrorCode::KindUnsupported));
+        // 1.3 起 compose 是合法 kind（解析无警告）；启动支持在 phase 3 接入，
+        // 在此之前 plan_service 返回 KIND_UNSUPPORTED
+        assert!(!w.iter().any(|x| x.code == ErrorCode::KindUnsupported));
         assert!(f.docker.is_some());
         let e = plan_service(&f, "db").unwrap_err();
         assert_eq!(e.code(), ErrorCode::KindUnsupported);
+    }
+
+    #[test]
+    fn jar_launch_parses_but_cannot_start() {
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: spring-boot
+    module: api
+    port: 8080
+    launch: jar
+"#,
+        )
+        .unwrap();
+        let e = plan_service(&f, "api").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::LaunchUnsupported);
     }
 }

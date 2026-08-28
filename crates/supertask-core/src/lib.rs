@@ -12,13 +12,19 @@ pub mod ipc;
 pub mod launcher;
 pub mod log;
 pub mod merge;
+pub mod metrics;
+pub mod network;
 pub mod operation;
+pub mod ports;
 pub mod probe;
+pub mod profiles;
 pub mod runtime;
 pub mod sandbox;
 pub mod scan;
+pub mod secrets;
 pub mod spec;
 pub mod template;
+pub mod toolchain;
 
 #[cfg(windows)]
 pub mod job;

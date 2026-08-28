@@ -64,7 +64,7 @@ pub fn resolve_program(name: &str) -> Result<PathBuf> {
     }
     Err(Error::new(
         ErrorCode::MissingTool,
-        format!("未找到 {name}。请安装并确保在 PATH 中。1.2 将支持一键安装。"),
+        format!("未找到 {name}。请安装并确保在 PATH 中，或在「环境」页一键安装。"),
     ))
 }
 
@@ -183,7 +183,7 @@ pub fn require_tools_for_kind(kind: &str, pkg: Option<&str>) -> Result<()> {
                 return Err(Error::new(ErrorCode::MissingTool, "未找到 java。请安装 JDK 并确保在 PATH 中。"));
             }
             if !p.maven.found {
-                return Err(Error::new(ErrorCode::MissingTool, "未找到 mvn。请安装 Maven 并确保在 PATH 中。1.2 将支持一键安装。"));
+                return Err(Error::new(ErrorCode::MissingTool, "未找到 mvn。请安装 Maven 并确保在 PATH 中，或在「环境」页一键安装。"));
             }
         }
         "node" => {

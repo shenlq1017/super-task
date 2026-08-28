@@ -17,13 +17,22 @@ import {
   type ServiceRuntimeView,
   type SuperTaskFile,
   type TemplatesListOut,
-  type ToolchainProbe,
+  type ToolchainInstallOpts,
+  type ToolchainProbeOut,
   type WorkspaceOpenOut,
   type YamlSaveOut,
   type YamlView,
   type Accepted,
   type ForeignService,
   type LogSource,
+  type PortsInspectOut,
+  type PortsSuggestOut,
+  type PortsAssignOut,
+  type SecretsStatusOut,
+  type SecretsValidateOut,
+  type MetricsSnapshotOut,
+  type ProfilesListOut,
+  type ProfilesActivateOut,
 } from "./protocol";
 
 // ---------------------------------------------------------------------------
@@ -133,7 +142,110 @@ export const apiScriptCancel = (id: string) =>
 // Toolchain
 // ---------------------------------------------------------------------------
 
-export const apiToolchainProbe = () => invoke<ToolchainProbe>(cmd.TOOLCHAIN_PROBE, {});
+export const apiToolchainProbe = () => invoke<ToolchainProbeOut>(cmd.TOOLCHAIN_PROBE, {});
+
+/** 安装缺失工具链（长操作，返回 operation_id；§13.1）。persist 需带 baseHash。 */
+export const apiToolchainInstall = (tool: string, opts: ToolchainInstallOpts = {}) =>
+  invoke<OperationIdOut>(cmd.TOOLCHAIN_INSTALL, {
+    tool,
+    version: opts.version ?? null,
+    manager: opts.manager ?? null,
+    persist: opts.persist ?? false,
+    baseHash: opts.baseHash ?? null,
+  });
+
+/** 升级工具链（长操作，返回 operation_id；§13.1）。 */
+export const apiToolchainUpgrade = (tool: string, opts: ToolchainInstallOpts = {}) =>
+  invoke<OperationIdOut>(cmd.TOOLCHAIN_UPGRADE, {
+    tool,
+    version: opts.version ?? null,
+    manager: opts.manager ?? null,
+    persist: opts.persist ?? false,
+    baseHash: opts.baseHash ?? null,
+  });
+
+/** 1.2 §5–§10：端口 / secrets / 日志历史 / 指标 / profile / build。 */
+export const apiPortsInspect = (workspaceId: string) =>
+  invoke<PortsInspectOut>(cmd.PORTS_INSPECT, { workspaceId });
+
+export const apiPortsSuggest = (workspaceId: string, id: string) =>
+  invoke<PortsSuggestOut>(cmd.PORTS_SUGGEST, { workspaceId, id });
+
+export const apiPortsAssign = (
+  workspaceId: string,
+  id: string,
+  port: number,
+  baseHash: string,
+  restart?: boolean,
+) =>
+  invoke<PortsAssignOut>(cmd.PORTS_ASSIGN, {
+    workspaceId,
+    id,
+    port,
+    baseHash,
+    restart: restart ?? false,
+  });
+
+export const apiSecretsStatus = (workspaceId: string) =>
+  invoke<SecretsStatusOut>(cmd.SECRETS_STATUS, { workspaceId });
+
+export const apiSecretsSet = (workspaceId: string, key: string, value: string) =>
+  invoke<{ ok: boolean; key: string }>(cmd.SECRETS_SET, { workspaceId, key, value });
+
+export const apiSecretsDelete = (workspaceId: string, key: string) =>
+  invoke<{ ok: boolean; key: string }>(cmd.SECRETS_DELETE, { workspaceId, key });
+
+export const apiSecretsValidate = (workspaceId: string, id?: string) =>
+  invoke<SecretsValidateOut>(cmd.SECRETS_VALIDATE, { workspaceId, id: id ?? null });
+
+export const apiLogsSearch = (
+  workspaceId: string,
+  query: string,
+  opts?: { source?: LogSource | null; caseSensitive?: boolean; limit?: number },
+) =>
+  invoke<OperationIdOut>(cmd.LOGS_SEARCH, {
+    workspaceId,
+    source: opts?.source ?? null,
+    query,
+    caseSensitive: opts?.caseSensitive ?? false,
+    limit: opts?.limit ?? null,
+  });
+
+export const apiLogsExport = (
+  workspaceId: string,
+  format: "text" | "jsonl",
+  destinationPath: string,
+  opts?: { source?: LogSource | null; query?: string | null; caseSensitive?: boolean },
+) =>
+  invoke<OperationIdOut>(cmd.LOGS_EXPORT, {
+    workspaceId,
+    source: opts?.source ?? null,
+    query: opts?.query ?? null,
+    caseSensitive: opts?.caseSensitive ?? false,
+    format,
+    destinationPath,
+  });
+
+export const apiLogsRetentionRun = (workspaceId: string) =>
+  invoke<OperationIdOut>(cmd.LOGS_RETENTION_RUN, { workspaceId });
+
+export const apiMetricsSnapshot = (workspaceId: string) =>
+  invoke<MetricsSnapshotOut>(cmd.METRICS_SNAPSHOT, { workspaceId });
+
+export const apiMetricsSubscribe = (workspaceId: string) =>
+  invoke<{ ok: boolean }>(cmd.METRICS_SUBSCRIBE, { workspaceId });
+
+export const apiMetricsUnsubscribe = (workspaceId: string) =>
+  invoke<{ ok: boolean }>(cmd.METRICS_UNSUBSCRIBE, { workspaceId });
+
+export const apiProfilesList = (workspaceId: string) =>
+  invoke<ProfilesListOut>(cmd.PROFILES_LIST, { workspaceId });
+
+export const apiProfilesActivate = (workspaceId: string, id: string, baseHash: string) =>
+  invoke<ProfilesActivateOut>(cmd.PROFILES_ACTIVATE, { workspaceId, id, baseHash });
+
+export const apiRuntimeBuild = (workspaceId: string, id: string) =>
+  invoke<OperationIdOut>(cmd.RUNTIME_BUILD, { workspaceId, id });
 
 // ---------------------------------------------------------------------------
 // Logs

@@ -55,7 +55,6 @@ pub const SOON_COMMANDS: &[(&str, &str)] = &[
     ("cloud.login", "2.0"),
     ("cloud.sync", "2.0"),
     ("ai.complete", "2.1"),
-    ("toolchain.install", "1.2"),
 ];
 
 pub fn reject_soon_command(cmd: &str) -> Option<crate::Error> {

@@ -28,6 +28,24 @@ export const cmd = {
   SCRIPT_RUN: "script.run",
   SCRIPT_CANCEL: "script.cancel",
   TOOLCHAIN_PROBE: "toolchain.probe",
+  TOOLCHAIN_INSTALL: "toolchain.install",
+  TOOLCHAIN_UPGRADE: "toolchain.upgrade",
+  PORTS_INSPECT: "ports.inspect",
+  PORTS_SUGGEST: "ports.suggest",
+  PORTS_ASSIGN: "ports.assign",
+  SECRETS_STATUS: "secrets.status",
+  SECRETS_SET: "secrets.set",
+  SECRETS_DELETE: "secrets.delete",
+  SECRETS_VALIDATE: "secrets.validate",
+  LOGS_SEARCH: "logs.search",
+  LOGS_EXPORT: "logs.export",
+  LOGS_RETENTION_RUN: "logs.retention.run",
+  METRICS_SNAPSHOT: "metrics.snapshot",
+  METRICS_SUBSCRIBE: "metrics.subscribe",
+  METRICS_UNSUBSCRIBE: "metrics.unsubscribe",
+  PROFILES_LIST: "profiles.list",
+  PROFILES_ACTIVATE: "profiles.activate",
+  RUNTIME_BUILD: "runtime.build",
   LOGS_SUBSCRIBE: "logs.subscribe",
   LOGS_UNSUBSCRIBE: "logs.unsubscribe",
   LOGS_SNAPSHOT: "logs.snapshot",
@@ -82,6 +100,110 @@ export type ToolchainProbe = {
   npm: ToolProbe;
   pnpm: ToolProbe;
   yarn: ToolProbe;
+};
+
+/** 1.2：provider 可用性（toolchain.probe 输出扩展字段）。 */
+export type ManagerAvailability = {
+  mise: boolean;
+  winget: boolean;
+};
+
+/** `toolchain.probe` 输出：原有六工具探测 + managers（§13.1）。 */
+export type ToolchainProbeOut = ToolchainProbe & { managers: ManagerAvailability };
+
+/** `toolchain.install` / `toolchain.upgrade` 选项（§13.1：version/manager 缺省走后端默认）。 */
+export type ToolchainInstallOpts = {
+  version?: string | null;
+  manager?: "auto" | "mise" | "winget" | null;
+  /** true 时必须携带 baseHash，把版本写回工作区 toolchain。 */
+  persist?: boolean;
+  baseHash?: string | null;
+};
+
+/** 1.2 §5：端口检查/改端口（对应 core ipc::PortInspection 等）。 */
+export type PortInspection = {
+  id: string;
+  port: number;
+  in_use: boolean;
+  pid: number | null;
+  process_name: string | null;
+  managed: boolean;
+};
+
+export type PortsInspectOut = { items: PortInspection[] };
+export type PortsSuggestOut = { candidates: number[] };
+export type PortsAssignOut = {
+  operation_id: string | null;
+  spec: unknown;
+  hash: string;
+  restart_required: boolean;
+  notes: string[];
+};
+
+/** 1.2 §6：secrets——状态只含 key 名，绝不含值。 */
+export type SecretKeyStatus = {
+  key: string;
+  source: string;
+  present: boolean;
+  parse_ok: boolean | null;
+  git_tracked: boolean | null;
+};
+export type SecretsStatusOut = {
+  backend: string;
+  file: string | null;
+  keys: SecretKeyStatus[];
+  git_ignored: boolean;
+};
+export type SecretsValidateOut = {
+  ok: boolean;
+  missing: string[];
+  warnings: string[];
+};
+
+/** 1.2 §8：日志历史搜索（literal）。 */
+export type LogSearchHit = {
+  kind: string;
+  id: string;
+  file: string;
+  line_no: number;
+  text: string;
+  ts: number | null;
+};
+export type LogsSearchResult = { items: LogSearchHit[]; truncated: boolean };
+
+/** 1.2 §9：指标样本。 */
+export type ServiceMetrics = {
+  cpu_percent: number | null;
+  memory_bytes: number | null;
+  process_count: number | null;
+  sampled_at_ms: number;
+};
+export type MetricsSnapshotOut = {
+  services: Record<string, ServiceMetrics | null>;
+};
+
+/** 1.2 §10：profile。 */
+export type ProfileSummary = { id: string; enabled_count: number | null };
+export type ProfilesListOut = { active: string; profiles: ProfileSummary[] };
+export type ProfilesActivateOut = { spec: unknown; hash: string; active: string };
+
+/** st.metrics 事件信封负载。 */
+export type MetricsEventPayload = {
+  protocol: number;
+  event: "st.metrics";
+  workspace_id: string;
+  ts_ms: number;
+  payload: { services: Record<string, ServiceMetrics | null> };
+};
+
+/** 安装/升级 operation 成功终态的 result 负载。 */
+export type ToolchainOpResult = {
+  tool: string;
+  version: string;
+  manager: "mise" | "winget";
+  path: string;
+  /** persist=true 时返回写回后的新 hash。 */
+  hash?: string;
 };
 
 /** app.load 的 prefs（除本类型外其余 DTO 均为 snake_case）。 */
@@ -153,6 +275,8 @@ export type LoggingSpec = {
 
 export type ServiceSpec = {
   kind: string;
+  /** 1.3 kind: compose：compose 文件内的服务名（非 SuperTask id）。 */
+  service?: string | null;
   enabled: boolean;
   group?: string | null;
   labels: Record<string, string>;
@@ -184,6 +308,30 @@ export type ScriptSpec = {
   depends_on: string[];
 };
 
+/** 1.2 顶层 toolchain 段（typed，工作区版本要求）。 */
+export type ToolchainSpec = {
+  manager?: "auto" | "mise" | "winget" | null;
+  java?: string | null;
+  maven?: string | null;
+  node?: string | null;
+  package_manager?: PackageManager | null;
+};
+
+/** 1.3 `docker.builds` 条目。context/dockerfile 相对 root。 */
+export type DockerBuild = {
+  name: string;
+  context: string;
+  dockerfile?: string | null;
+  tags: string[];
+};
+
+/** 1.3 顶层 `docker` 段（typed）。compose 文件是容器行为唯一真源。 */
+export type DockerSpec = {
+  compose_file?: string | null;
+  project_name?: string | null;
+  builds: DockerBuild[];
+};
+
 export type SuperTaskFile = {
   version: number;
   kind?: string | null;
@@ -194,13 +342,27 @@ export type SuperTaskFile = {
   services: Record<string, ServiceSpec>;
   scripts: Record<string, ScriptSpec>;
   logging?: LoggingSpec | null;
+  toolchain?: ToolchainSpec | null;
+  docker?: DockerSpec | null;
+  secrets?: { backend?: string | null; file?: string | null; required?: string[] } | null;
+  profiles?: {
+    active?: string | null;
+    items?: Record<string, unknown>;
+  } | null;
 };
 
 // ---------------------------------------------------------------------------
 // Runtime DTOs — mirror `crates/supertask-core/src/engine.rs`
 // ---------------------------------------------------------------------------
 
-export type RtState = "stopped" | "starting" | "running" | "unhealthy" | "stopping" | "exited";
+export type RtState =
+  | "stopped"
+  | "building"
+  | "starting"
+  | "running"
+  | "unhealthy"
+  | "stopping"
+  | "exited";
 export type ScriptState = "idle" | "running" | "exited";
 
 export type HealthView = { ok: boolean; at_ms: number; detail: string };
@@ -215,6 +377,7 @@ export type ServiceRuntimeView = {
   health?: HealthView | null;
   started_at_ms?: number | null;
   last_exit?: ExitView | null;
+  exit_reason?: string | null;
   last_error?: string | null;
   log_seq: number;
   /** false = 外部进程（端口识别，仅监控；停止走 taskkill） */
@@ -250,6 +413,8 @@ export type RuntimeSnapshot = {
   workspace_id: string;
   services: Record<string, ServiceRuntimeView>;
   script?: ScriptRuntimeView | null;
+  /** 1.2：最近一次 Job 指标快照；未订阅或无 Job 时为空。 */
+  metrics?: Record<string, ServiceMetrics | null>;
 };
 
 // ---------------------------------------------------------------------------
@@ -289,7 +454,12 @@ export type RuntimeEventPayload = {
   event: "st.runtime";
   workspace_id: string;
   ts_ms: number;
-  payload: { reason: string; services: Record<string, ServiceRuntimeView>; script: ScriptRuntimeView | null };
+  payload: {
+    reason: string;
+    services: Record<string, ServiceRuntimeView>;
+    script: ScriptRuntimeView | null;
+    metrics?: Record<string, ServiceMetrics | null>;
+  };
 };
 
 export type LogsEventPayload = {

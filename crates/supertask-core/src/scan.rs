@@ -142,6 +142,8 @@ pub fn scan_draft(root: &Path) -> Result<(SuperTaskFile, Vec<String>)> {
         gateway: None,
         cloud: None,
         ai: None,
+        network: None,
+        log_retention: None,
         extra: IndexMap::new(),
     };
     // Maven 工程给一个「安装依赖」引导脚本；cwd 指向首个 reactor 根
@@ -168,6 +170,7 @@ impl ServiceSpec {
     fn default_service() -> Self {
         Self {
             kind: String::new(),
+            service: None,
             enabled: true,
             group: None,
             labels: IndexMap::new(),
@@ -190,6 +193,7 @@ impl ServiceSpec {
             script: None,
             logging: None,
             resources: None,
+            build_args: vec![],
             extra: IndexMap::new(),
         }
     }

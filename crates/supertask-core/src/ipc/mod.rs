@@ -13,6 +13,9 @@ pub const LOG_BATCH_ITEMS: usize = 32;
 pub const LOG_BATCH_MS: u64 = 50;
 pub const PROTOCOL: u32 = 1;
 
+mod v12;
+pub use v12::*;
+
 /// Stable invoke names. Tauri layer must register these (or map 1:1).
 pub mod cmd {
     pub const SESSION_HELLO: &str = "session.hello";
@@ -40,11 +43,33 @@ pub mod cmd {
     pub const LOGS_UNSUBSCRIBE: &str = "logs.unsubscribe";
     pub const LOGS_SNAPSHOT: &str = "logs.snapshot";
     pub const LOGS_CLEAR_VIEW: &str = "logs.clearView";
+    // ---- 1.2 (types only; handlers in later phases) ----
+    pub const TOOLCHAIN_INSTALL: &str = "toolchain.install";
+    pub const TOOLCHAIN_UPGRADE: &str = "toolchain.upgrade";
+    pub const PORTS_INSPECT: &str = "ports.inspect";
+    pub const PORTS_SUGGEST: &str = "ports.suggest";
+    pub const PORTS_ASSIGN: &str = "ports.assign";
+    pub const SECRETS_STATUS: &str = "secrets.status";
+    pub const SECRETS_SET: &str = "secrets.set";
+    pub const SECRETS_DELETE: &str = "secrets.delete";
+    pub const SECRETS_VALIDATE: &str = "secrets.validate";
+    pub const NETWORK_SAVE: &str = "network.save";
+    pub const LOGS_SEARCH: &str = "logs.search";
+    pub const LOGS_EXPORT: &str = "logs.export";
+    pub const LOGS_RETENTION_RUN: &str = "logs.retention.run";
+    pub const METRICS_SNAPSHOT: &str = "metrics.snapshot";
+    pub const METRICS_SUBSCRIBE: &str = "metrics.subscribe";
+    pub const METRICS_UNSUBSCRIBE: &str = "metrics.unsubscribe";
+    pub const PROFILES_LIST: &str = "profiles.list";
+    pub const PROFILES_ACTIVATE: &str = "profiles.activate";
+    pub const RUNTIME_BUILD: &str = "runtime.build";
 }
 
 pub mod event {
     pub const RUNTIME: &str = "st.runtime";
     pub const LOGS: &str = "st.logs";
+    pub const METRICS: &str = "st.metrics";
+    pub const OPERATION: &str = "st.operation";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

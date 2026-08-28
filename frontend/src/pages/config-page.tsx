@@ -8,7 +8,17 @@ import { cn } from "@/lib/utils";
 import { useYaml } from "@/providers/yaml-provider";
 import { useWorkspace } from "@/providers/workspace-provider";
 import { useToast } from "@/components/ui/toast";
-import { apiScanApply, apiScanPreview, apiYamlGet } from "../ipc/api";
+import {
+  apiScanApply,
+  apiScanPreview,
+  apiYamlGet,
+  apiProfilesList,
+  apiProfilesActivate,
+  apiSecretsStatus,
+  apiSecretsValidate,
+  apiSecretsSet,
+  apiSecretsDelete,
+} from "../ipc/api";
 import { IpcFailure } from "../ipc/protocol";
 import type {
   MergeChoice,
@@ -50,6 +60,129 @@ function detectCycle(spec: SuperTaskFile): string[] | null {
     }
   }
   return null;
+}
+
+function V12ConfigPanel() {
+  const ws = useWorkspace();
+  const yaml = useYaml();
+  const { toast } = useToast();
+  const wid = ws.state.workspaceId;
+  const [profiles, setProfiles] = useState<import("@/ipc/protocol").ProfilesListOut | null>(null);
+  const [secrets, setSecrets] = useState<import("@/ipc/protocol").SecretsStatusOut | null>(null);
+  const [secretKey, setSecretKey] = useState("");
+  const [secretValue, setSecretValue] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const reload = async () => {
+    if (!wid) return;
+    setLoading(true);
+    try {
+      const [p, s] = await Promise.all([apiProfilesList(wid), apiSecretsStatus(wid)]);
+      setProfiles(p);
+      setSecrets(s);
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void reload(); }, [wid]);
+
+  const activate = async (id: string) => {
+    if (!wid || !yaml.state.hash) return;
+    try {
+      await apiProfilesActivate(wid, id, yaml.state.hash);
+      await Promise.all([yaml.actions.reload(), ws.actions.refreshSpec()]);
+      await reload();
+      toast(`已切换到 profile：${id}`, "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    }
+  };
+
+  const saveSecret = async () => {
+    if (!wid || !secretKey.trim()) return;
+    try {
+      await apiSecretsSet(wid, secretKey.trim(), secretValue);
+      setSecretValue("");
+      await reload();
+      toast(`已保存 ${secretKey.trim()}（值不会回显）`, "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    }
+  };
+
+  const deleteSecret = async (key: string) => {
+    if (!wid) return;
+    try {
+      await apiSecretsDelete(wid, key);
+      await reload();
+      toast(`已删除 ${key}`, "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    }
+  };
+
+  const validateSecrets = async () => {
+    if (!wid) return;
+    try {
+      const out = await apiSecretsValidate(wid);
+      toast(out.ok ? "必需密钥检查通过" : `缺少：${out.missing.join(", ")}`, out.ok ? "ok" : "warn");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    }
+  };
+
+  return (
+    <section className="border-b border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] px-4 py-3">
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <h3 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">Profile</h3>
+            <Badge variant="secondary">只覆盖 env / enabled / port</Badge>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="h-8 min-w-[10rem] rounded-[var(--r-sm,8px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-2 text-xs"
+              value={profiles?.active ?? "default"}
+              onChange={(e) => void activate(e.target.value)}
+              disabled={!wid || loading || !profiles || profiles.profiles.length === 0}
+              aria-label="当前 profile"
+            >
+              <option value="default">default（隐式）</option>
+              {profiles?.profiles.map((p) => <option key={p.id} value={p.id}>{p.id}{p.enabled_count != null ? ` · ${p.enabled_count} 项启用` : ""}</option>)}
+            </select>
+            <Button variant="outline" size="sm" onClick={() => void reload()} disabled={!wid || loading}>刷新</Button>
+          </div>
+          <p className="mt-2 text-[0.7rem] text-[var(--t3,#8a8f98)]">运行中的服务或脚本会阻止切换，避免运行态与配置不一致。</p>
+        </div>
+
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <h3 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">Secret 文件</h3>
+            {secrets?.file ? <Badge variant="outline">{secrets.file}</Badge> : <Badge variant="outline">用户环境</Badge>}
+            <Button className="ml-auto" variant="outline" size="sm" onClick={() => void validateSecrets()} disabled={!wid}>校验必需项</Button>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {secrets?.keys.length ? secrets.keys.map((item) => (
+              <div key={item.key} className="flex items-center gap-2 rounded bg-[var(--surface,#fff)] px-2 py-1 text-xs">
+                <code className="min-w-0 flex-1 truncate font-mono">{item.key}</code>
+                <Badge variant={item.present ? "default" : "outline"}>{item.present ? "已设置" : "缺失"}</Badge>
+                {item.git_tracked ? <Badge variant="outline" className="border-red-200 text-red-600">Git tracked</Badge> : null}
+                <Button variant="ghost" size="sm" onClick={() => void deleteSecret(item.key)}>删除</Button>
+              </div>
+            )) : <span className="text-xs text-[var(--t3,#8a8f98)]">暂无状态；可在下方新增 key。</span>}
+          </div>
+          <div className="mt-2 flex gap-2">
+            <Input className="h-8 font-mono text-xs" placeholder="KEY_NAME" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} aria-label="secret key" />
+            <Input className="h-8 text-xs" type="password" placeholder="值不会回显" value={secretValue} onChange={(e) => setSecretValue(e.target.value)} aria-label="secret value" />
+            <Button size="sm" onClick={() => void saveSecret()} disabled={!wid || !secretKey.trim()}>保存</Button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function FormTab() {
@@ -606,6 +739,8 @@ export function ConfigPage() {
           <RefreshCw className={cn("size-3.5", scanning && "animate-spin")} /> 重新扫描
         </Button>
       </div>
+
+      <V12ConfigPanel />
 
       {preview ? (
         <ScanPreviewPanel

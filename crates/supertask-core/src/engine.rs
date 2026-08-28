@@ -48,6 +48,9 @@ pub struct ServiceRuntimeView {
     pub started_at_ms: Option<u64>,
     pub last_exit: Option<ExitView>,
     pub last_error: Option<String>,
+    /// 1.2 §8.5：进程退出原因（"crash"/"stop"），崩溃通知与 toast 用
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_reason: Option<String>,
     pub log_seq: u64,
     /// false = 外部进程（端口探测识别，无 Job 无法优雅树管理）
     #[serde(default = "default_true")]
@@ -81,6 +84,9 @@ pub struct RuntimeSnapshot {
     pub workspace_id: String,
     pub services: IndexMap<String, ServiceRuntimeView>,
     pub script: Option<ScriptRuntimeView>,
+    /// 1.2 §9：最近一次指标快照（无采样时为空表）
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub metrics: IndexMap<String, Option<crate::ipc::ServiceMetrics>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,10 +96,22 @@ pub struct YamlView {
     pub hash: String,
 }
 
+/// ports.assign 返回视图：预览（restart_required=true）或已保存的新配置。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PortsAssignView {
+    pub spec: SuperTaskFile,
+    pub hash: String,
+    /// §5.3：显式环境变量/自定义健康 URL 未跟随的提示
+    pub notes: Vec<String>,
+    pub restart_required: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
     Runtime(RuntimeSnapshot),
     Logs { workspace_id: String, items: Vec<LogLine> },
+    /// 1.2 §9.2：sampler 批量指标（仅订阅时产生）
+    Metrics(crate::ipc::MetricsPayload),
 }
 
 #[derive(Clone, Copy)]
@@ -123,6 +141,10 @@ struct Slot {
     cancel: Arc<AtomicBool>,
     /// 外部进程（端口被占时识别为已运行的非 SuperTask 托管实例）
     managed: bool,
+    /// 1.2 launch: jar：已构建 artifact 的绝对路径
+    artifact: Option<PathBuf>,
+    /// 1.2 §8.5：进程退出原因（crash / stop）
+    exit_reason: Option<&'static str>,
 }
 
 struct ScriptSlot {
@@ -150,6 +172,10 @@ struct Inner {
     subscribers: u32,
     events: SyncSender<EngineEvent>,
     log_tx: Sender<LogLine>,
+    /// 1.2 §9 metrics：订阅计数、最近样本、上一窗口 CPU 时间（差分用）
+    metrics_sub: u32,
+    metrics: IndexMap<String, Option<crate::ipc::ServiceMetrics>>,
+    metrics_prev: HashMap<String, (u64, Instant)>,
 }
 
 /// 切换工作区时移交给全局注册表的进程存活信息。
@@ -221,6 +247,9 @@ impl Engine {
             subscribers: 0,
             events: events_tx.clone(),
             log_tx: log_tx.clone(),
+            metrics_sub: 0,
+            metrics: IndexMap::new(),
+            metrics_prev: HashMap::new(),
         }));
         let inner_b = Arc::clone(&inner);
         thread::Builder::new()
@@ -241,14 +270,16 @@ impl Engine {
         let (yaml_path, text, file, mut warnings) = load_yaml_at(&root)?;
         let workspace_id = root.to_string_lossy().into_owned();
         let mut slots = HashMap::new();
+        let _ = crate::log::run_retention(&root, file.log_retention.as_ref());
         let mut files = HashMap::new();
         for (id, svc) in &file.services {
             let rel = log_file_rel("service", id);
             let abs = root.join(&rel);
-            let lf = LogFile::open(
+            let lf = LogFile::open_with_files(
                 abs,
                 file.logging.as_ref().and_then(|l| l.max_bytes),
                 file.logging.as_ref().and_then(|l| l.retain_tail_bytes),
+                file.log_retention.as_ref().and_then(|r| r.max_files),
             )
             .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法创建日志文件: {e}")))?;
             files.insert(id.clone(), lf);
@@ -280,6 +311,8 @@ impl Engine {
                     last_exit: None,
                     cancel: Arc::new(AtomicBool::new(false)),
                     managed,
+                    artifact: None,
+                    exit_reason: None,
                 },
             );
         }
@@ -548,11 +581,11 @@ impl Engine {
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
             if matches!(
                 slot.state,
-                RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+                RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping | RtState::Building
             ) {
                 return Err(Error::new(
                     ErrorCode::AlreadyInProgress,
-                    format!("{id} 已在运行或正在切换"),
+                    format!("{id} 已在运行、正在切换或构建"),
                 ));
             }
         }
@@ -569,8 +602,19 @@ impl Engine {
             start_order(&g.spec)?
         };
         for id in &order {
+            let disabled = {
+                let g = self.inner.lock().expect("engine lock");
+                crate::profiles::effective_service(&g.spec, id)
+                    .map(|e| !e.enabled)
+                    .unwrap_or(false)
+            };
+            if disabled {
+                continue; // §10：profile 关闭的服务在 startAll 中跳过
+            }
             match self.ensure_started(id) {
                 Ok(()) => {
+                    // launch: jar 先经历 Building（package 可达数分钟）
+                    self.wait_building_done(id, Duration::from_secs(20 * 60))?;
                     self.wait_ready(id, Duration::from_secs(90))?;
                     if self.state_of(id) == Some(RtState::Exited) {
                         // dependents will see DEP_DEAD
@@ -669,10 +713,11 @@ impl Engine {
             }
             let rel = log_file_rel("script", id);
             let abs = g.root.join(&rel);
-            let lf = LogFile::open(
+            let lf = LogFile::open_with_files(
                 abs,
                 g.spec.logging.as_ref().and_then(|l| l.max_bytes),
                 g.spec.logging.as_ref().and_then(|l| l.retain_tail_bytes),
+                g.spec.log_retention.as_ref().and_then(|r| r.max_files),
             )
             .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法创建脚本日志: {e}")))?;
             g.script_file = Some(lf);
@@ -740,6 +785,15 @@ impl Engine {
             svc.depends_on.clone()
         };
         for dep in &deps {
+            let dep_disabled = {
+                let g = self.inner.lock().expect("engine lock");
+                crate::profiles::effective_service(&g.spec, dep)
+                    .map(|e| !e.enabled)
+                    .unwrap_or(false)
+            };
+            if dep_disabled {
+                continue; // 禁用依赖不拉起，视为满足
+            }
             self.ensure_started(dep)?;
             self.wait_ready(dep, Duration::from_secs(90))?;
             match self.state_of(dep) {
@@ -755,136 +809,366 @@ impl Engine {
         self.spawn_service(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_service(&self, id: &str) -> Result<()> {
-        let (planned, root, health_spec, health_none, port, kind, pkg, svc_grace) = {
+        let (run_spec, build_spec, root, health_spec, health_none, port, kind, pkg, svc_grace, is_jar) = {
             let g = self.inner.lock().expect("engine lock");
             let slot = g
                 .slots
                 .get(id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
             match slot.state {
-                RtState::Starting | RtState::Running | RtState::Unhealthy => {
-                    return Ok(());
-                }
-                RtState::Stopping => {
+                RtState::Starting | RtState::Running | RtState::Unhealthy => return Ok(()),
+                RtState::Stopping | RtState::Building => {
                     return Err(Error::new(
                         ErrorCode::AlreadyInProgress,
-                        format!("{id} 正在停止"),
+                        format!("{id} 正在停止或构建"),
                     ));
                 }
                 RtState::Stopped | RtState::Exited => {}
             }
-            let svc = g.spec.services.get(id).unwrap();
-            let planned = plan_service(&g.spec, id)?;
-            let hs = svc.health.clone();
-            let health_none = hs
+            // 1.2 §10：base + active profile overlay（不写回 base 字段）
+            let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
+            let eff_svc = eff_spec.services.get(id).unwrap().clone();
+            let is_jar = eff_svc.kind == "spring-boot" && eff_svc.launch.as_deref() == Some("jar");
+            // §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入
+            let env = build_service_env(&eff_spec, id, &g.root)?;
+            let (planned, build_spec) = if is_jar {
+                let build = crate::launcher::plan_jar_build(&eff_svc, env.clone())?;
+                let run = crate::launcher::plan_jar_run(&eff_svc, env);
+                (run, Some(build))
+            } else {
+                let mut planned = plan_service(&eff_spec, id)?;
+                planned.env = env;
+                (planned, None)
+            };
+            let health_spec = eff_svc.health.clone();
+            let health_none = health_spec
                 .as_ref()
                 .map(|h| h.r#type == HealthType::None)
                 .unwrap_or(true);
-            let pkg = svc.package_manager.map(|p| match p {
+            let pkg = eff_svc.package_manager.map(|p| match p {
                 crate::spec::PackageManager::Npm => "npm",
                 crate::spec::PackageManager::Pnpm => "pnpm",
                 crate::spec::PackageManager::Yarn => "yarn",
             });
             (
                 planned,
+                build_spec,
                 g.root.clone(),
-                hs,
+                health_spec,
                 health_none,
-                svc.port,
-                svc.kind.clone(),
+                eff_svc.port,
+                eff_svc.kind.clone(),
                 pkg,
-                svc.grace_secs.unwrap_or(0) as u64,
+                eff_svc.grace_secs.unwrap_or(0) as u64,
+                is_jar,
             )
         };
+
+        if is_jar {
+            // 1.2 §11：package（Building）→ artifact → java -jar。构建在后台线程，
+            // startOne 立即 accepted；输出进服务日志。
+            let inner = Arc::clone(&self.inner);
+            let id2 = id.to_string();
+            let spawner = self.spawner;
+            let _ = thread::Builder::new()
+                .name(format!("st-jar-{id}"))
+                .spawn(move || {
+                    let r = jar_flow(
+                        inner.clone(),
+                        &id2,
+                        build_spec.expect("jar build spec"),
+                        run_spec,
+                        root,
+                        health_spec,
+                        health_none,
+                        port,
+                        kind,
+                        pkg,
+                        svc_grace,
+                        spawner,
+                    );
+                    if let Err(e) = r {
+                        jar_flow_fail(&inner, &id2, e);
+                    }
+                });
+            return Ok(());
+        }
 
         if matches!(self.spawner, SpawnerKind::Real) {
             probe::require_tools_for_kind(&kind, pkg)?;
         }
+        let cwd = resolve_cwd(&root, &run_spec.cwd_rel)?;
+        spawn_core(
+            Arc::clone(&self.inner),
+            id.to_string(),
+            run_spec,
+            cwd,
+            health_spec,
+            health_none,
+            port,
+            kind,
+            pkg,
+            svc_grace,
+            self.spawner,
+        )
+    }
 
-        let cwd_rel = if planned.cwd_rel == "." {
-            root.clone()
-        } else {
-            sandbox::confine(&root, &planned.cwd_rel)?
-        };
-        if !cwd_rel.is_dir() {
-            return Err(Error::new(
-                ErrorCode::CwdMissing,
-                format!("工作目录不存在: {}", cwd_rel.display()),
-            ));
-        }
+    // -------------------------------------------------------------------
+    // 1.2 phase 3–6：端口 / secrets / 日志 / 指标 / profile / build
+    // -------------------------------------------------------------------
 
-        let (mut child, job) = match self.spawner {
-            SpawnerKind::Real => spawn_real(&planned, &cwd_rel)?,
-            #[cfg(test)]
-            SpawnerKind::Ping => spawn_ping()?,
-            #[cfg(test)]
-            SpawnerKind::Fail => spawn_fail()?,
-        };
-        let pid = child.id();
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        {
-            let mut g = self.inner.lock().expect("engine lock");
-            let slot = g.slots.get_mut(id).unwrap();
-            // 同步当前 spec 的 port/kind/grace：改端口保存后（服务此前在运行，
-            // apply_spec_slots 不会更新），重启仍要显示新配置，健康检查也跟随
-            slot.port = port;
-            slot.kind = kind.clone();
-            slot.grace = Duration::from_secs(svc_grace);
-            slot.cancel = Arc::new(AtomicBool::new(false));
-            slot.stop_requested = false;
-            slot.job = Some(Arc::new(job));
-            slot.pid = Some(pid);
-            slot.started = Some(Instant::now());
-            slot.started_at_ms = Some(now_ms());
-            slot.last_error = None;
-            match apply(slot.state, RtEvent::Spawned { health_none }) {
-                Ok(s) => slot.state = s,
-                Err(e) => {
-                    slot.last_error = Some(e.to_string());
-                }
-            }
-            emit_runtime(&g);
-        }
-
-        let cancel = {
+    /// §5.1 端口检查：本机 TCP 监听表 + 引擎托管 PID 对照。
+    pub fn ports_inspect(&self) -> Result<Vec<crate::ipc::PortInspection>> {
+        let (spec, managed) = {
             let g = self.inner.lock().expect("engine lock");
-            g.slots.get(id).unwrap().cancel.clone()
+            require_ws(&g)?;
+            let managed: std::collections::HashSet<u32> = g
+                .slots
+                .values()
+                .filter(|s| s.managed)
+                .filter_map(|s| s.pid)
+                .collect();
+            (g.spec.clone(), managed)
         };
-        let inner = Arc::clone(&self.inner);
-        if let Some(out) = stdout {
-            spawn_pump(
-                Arc::clone(&inner),
-                LogSource {
-                    kind: LogSourceKind::Service,
-                    id: id.to_string(),
-                },
-                LogStream::Stdout,
-                out,
-                Arc::clone(&cancel),
-            );
+        let listeners = crate::ports::tcp_listeners()?;
+        Ok(crate::ports::inspect(&spec, &listeners, &managed))
+    }
+
+    /// §5.2 建议端口（跳过兄弟服务/系统保留/已监听）。
+    pub fn ports_suggest(&self, id: &str) -> Result<Vec<u16>> {
+        let spec = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            g.spec.clone()
+        };
+        let listeners = crate::ports::tcp_listeners()?;
+        crate::ports::suggest(&spec, id, &listeners)
+    }
+
+    /// §5.3/§5.4 一键改端口。运行中且未确认 restart → 只预览（restart_required）。
+    /// restart=true：stop → 结构化保存（base_hash 冲突不部分写入）→ start。
+    pub fn ports_assign(
+        &self,
+        id: &str,
+        port: u16,
+        base_hash: &str,
+        restart: bool,
+    ) -> Result<PortsAssignView> {
+        let running = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            let slot = g
+                .slots
+                .get(id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+            matches!(
+                slot.state,
+                RtState::Starting
+                    | RtState::Running
+                    | RtState::Unhealthy
+                    | RtState::Stopping
+                    | RtState::Building
+            )
+        };
+        let mut preview = self.spec()?;
+        let notes = crate::ports::apply_port_assign(&mut preview, id, port)?;
+        if running && !restart {
+            let hash = self.yaml_get()?.hash;
+            return Ok(PortsAssignView {
+                spec: preview,
+                hash,
+                notes,
+                restart_required: true,
+            });
         }
-        if let Some(err) = stderr {
-            spawn_pump(
-                Arc::clone(&inner),
-                LogSource {
-                    kind: LogSourceKind::Service,
-                    id: id.to_string(),
-                },
-                LogStream::Stderr,
-                err,
-                Arc::clone(&cancel),
-            );
+        if running {
+            self.stop_one(id)?;
         }
-        spawn_waiter(Arc::clone(&inner), id.to_string(), child);
-        if !health_none {
-            if let Some(hs) = health_spec {
-                spawn_health(Arc::clone(&inner), id.to_string(), hs, port, cancel);
-            }
+        let saved = self.save_form(&preview, base_hash);
+        if running {
+            // stop 已成功但保存失败：服务保持 stopped，错误原样上抛（§5.4）
+            let (spec, hash, _) = saved?;
+            self.start_one(id)?;
+            return Ok(PortsAssignView { spec, hash, notes, restart_required: false });
+        }
+        let (spec, hash, _) = saved?;
+        Ok(PortsAssignView { spec, hash, notes, restart_required: false })
+    }
+
+    // ---- secrets（值绝不返回）----
+
+    pub fn secrets_status(&self) -> Result<crate::ipc::SecretsStatusOutput> {
+        let (spec, root) = self.ws_ref()?;
+        crate::secrets::status(&spec, &root)
+    }
+
+    pub fn secrets_set(&self, key: &str, value: &str) -> Result<()> {
+        let (spec, root) = self.ws_ref()?;
+        crate::secrets::set_key(&spec, &root, key, value)
+    }
+
+    pub fn secrets_delete(&self, key: &str) -> Result<()> {
+        let (spec, root) = self.ws_ref()?;
+        crate::secrets::delete_key(&spec, &root, key)
+    }
+
+    pub fn secrets_validate(
+        &self,
+        service: Option<&str>,
+    ) -> Result<crate::ipc::SecretsValidateOutput> {
+        let (spec, root) = self.ws_ref()?;
+        crate::secrets::validate(&spec, &root, service)
+    }
+
+    // ---- 日志历史 / 保留 ----
+
+    pub fn search_logs(
+        &self,
+        source: Option<&LogSource>,
+        query: &str,
+        case_sensitive: bool,
+        limit: Option<usize>,
+    ) -> Result<crate::log::SearchResult> {
+        let (_, root) = self.ws_ref()?;
+        crate::log::search_logs(&root, source, query, case_sensitive, limit)
+    }
+
+    pub fn export_logs(
+        &self,
+        source: Option<&LogSource>,
+        query: Option<&str>,
+        case_sensitive: bool,
+        format: &str,
+        dest: &Path,
+    ) -> Result<usize> {
+        let (_, root) = self.ws_ref()?;
+        crate::log::export_logs(&root, source, query, case_sensitive, format, dest)
+    }
+
+    pub fn run_log_retention(&self) -> Result<crate::log::RetentionSummary> {
+        let (_, root) = self.ws_ref()?;
+        let g = self.inner.lock().expect("engine lock");
+        crate::log::run_retention(&root, g.spec.log_retention.as_ref())
+    }
+
+    // ---- 指标 ----
+
+    pub fn metrics_subscribe(&self) -> Result<()> {
+        let start = {
+            let mut g = self.inner.lock().expect("engine lock");
+            g.metrics_sub += 1;
+            g.metrics_sub == 1
+        };
+        if start {
+            let inner = Arc::clone(&self.inner);
+            thread::Builder::new()
+                .name("st-metrics".into())
+                .spawn(move || metrics_loop(inner))
+                .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法启动 sampler: {e}")))?;
         }
         Ok(())
+    }
+
+    pub fn metrics_unsubscribe(&self) -> Result<()> {
+        let mut g = self.inner.lock().expect("engine lock");
+        g.metrics_sub = g.metrics_sub.saturating_sub(1);
+        Ok(())
+    }
+
+    pub fn metrics_snapshot(&self) -> Result<crate::ipc::MetricsSnapshotOutput> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        Ok(crate::ipc::MetricsSnapshotOutput { services: g.metrics.clone() })
+    }
+
+    // ---- profile ----
+
+    pub fn profiles_list(&self) -> Result<crate::ipc::ProfilesListOutput> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        Ok(crate::profiles::list(&g.spec))
+    }
+
+    /// §10.2 切换 active profile：忙则 PROFILE_SWITCH_BUSY；base_hash 保存。
+    pub fn profiles_activate(&self, id: &str, base_hash: &str) -> Result<(SuperTaskFile, String)> {
+        crate::profiles::require_profile(&self.spec()?, id)?;
+        {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            let busy = g.slots.values().any(|s| {
+                matches!(
+                    s.state,
+                    RtState::Starting
+                        | RtState::Running
+                        | RtState::Unhealthy
+                        | RtState::Stopping
+                        | RtState::Building
+                )
+            }) || g
+                .script
+                .as_ref()
+                .is_some_and(|s| s.state == ScriptState::Running);
+            if busy {
+                return Err(Error::new(
+                    ErrorCode::ProfileSwitchBusy,
+                    "有服务或脚本正在运行，停止后再切换 profile",
+                ));
+            }
+        }
+        let mut spec = self.spec()?;
+        match &mut spec.profiles {
+            Some(p) => p.active = Some(id.to_string()),
+            None => {
+                spec.profiles = Some(crate::spec::ProfilesSpec {
+                    active: Some(id.to_string()),
+                    items: Default::default(),
+                    extra: Default::default(),
+                })
+            }
+        }
+        let (spec, hash, _) = self.save_form(&spec, base_hash)?;
+        Ok((spec, hash))
+    }
+
+    /// 1.2 §11 runtime.build：预构建 launch: jar 的 artifact（不启动）。
+    pub fn build_jar(&self, id: &str) -> Result<PathBuf> {
+        let (build_spec, root) = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            let slot = g
+                .slots
+                .get(id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+            if slot.state == RtState::Building {
+                return Err(Error::new(ErrorCode::BuildBusy, format!("{id} 正在构建")));
+            }
+            if matches!(
+                slot.state,
+                RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+            ) {
+                return Err(Error::new(ErrorCode::BuildBusy, format!("{id} 运行中，停止后再构建")));
+            }
+            let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
+            let eff_svc = eff_spec.services.get(id).unwrap().clone();
+            if !(eff_svc.kind == "spring-boot" && eff_svc.launch.as_deref() == Some("jar")) {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("{id} 不是 launch: jar 的 spring-boot 服务"),
+                ));
+            }
+            let env = build_service_env(&eff_spec, id, &g.root)?;
+            (crate::launcher::plan_jar_build(&eff_svc, env)?, g.root.clone())
+        };
+        jar_build_phase(Arc::clone(&self.inner), id, build_spec, &root)
+    }
+
+    /// 工作区引用（spec 快照 + root），供 secrets/日志等文件型操作使用。
+    fn ws_ref(&self) -> Result<(SuperTaskFile, PathBuf)> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        Ok((g.spec.clone(), g.root.clone()))
     }
 
     fn state_of(&self, id: &str) -> Option<RtState> {
@@ -894,6 +1178,20 @@ impl Engine {
             .slots
             .get(id)
             .map(|s| s.state)
+    }
+
+    /// 等 launch: jar 的 Building 阶段结束（成功/失败/被停都离开 Building）。
+    fn wait_building_done(&self, id: &str, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.state_of(id) != Some(RtState::Building) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::new(ErrorCode::BuildFailed, format!("{id} 构建超时")));
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn wait_ready(&self, id: &str, timeout: Duration) -> Result<()> {
@@ -1006,10 +1304,11 @@ fn apply_spec_slots(g: &mut Inner, file: &SuperTaskFile) -> Result<()> {
         }
         let rel = log_file_rel("service", id);
         let abs = g.root.join(&rel);
-        let lf = LogFile::open(
+        let lf = LogFile::open_with_files(
             abs,
             file.logging.as_ref().and_then(|l| l.max_bytes),
             file.logging.as_ref().and_then(|l| l.retain_tail_bytes),
+            file.log_retention.as_ref().and_then(|r| r.max_files),
         )
         .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法创建日志文件: {e}")))?;
         g.files.insert(id.clone(), lf);
@@ -1030,6 +1329,8 @@ fn apply_spec_slots(g: &mut Inner, file: &SuperTaskFile) -> Result<()> {
                 last_exit: None,
                 cancel: Arc::new(AtomicBool::new(false)),
                 managed: true,
+                artifact: None,
+                exit_reason: None,
             },
         );
     }
@@ -1058,6 +1359,7 @@ fn build_snapshot(g: &Inner) -> RuntimeSnapshot {
                 started_at_ms: slot.started_at_ms,
                 last_exit: slot.last_exit.clone(),
                 last_error: slot.last_error.clone(),
+                exit_reason: slot.exit_reason.map(str::to_string),
                 log_seq: g.logs.next_seq().saturating_sub(1),
                 managed: slot.managed,
             },
@@ -1067,6 +1369,7 @@ fn build_snapshot(g: &Inner) -> RuntimeSnapshot {
         protocol: crate::ipc::PROTOCOL,
         workspace_id: g.workspace_id.clone(),
         services,
+        metrics: g.metrics.clone(),
         script: g.script.as_ref().map(|s| ScriptRuntimeView {
             id: s.id.clone(),
             state: s.state,
@@ -1368,6 +1671,501 @@ fn run_script_cmds(
     emit_runtime(&g);
 }
 
+// ============================================================================
+// 1.2 phase 3–7 引擎辅助：环境链、jar 构建编排、指标 sampler
+// ============================================================================
+
+/// §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入。
+/// `eff_spec` 已是 overlay 后的文件（profiles::overlay_spec）。
+fn build_service_env(
+    eff_spec: &SuperTaskFile,
+    id: &str,
+    root: &Path,
+) -> Result<IndexMap<String, String>> {
+    let svc = eff_spec
+        .services
+        .get(id)
+        .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+    let (file_env, _warnings) = crate::secrets::load_file_layers(eff_spec, root, Some(id))?;
+    let mut env = eff_spec.env.clone();
+    for (k, v) in &file_env {
+        env.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &svc.env {
+        env.insert(k.clone(), v.clone());
+    }
+    if let Some(p) = svc.port {
+        if let Some(key) = crate::ports::port_env_key(&svc.kind) {
+            env.entry(key.to_string()).or_insert_with(|| p.to_string());
+        }
+    }
+    Ok(env)
+}
+
+fn resolve_cwd(root: &Path, cwd_rel: &str) -> Result<PathBuf> {
+    let cwd = if cwd_rel == "." {
+        root.to_path_buf()
+    } else {
+        sandbox::confine(root, cwd_rel)?
+    };
+    if !cwd.is_dir() {
+        return Err(Error::new(
+            ErrorCode::CwdMissing,
+            format!("工作目录不存在: {}", cwd.display()),
+        ));
+    }
+    Ok(cwd)
+}
+
+/// 单次进程拉起 + 日志管道 + 健康探测（原 spawn_service 尾段，jar 复用）。
+#[allow(clippy::too_many_arguments)]
+fn spawn_core(
+    inner: Arc<Mutex<Inner>>,
+    id: String,
+    planned: CommandSpec,
+    cwd: PathBuf,
+    health_spec: Option<crate::spec::HealthSpec>,
+    health_none: bool,
+    port: Option<u16>,
+    kind: String,
+    pkg: Option<&str>,
+    svc_grace: u64,
+    spawner: SpawnerKind,
+) -> Result<()> {
+    if matches!(spawner, SpawnerKind::Real) {
+        probe::require_tools_for_kind(&kind, pkg)?;
+    }
+    if !cwd.is_dir() {
+        return Err(Error::new(
+            ErrorCode::CwdMissing,
+            format!("工作目录不存在: {}", cwd.display()),
+        ));
+    }
+    let (mut child, job) = match spawner {
+        SpawnerKind::Real => spawn_real(&planned, &cwd)?,
+        #[cfg(test)]
+        SpawnerKind::Ping => spawn_ping()?,
+        #[cfg(test)]
+        SpawnerKind::Fail => spawn_fail()?,
+    };
+    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    {
+        let mut g = inner.lock().expect("engine lock");
+        let slot = g.slots.get_mut(&id).unwrap();
+        // 同步当前 spec 的 port/kind/grace：改端口/profile 切换后重启仍显示新配置
+        slot.port = port;
+        slot.kind = kind.clone();
+        slot.grace = Duration::from_secs(svc_grace);
+        slot.cancel = Arc::new(AtomicBool::new(false));
+        slot.stop_requested = false;
+        slot.job = Some(Arc::new(job));
+        slot.pid = Some(pid);
+        slot.started = Some(Instant::now());
+        slot.started_at_ms = Some(now_ms());
+        slot.last_error = None;
+        slot.exit_reason = None;
+        match apply(slot.state, RtEvent::Spawned { health_none }) {
+            Ok(s) => slot.state = s,
+            Err(e) => {
+                slot.last_error = Some(e.to_string());
+            }
+        }
+        emit_runtime(&g);
+    }
+
+    let cancel = {
+        let g = inner.lock().expect("engine lock");
+        g.slots.get(&id).unwrap().cancel.clone()
+    };
+    if let Some(out) = stdout {
+        spawn_pump(
+            Arc::clone(&inner),
+            LogSource {
+                kind: LogSourceKind::Service,
+                id: id.clone(),
+            },
+            LogStream::Stdout,
+            out,
+            Arc::clone(&cancel),
+        );
+    }
+    if let Some(err) = stderr {
+        spawn_pump(
+            Arc::clone(&inner),
+            LogSource {
+                kind: LogSourceKind::Service,
+                id: id.clone(),
+            },
+            LogStream::Stderr,
+            err,
+            Arc::clone(&cancel),
+        );
+    }
+    spawn_waiter(Arc::clone(&inner), id.clone(), child);
+    if !health_none {
+        if let Some(hs) = health_spec {
+            spawn_health(inner, id, hs, port, cancel);
+        }
+    }
+    Ok(())
+}
+
+/// 1.2 §11 launch: jar 编排：构建（若无 artifact）→ java -jar。
+#[allow(clippy::too_many_arguments)]
+fn jar_flow(
+    inner: Arc<Mutex<Inner>>,
+    id: &str,
+    build_spec: CommandSpec,
+    mut run_spec: CommandSpec,
+    root: PathBuf,
+    health_spec: Option<crate::spec::HealthSpec>,
+    health_none: bool,
+    port: Option<u16>,
+    kind: String,
+    pkg: Option<&str>,
+    grace: u64,
+    spawner: SpawnerKind,
+) -> Result<()> {
+    let artifact = {
+        let have = inner
+            .lock()
+            .expect("engine lock")
+            .slots
+            .get(id)
+            .and_then(|s| s.artifact.clone());
+        match have {
+            Some(a) => a,
+            None => jar_build_phase(inner.clone(), id, build_spec, &root)?,
+        }
+    };
+    // args 形如 ["-jar", ...extra_args]；artifact 插在 "-jar" 之后
+    run_spec
+        .args
+        .insert(1, artifact.to_string_lossy().into_owned());
+    let cwd = resolve_cwd(&root, &run_spec.cwd_rel)?;
+    spawn_core(
+        inner,
+        id.to_string(),
+        run_spec,
+        cwd,
+        health_spec,
+        health_none,
+        port,
+        kind,
+        pkg,
+        grace,
+        spawner,
+    )
+}
+
+fn jar_flow_fail(inner: &Arc<Mutex<Inner>>, id: &str, e: crate::error::Error) {
+    let mut g = inner.lock().expect("engine lock");
+    if let Some(slot) = g.slots.get_mut(id) {
+        if slot.state == RtState::Building {
+            if let Ok(s) = apply(slot.state, RtEvent::BuildFinished { ok: false }) {
+                slot.state = s;
+            }
+            slot.last_error = Some(e.to_string());
+            slot.pid = None;
+            slot.job = None;
+            emit_runtime(&g);
+        }
+    }
+}
+
+/// package 阶段：Building 状态 + 输出进服务日志；成功解析 artifact。
+fn jar_build_phase(
+    inner: Arc<Mutex<Inner>>,
+    id: &str,
+    build_spec: CommandSpec,
+    root: &Path,
+) -> Result<PathBuf> {
+    let (module, cancel) = {
+        let g = inner.lock().expect("engine lock");
+        let slot = g
+            .slots
+            .get(id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+        let module = g
+            .spec
+            .services
+            .get(id)
+            .and_then(|s| s.module.clone())
+            .unwrap_or_else(|| ".".to_string());
+        (module, slot.cancel.clone())
+    };
+    {
+        let mut g = inner.lock().expect("engine lock");
+        let slot = g.slots.get_mut(id).unwrap();
+        slot.state = apply(slot.state, RtEvent::BuildStarted)?;
+        slot.last_error = None;
+        slot.exit_reason = None;
+        emit_runtime(&g);
+    }
+    let cwd = resolve_cwd(root, &build_spec.cwd_rel)?;
+    let (mut child, job) = spawn_real(&build_spec, &cwd)?;
+    let job = Arc::new(job);
+    {
+        let mut g = inner.lock().expect("engine lock");
+        if let Some(slot) = g.slots.get_mut(id) {
+            slot.job = Some(Arc::clone(&job));
+            slot.pid = Some(child.id());
+        }
+        emit_runtime(&g);
+    }
+    let src = LogSource {
+        kind: LogSourceKind::Service,
+        id: id.to_string(),
+    };
+    if let Some(out) = child.stdout.take() {
+        spawn_pump(
+            Arc::clone(&inner),
+            src.clone(),
+            LogStream::Stdout,
+            out,
+            Arc::clone(&cancel),
+        );
+    }
+    if let Some(err) = child.stderr.take() {
+        spawn_pump(
+            Arc::clone(&inner),
+            src,
+            LogStream::Stderr,
+            err,
+            Arc::clone(&cancel),
+        );
+    }
+    let started = Instant::now();
+    let status = loop {
+        let st = child
+            .try_wait()
+            .map_err(|e| Error::new(ErrorCode::Spawn, format!("等待构建进程失败: {e}")))?;
+        match st {
+            Some(st) => break st,
+            None => {
+                if cancel.load(Ordering::SeqCst) {
+                    let _ = job.terminate();
+                    let _ = child.wait();
+                    {
+                        let mut g = inner.lock().expect("engine lock");
+                        if let Some(slot) = g.slots.get_mut(id) {
+                            slot.pid = None;
+                            slot.job = None;
+                            if let Ok(s) = apply(slot.state, RtEvent::ProcessExited { stop_requested: true }) {
+                                slot.state = s;
+                            }
+                            emit_runtime(&g);
+                        }
+                    }
+                    return Err(Error::new(ErrorCode::Spawn, "构建已被停止"));
+                }
+                if started.elapsed() > Duration::from_secs(20 * 60) {
+                    let _ = job.terminate();
+                    let _ = child.wait();
+                    jar_build_fail(&inner, id, Some("package 超时（20 分钟）".to_string()));
+                    return Err(Error::new(ErrorCode::BuildFailed, "package 超时（20 分钟）"));
+                }
+                thread::sleep(Duration::from_millis(60));
+            }
+        }
+    };
+    let code = status.code().unwrap_or(-1);
+    if code != 0 {
+        jar_build_fail(&inner, id, Some(format!("mvn package 退出码 {code}")));
+        return Err(Error::new(
+            ErrorCode::BuildFailed,
+            format!("mvn package 退出码 {code}：已保留 package 日志，服务未启动"),
+        ));
+    }
+    let artifact = select_jar_artifact(root, &module)?;
+    {
+        let mut g = inner.lock().expect("engine lock");
+        if let Some(slot) = g.slots.get_mut(id) {
+            slot.state = apply(slot.state, RtEvent::BuildFinished { ok: true })?;
+            slot.artifact = Some(artifact.clone());
+            slot.pid = None;
+            slot.job = None;
+            emit_runtime(&g);
+        }
+    }
+    Ok(artifact)
+}
+
+fn jar_build_fail(inner: &Arc<Mutex<Inner>>, id: &str, detail: Option<String>) {
+    let mut g = inner.lock().expect("engine lock");
+    if let Some(slot) = g.slots.get_mut(id) {
+        if slot.state == RtState::Building {
+            if let Ok(s) = apply(slot.state, RtEvent::BuildFinished { ok: false }) {
+                slot.state = s;
+            }
+            slot.last_error = Some(
+                detail
+                    .unwrap_or_else(|| "BUILD_FAILED: package 失败，服务未启动".to_string()),
+            );
+        }
+        slot.pid = None;
+        slot.job = None;
+        emit_runtime(&g);
+    }
+}
+
+/// §11.3 artifact 选择：排除 original-/-sources/-javadoc，唯一候选直接用；
+/// 多候选按 pom artifactId 收敛；仍不确定 → JAR_AMBIGUOUS（不按时间猜）。
+fn select_jar_artifact(root: &Path, module: &str) -> Result<PathBuf> {
+    let module_dir = sandbox::confine(root, module)?;
+    let target = module_dir.join("target");
+    if !target.is_dir() {
+        return Err(Error::new(
+            ErrorCode::ArtifactMissing,
+            format!("target 目录不存在: {}", target.display()),
+        ));
+    }
+    let mut jars: Vec<PathBuf> = Vec::new();
+    let entries = fs::read_dir(&target)
+        .map_err(|e| Error::new(ErrorCode::ArtifactMissing, format!("无法读取 target: {e}")))?;
+    for e in entries {
+        let p = e
+            .map_err(|e| Error::new(ErrorCode::ArtifactMissing, format!("读取 target 失败: {e}")))?
+            .path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.ends_with(".jar") {
+            continue;
+        }
+        if name.starts_with("original-") || name.ends_with("-sources.jar") || name.ends_with("-javadoc.jar") {
+            continue;
+        }
+        jars.push(p);
+    }
+    if jars.len() == 1 {
+        return Ok(jars.pop().expect("len==1"));
+    }
+    let artifact_id = pom_artifact_id(&module_dir.join("pom.xml"));
+    let names_of = |list: &[PathBuf]| -> Vec<String> {
+        list.iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    };
+    if let Some(aid) = &artifact_id {
+        let matched: Vec<PathBuf> = jars
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.contains(aid.as_str()))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        if matched.len() == 1 {
+            return Ok(matched.into_iter().next().expect("len==1"));
+        }
+        if jars.is_empty() || matched.is_empty() {
+            return Err(Error::new(
+                ErrorCode::ArtifactMissing,
+                format!("target 中没有可执行 jar（artifactId={aid:?}）"),
+            ));
+        }
+        let names = names_of(&matched);
+        return Err(Error::new(
+            ErrorCode::JarAmbiguous,
+            format!("多个候选 jar，无法确定: {}", names.join(", ")),
+        )
+        .details(serde_yaml::to_value(&names).unwrap_or(serde_yaml::Value::Null)));
+    }
+    if jars.is_empty() {
+        return Err(Error::new(ErrorCode::ArtifactMissing, "target 中没有可执行 jar"));
+    }
+    let names = names_of(&jars);
+    Err(Error::new(
+        ErrorCode::JarAmbiguous,
+        format!("多个候选 jar 且 pom 未提供 artifactId: {}", names.join(", ")),
+    ))
+}
+
+/// pom.xml 的项目 artifactId（跳过 <parent> 块里的同名标签）。
+fn pom_artifact_id(pom: &Path) -> Option<String> {
+    let mut text = fs::read_to_string(pom).ok()?;
+    if let Some(i) = text.find("<parent>") {
+        if let Some(j) = text[i..].find("</parent>") {
+            text = format!("{}{}", &text[..i], &text[i + j + "</parent>".len()..]);
+        }
+    }
+    let re = Regex::new(r"<artifactId>\s*([^<\s]+)\s*</artifactId>").ok()?;
+    re.captures(&text)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// 1.2 §9.2 sampler：仅订阅时运行，每秒一批 `st.metrics`。
+fn metrics_loop(inner: Arc<Mutex<Inner>>) {
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        {
+            let mut g = inner.lock().expect("engine lock");
+            if g.metrics_sub == 0 {
+                break;
+            }
+            let now = Instant::now();
+            let mut map: IndexMap<String, Option<crate::ipc::ServiceMetrics>> = IndexMap::new();
+            let ids: Vec<String> = g.slots.keys().cloned().collect();
+            for id in ids {
+                let state = g.slots.get(&id).map(|s| s.state);
+                let active = matches!(
+                    state,
+                    Some(RtState::Starting)
+                        | Some(RtState::Running)
+                        | Some(RtState::Unhealthy)
+                        | Some(RtState::Building)
+                );
+                if !active {
+                    if g.metrics.shift_remove(&id).is_some() {
+                        map.insert(id.clone(), None);
+                    }
+                    g.metrics_prev.remove(&id);
+                    continue;
+                }
+                let Some(job) = g.slots.get(&id).and_then(|s| s.job.clone()) else {
+                    continue;
+                };
+                let cpu_ms = job.total_cpu_ms();
+                let cpu_pct = match cpu_ms {
+                    Some(c) => {
+                        let prev = g.metrics_prev.get(&id).map(|(p, _)| *p);
+                        let wall = g
+                            .metrics_prev
+                            .get(&id)
+                            .map(|(_, t)| now.duration_since(*t).as_millis() as u64)
+                            .unwrap_or(0)
+                            .max(1);
+                        crate::metrics::cpu_percent(c, prev, wall)
+                    }
+                    None => None,
+                };
+                if let Some(c) = cpu_ms {
+                    g.metrics_prev.insert(id.clone(), (c, now));
+                }
+                let sm = crate::ipc::ServiceMetrics {
+                    cpu_percent: cpu_pct,
+                    memory_bytes: job.working_set_bytes(),
+                    process_count: Some(job.pids().len() as u32),
+                    sampled_at_ms: now_ms(),
+                };
+                g.metrics.insert(id.clone(), Some(sm.clone()));
+                map.insert(id.clone(), Some(sm));
+            }
+            if !map.is_empty() {
+                let _ = g
+                    .events
+                    .try_send(EngineEvent::Metrics(crate::ipc::MetricsPayload { services: map }));
+            }
+        }
+    }
+}
+
+
 fn spawn_waiter(inner: Arc<Mutex<Inner>>, id: String, mut child: Child) {
     thread::Builder::new()
         .name(format!("st-wait-{id}"))
@@ -1403,6 +2201,7 @@ fn spawn_waiter(inner: Arc<Mutex<Inner>>, id: String, mut child: Child) {
             if let Some(msg) = err_msg {
                 slot.last_error = Some(msg);
             }
+            slot.exit_reason = if slot.stop_requested { None } else { Some("crash") };
             let ev = RtEvent::ProcessExited {
                 stop_requested: slot.stop_requested,
             };

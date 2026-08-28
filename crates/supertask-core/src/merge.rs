@@ -514,6 +514,8 @@ mod tests {
             gateway: None,
             cloud: None,
             ai: None,
+            network: None,
+            log_retention: None,
             extra: IndexMap::new(),
         };
         let p = preview(&current, &empty, vec![]);

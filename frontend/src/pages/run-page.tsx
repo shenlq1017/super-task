@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useOutletContext, NavLink } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,9 +20,23 @@ import {
   opErrorLabel,
   stateLabel,
 } from "@/lib/status";
-import { apiOpenIde } from "../ipc/api";
+import {
+  apiOpenIde,
+  apiRuntimeBuild,
+  apiPortsInspect,
+  apiPortsSuggest,
+  apiPortsAssign,
+} from "../ipc/api";
 import { IpcFailure } from "../ipc/protocol";
-import type { IdeTarget, LogSource, ScriptSpec, ServiceRuntimeView, ServiceSpec, SuperTaskFile } from "@/ipc/protocol";
+import type {
+  IdeTarget,
+  LogSource,
+  ScriptSpec,
+  ServiceMetrics,
+  ServiceRuntimeView,
+  ServiceSpec,
+  SuperTaskFile,
+} from "@/ipc/protocol";
 import {
   Play,
   Square,
@@ -35,6 +49,11 @@ import {
   Lock,
   PanelLeftClose,
   PanelLeftOpen,
+  Cpu,
+  HardDrive,
+  Boxes,
+  Hammer,
+  Loader2,
 } from "lucide-react";
 import type { ShellCtx } from "../app/AppShell";
 
@@ -250,7 +269,7 @@ function ServiceCard({
   const runtime = useRuntime();
   const meta = STATE_META[svc.state];
   const isRunning = svc.state === "running";
-  const isBusy = svc.state === "starting" || svc.state === "stopping";
+  const isBusy = svc.state === "starting" || svc.state === "stopping" || svc.state === "building";
   const external = isRunning && svc.managed === false;
   // 停止是杀整棵进程树的破坏性操作，二次确认；中断 starting 不弹
   const [confirmStop, setConfirmStop] = useState(false);
@@ -368,11 +387,16 @@ function ServiceCard({
 function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
   const ws = useWorkspace();
   const yaml = useYaml();
+  const runtime = useRuntime();
   const { toast } = useToast();
   const spec = ws.state.spec;
   const svc = spec?.services[id];
+  const isRunning = runtime.state.services[id]?.state === "running";
   const [portDraft, setPortDraft] = useState<string>(String(svc?.port ?? ""));
   const [envDraft, setEnvDraft] = useState<Record<string, string>>(svc?.env ?? {});
+  const [portBusy, setPortBusy] = useState(false);
+  const [portHint, setPortHint] = useState<string | null>(null);
+  const [portCandidates, setPortCandidates] = useState<number[]>([]);
 
   useEffect(() => {
     setPortDraft(String(svc?.port ?? ""));
@@ -392,6 +416,58 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
       return base;
     }
   }, [svc.health?.http, portDraft]);
+
+  const inspectPorts = async () => {
+    if (!ws.state.workspaceId || portBusy) return;
+    setPortBusy(true);
+    try {
+      const out = await apiPortsInspect(ws.state.workspaceId);
+      const item = out.items.find((x) => x.id === id);
+      setPortHint(item ? (item.in_use ? `端口 :${item.port} 已被 ${item.process_name ?? `PID ${item.pid ?? "未知"}`} 占用${item.managed ? "（SuperTask 托管）" : "（外部进程）"}` : `端口 :${item.port} 可用`) : "该服务没有配置端口");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setPortBusy(false);
+    }
+  };
+
+  const suggestPorts = async () => {
+    if (!ws.state.workspaceId || portBusy) return;
+    setPortBusy(true);
+    try {
+      const out = await apiPortsSuggest(ws.state.workspaceId, id);
+      setPortCandidates(out.candidates);
+      setPortHint(out.candidates.length ? `建议端口：${out.candidates.join("、")}` : "没有可用候选端口");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setPortBusy(false);
+    }
+  };
+
+  const assignPort = async (restart: boolean) => {
+    if (!spec || !ws.state.workspaceId || !yaml.state.hash || !portDraft || portBusy) return;
+    const nextPort = Number(portDraft);
+    if (!Number.isInteger(nextPort) || nextPort < 1024 || nextPort > 65535) {
+      toast("端口必须是 1024–65535 的整数", "warn");
+      return;
+    }
+    setPortBusy(true);
+    try {
+      const out = await apiPortsAssign(ws.state.workspaceId, id, nextPort, yaml.state.hash, restart);
+      if (out.restart_required) {
+        setPortHint("服务正在运行；本次只预览，确认后点击“改端口并重启”");
+      } else {
+        await Promise.all([yaml.actions.reload(), ws.actions.refreshSpec()]);
+        setPortHint(out.notes.length ? out.notes.join("；") : "端口已保存");
+        toast("端口已保存", "ok");
+      }
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setPortBusy(false);
+    }
+  };
 
   const save = async () => {
     if (!spec) return;
@@ -420,12 +496,26 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
     <div className={cn("flex flex-col gap-4 p-4", compact && "gap-3 p-3")}>
       <div className="grid grid-cols-[120px_1fr] items-center gap-3">
         <label className="text-sm text-[var(--t2,#62666d)]">端口</label>
-        <Input
-          type="number"
-          value={portDraft}
-          onChange={(e) => setPortDraft(e.target.value)}
-          className="max-w-[160px]"
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            type="number"
+            value={portDraft}
+            onChange={(e) => setPortDraft(e.target.value)}
+            className="max-w-[160px]"
+          />
+          <Button variant="outline" size="sm" onClick={() => void inspectPorts()} disabled={!ws.state.workspaceId || portBusy}>检查占用</Button>
+          <Button variant="ghost" size="sm" onClick={() => void suggestPorts()} disabled={!ws.state.workspaceId || portBusy}>建议端口</Button>
+        </div>
+      </div>
+      {portHint ? <div className="rounded-lg bg-[var(--surface-2,#f3f4f5)] px-3 py-2 text-[0.72rem] text-[var(--t2,#62666d)]">{portHint}</div> : null}
+      {portCandidates.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {portCandidates.map((p) => <button key={p} type="button" className="rounded-full border border-[var(--line,#e6e6e6)] px-2 py-0.5 font-mono text-[0.7rem] hover:border-[var(--st-accent,#5e6ad2)]" onClick={() => setPortDraft(String(p))}>{p}</button>)}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" onClick={() => void assignPort(false)} disabled={!ws.state.workspaceId || portBusy}>保存端口</Button>
+        {isRunning ? <Button size="sm" onClick={() => void assignPort(true)} disabled={portBusy}>改端口并重启</Button> : null}
       </div>
 
       <div className="flex items-center gap-2 rounded-lg border border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] px-3 py-2 font-mono text-[12px]">
@@ -558,17 +648,33 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   const rt = useRuntime();
   const ws = useWorkspace();
   const runtime = useRuntime();
-  const [tab, setTab] = useState<"logs" | "env" | "health" | "config">("logs");
+  const [tab, setTab] = useState<"logs" | "env" | "health" | "config" | "metrics">("logs");
   const [confirmStop, setConfirmStop] = useState(false);
+  const [building, setBuilding] = useState(false);
+  const { toast } = useToast();
   const svc = rt.state.services[id];
   const spec = ws.state.spec?.services[id];
 
   if (!svc) return null;
   const isRunning = svc.state === "running";
-  const isBusy = svc.state === "starting" || svc.state === "stopping";
+  const isBusy = svc.state === "starting" || svc.state === "stopping" || svc.state === "building";
   const external = isRunning && svc.managed === false;
   const source: LogSource = { kind: "service", id };
   const cmd = spec ? serviceCmd(id, spec) : "";
+  const jarService = spec?.kind === "spring-boot" && spec.launch === "jar";
+  const buildJar = async () => {
+    const workspaceId = ws.state.workspaceId;
+    if (!workspaceId || !jarService || building) return;
+    setBuilding(true);
+    try {
+      await apiRuntimeBuild(workspaceId, id);
+      toast(`已开始构建 ${id}`, "info");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setBuilding(false);
+    }
+  };
 
   const stack = svc.kind === "node" ? `Node · ${spec?.package_manager ?? "npm"}` : `Spring Boot · ${spec?.module ?? id}`;
   const topo = spec?.depends_on?.length ? `依赖 ${spec.depends_on.join(", ")}` : "无依赖";
@@ -578,9 +684,12 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
     { k: "env", label: "环境", icon: Settings2 },
     { k: "health", label: "健康", icon: Activity },
     { k: "config", label: "配置", icon: FileText },
+    { k: "metrics", label: "指标", icon: Activity },
   ] as const;
   const locked = [
-    { label: "终端", v: "1.2" },
+    // 版本以界面设计文档（真源）为准：终端 = 1.5 PTY；指标 = 1.2 phase 5；
+    // 容器 Tab = 1.3 phase 6；代理 = 1.6 网关。
+    { label: "终端", v: "1.5" },
     { label: "指标", v: "1.2" },
     { label: "容器", v: "1.3" },
     { label: "代理", v: "1.6" },
@@ -612,6 +721,12 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
         </span>
         <div className="ml-auto flex gap-2">
           <IdeOpenMenu variant="button" />
+          {jarService ? (
+            <Button size="sm" variant="outline" className="gap-1" onClick={() => void buildJar()} disabled={building || isBusy}>
+              {building ? <Loader2 className="size-3.5 animate-spin" /> : <Hammer className="size-3.5" />}
+              {building ? "构建中…" : "构建 jar"}
+            </Button>
+          ) : null}
           {isRunning ? (
             <Button
               size="sm"
@@ -727,7 +842,41 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
             <ConfigPanel id={id} />
           </div>
         ) : null}
+        {tab === "metrics" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <MetricsPanel id={id} metric={rt.state.metrics[id] ?? null} />
+          </div>
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+function MetricsPanel({ id, metric }: { id: string; metric: ServiceMetrics | null }) {
+  const fmtBytes = (n: number | null | undefined) => {
+    if (n == null) return "—";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+  };
+  return (
+    <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3">
+      <MetricTile icon={<Cpu className="size-4" />} label="CPU" value={metric?.cpu_percent == null ? "—" : `${metric.cpu_percent.toFixed(1)}%`} />
+      <MetricTile icon={<HardDrive className="size-4" />} label="内存" value={fmtBytes(metric?.memory_bytes)} />
+      <MetricTile icon={<Boxes className="size-4" />} label="进程树" value={metric?.process_count == null ? "—" : `${metric.process_count} 个进程`} />
+      <div className="sm:col-span-3 text-[0.72rem] text-[var(--t3,#8a8f98)]">
+        {metric ? `最近采样：${new Date(metric.sampled_at_ms).toLocaleTimeString()}` : `${id} 当前没有可用的 Job Object 指标（外部进程不采样）`}
+      </div>
+    </div>
+  );
+}
+
+function MetricTile({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return (
+    <div className="rounded-[var(--r-md,12px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] p-3">
+      <div className="flex items-center gap-2 text-[0.72rem] text-[var(--t3,#8a8f98)]">{icon}{label}</div>
+      <div className="mt-2 font-mono text-[1.1rem] font-semibold text-[var(--t1,#222326)]">{value}</div>
     </div>
   );
 }

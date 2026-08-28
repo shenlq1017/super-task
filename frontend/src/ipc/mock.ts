@@ -15,6 +15,8 @@ import type {
   SuperTaskFile,
   TemplateSummary,
   ToolchainProbe,
+  ToolchainProbeOut,
+  ManagerAvailability,
   WorkspaceOpenOut,
   YamlView,
   YamlSaveOut,
@@ -194,6 +196,8 @@ const state = {
   gitPulled: false,
   /** 发现列表：killProcess 后移除对应进程（确定性状态机） */
   discover: null as ForeignService[] | null,
+  /** 1.2：工具链探测状态（install/upgrade 成功后原地更新） */
+  probe: null as ToolchainProbeOut | null,
 };
 
 function defaultDiscover(): ForeignService[] {
@@ -292,6 +296,9 @@ function hashOf(s: string): string {
 }
 
 const emptyProbe = { found: false, version: null, path: null };
+
+/** mock secrets：浏览器 dev 用内存 map，模拟 .env.local（绝不出现在日志）。 */
+const mockSecrets = new Map<string, string>();
 
 // ---------------------------------------------------------------------------
 // Mock 事件桥：浏览器模式下 provider 通过 mockListen 订阅、mock 命令经 mockEmit
@@ -656,16 +663,222 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
 
   if (command === "workspace.openExplorer") return { ok: true };
 
-  if (command === "toolchain.probe") {
-    const probe: ToolchainProbe = {
+  // -------------------------------------------------------------------------
+  // 1.2：工具链（ipc 增量 §13.1）。probe 状态化：install 成功后原地更新，
+  // 让浏览器 mock 下的 /env 安装流程与真机行为一致。
+  // -------------------------------------------------------------------------
+
+  const MOCK_MANAGERS: ManagerAvailability = { mise: false, winget: true };
+  const MOCK_DEFAULT_VERSIONS: Record<string, string> = {
+    java: "21",
+    maven: "3.9",
+    node: "20",
+    npm: "20",
+    pnpm: "9",
+    yarn: "1",
+  };
+
+  function ensureProbe(): ToolchainProbeOut {
+    state.probe ??= {
       java: { found: true, version: "17.0.10", path: "/usr/lib/jvm/java-17" },
       maven: { found: true, version: "3.9.6", path: "/opt/maven" },
-      node: { found: true, version: "22.4.0", path: "/usr/local/bin/node" },
+      node: { found: false, version: null, path: null },
       npm: { found: true, version: "10.7.0", path: "/usr/local/bin/npm" },
       pnpm: emptyProbe,
       yarn: emptyProbe,
+      managers: MOCK_MANAGERS,
     };
-    return probe;
+    return state.probe;
+  }
+
+  if (command === "toolchain.probe") {
+    return { ...ensureProbe() };
+  }
+
+  if (command === "toolchain.install" || command === "toolchain.upgrade") {
+    const tool = ((args?.tool as string) ?? "").trim();
+    if (!(tool in MOCK_DEFAULT_VERSIONS)) {
+      throw { protocol: PROTOCOL, code: "SPEC_INVALID", message: `tool 仅接受 java|maven|node|npm|pnpm|yarn，收到 ${tool}`, retryable: false };
+    }
+    const version = ((args?.version as string) ?? MOCK_DEFAULT_VERSIONS[tool]).trim();
+    const isLts = version.toLowerCase() === "lts";
+    // 版本字符集与后端一致（lts 别名合法，禁前导 -）
+    if (!isLts && (version.startsWith("-") || /[^0-9A-Za-z._\-+@]/.test(version))) {
+      throw { protocol: PROTOCOL, code: "TOOLCHAIN_VERSION_INVALID", message: `非法版本 ${version}：只允许数字、点号、连字符与 lts 别名`, retryable: false };
+    }
+    const persist = args?.persist === true;
+    const baseHash = args?.baseHash as string | null | undefined;
+    if (persist && !baseHash) {
+      throw { protocol: PROTOCOL, code: "SPEC_INVALID", message: "persist=true 必须携带 base_hash", retryable: false };
+    }
+    const probe = ensureProbe();
+    if (command === "toolchain.upgrade" && !probe[tool as keyof ToolchainProbe].found) {
+      throw { protocol: PROTOCOL, code: "MISSING_TOOL", message: `未安装 ${tool}，请先安装再升级`, retryable: false };
+    }
+    const opId = `op-${++opSeq}`;
+    const kind = command;
+    emitOperation(kind, opId, "queued", null, "排队中…", null, null);
+    setTimeout(() => emitOperation(kind, opId, "running", 0.35, `正在通过 winget 下载 ${tool} ${version}…`, null, null), 500);
+    setTimeout(() => emitOperation(kind, opId, "running", 0.8, "正在刷新 PATH 并解析工具…", null, null), 1100);
+    setTimeout(
+      () => {
+        const path = `C:\\mock\\tools\\${tool}\\${version}\\bin`;
+        probe[tool as keyof ToolchainProbe] = { found: true, version, path };
+        emitOperation(kind, opId, "succeeded", 1, "完成", null, {
+          tool,
+          version,
+          manager: "winget",
+          path,
+          ...(persist ? { hash: hashOf(`${baseHash}+${tool}@${version}`) } : {}),
+        });
+      },
+      1600,
+    );
+    return { operation_id: opId };
+  }
+
+  // -------------------------------------------------------------------------
+  // 1.2 phase 3–7：端口 / secrets / 日志 / 指标 / profile / build
+  // -------------------------------------------------------------------------
+
+  if (command === "ports.inspect") {
+    const items = Object.values(state.services).map((s) => {
+      const running = s.state === "running" || s.state === "starting";
+      return {
+        id: s.id,
+        port: s.port ?? 0,
+        in_use: running,
+        pid: running ? s.pid : null,
+        process_name: running ? "java.exe" : null,
+        managed: running,
+      };
+    });
+    return { items };
+  }
+
+  if (command === "ports.suggest") {
+    const id = args?.id as string;
+    const cur = state.services[id]?.port ?? 8080;
+    const used = new Set<number>(Object.values(state.services).map((s) => s.port ?? 0));
+    const out: number[] = [];
+    for (let p = cur + 1; out.length < 5 && p < cur + 129; p++) {
+      if (p >= 1024 && !used.has(p)) out.push(p);
+    }
+    return { candidates: out };
+  }
+
+  if (command === "ports.assign") {
+    const id = args?.id as string;
+    const port = args?.port as number;
+    const svc = state.services[id];
+    if (!svc) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `没有服务 ${id}`, retryable: false };
+    }
+    const hash = hashOf(JSON.stringify(args?.baseHash ?? "") + `:${id}:${port}`);
+    if (svc.port) svc.port = port;
+    const notes: string[] = [];
+    return { operation_id: null, spec: state.spec, hash, restart_required: false, notes };
+  }
+
+  if (command === "secrets.status") {
+    const keys = [...mockSecrets.entries()].map(([key]) => ({
+      key,
+      source: "file",
+      present: true,
+      parse_ok: true,
+      git_tracked: false,
+    }));
+    return { backend: "file", file: ".env.local", keys, git_ignored: true };
+  }
+
+  if (command === "secrets.set") {
+    mockSecrets.set(args?.key as string, args?.value as string);
+    return { ok: true, key: args?.key as string };
+  }
+
+  if (command === "secrets.delete") {
+    mockSecrets.delete(args?.key as string);
+    return { ok: true, key: args?.key as string };
+  }
+
+  if (command === "secrets.validate") {
+    const required = (state.spec.secrets as { required?: string[] } | null)?.required ?? [];
+    const missing = required.filter((k) => !mockSecrets.has(k));
+    return { ok: missing.length === 0, missing, warnings: [] };
+  }
+
+  if (command === "logs.search") {
+    const q = ((args?.query as string) ?? "").toLowerCase();
+    const items = state.logs
+      .filter((l) => l.text.toLowerCase().includes(q))
+      .slice(0, (args?.limit as number) ?? 200)
+      .map((l, i) => ({
+        kind: l.source.kind,
+        id: l.source.id,
+        file: `${l.source.id}.log`,
+        line_no: i + 1,
+        text: l.text,
+        ts: l.ts_ms,
+      }));
+    const opId = `op-${++opSeq}`;
+    emitOperation("logs.search", opId, "queued", null, "排队中…", null, null);
+    setTimeout(() => emitOperation("logs.search", opId, "running", 0.5, "正在读取历史日志…", null, null), 180);
+    setTimeout(() => emitOperation("logs.search", opId, "succeeded", 1, "搜索完成", null, { items, truncated: false }), 420);
+    return { operation_id: opId };
+  }
+
+  if (command === "logs.export") {
+    const opId = `op-${++opSeq}`;
+    emitOperation("logs.export", opId, "queued", null, "排队中…", null, null);
+    setTimeout(() => emitOperation("logs.export", opId, "running", 0.5, "正在写出日志…", null, null), 180);
+    setTimeout(
+      () => emitOperation("logs.export", opId, "succeeded", 1, "导出完成", null, {
+        count: state.logs.length,
+        destination: args?.destinationPath as string,
+      }),
+      420,
+    );
+    return { operation_id: opId };
+  }
+
+  if (command === "logs.retention.run") {
+    return { deleted_files: 0, deleted_bytes: 0 };
+  }
+
+  if (command === "metrics.snapshot") {
+    const services: Record<string, null> = {};
+    for (const s of Object.values(state.services)) {
+      services[s.id] = s.state === "running" ? null : null;
+    }
+    return { services };
+  }
+
+  if (command === "metrics.subscribe" || command === "metrics.unsubscribe") return { ok: true };
+
+  if (command === "profiles.list") {
+    const profiles = (state.spec.profiles as { items?: Record<string, unknown> } | null)?.items ?? {};
+    const items = Object.entries(profiles).map(([id]) => ({ id, enabled_count: null }));
+    return { active: "default", profiles: items };
+  }
+
+  if (command === "profiles.activate") {
+    const hash = hashOf(`profile:${args?.id}`);
+    return { spec: state.spec, hash, active: args?.id as string };
+  }
+
+  if (command === "runtime.build") {
+    const id = args?.id as string;
+    const opId = `op-${++opSeq}`;
+    emitOperation("runtime.build", opId, "queued", null, "排队中…", null, null);
+    setTimeout(() => emitOperation("runtime.build", opId, "running", 0.4, "正在 package…", null, null), 500);
+    setTimeout(
+      () => emitOperation("runtime.build", opId, "succeeded", 1, "构建完成", null, {
+        id,
+        artifact: `C:\mock\target\${id}-1.0.jar`,
+      }),
+      1200,
+    );
+    return { operation_id: opId };
   }
 
   if (command === "yaml.get") {

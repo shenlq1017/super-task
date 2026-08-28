@@ -2,6 +2,7 @@ import type { RtState } from "@/ipc/protocol";
 
 export const STATE_META: Record<RtState, { label: string; color: string; ring: string }> = {
   stopped: { label: "已停止", color: "var(--t3)", ring: "var(--line)" },
+  building: { label: "构建中", color: "#9a6700", ring: "#f0d58a" },
   starting: { label: "启动中", color: "#9a6700", ring: "#f0d58a" },
   running: { label: "运行中", color: "var(--st-ok)", ring: "#9be3ad" },
   unhealthy: { label: "不健康", color: "var(--st-danger)", ring: "#f3b4b4" },
@@ -77,6 +78,13 @@ export const OP_ERROR_LABEL: Record<string, string> = {
   UPDATE_SIGNATURE: "更新包签名校验失败，已拒绝安装",
   UPDATE_FAILED: "更新失败，当前版本仍可继续使用",
   ALREADY_IN_PROGRESS: "已有同名操作在进行中，请稍候",
+  // ---- 1.2 工具链 / 网络 ----
+  TOOLCHAIN_MANAGER_MISSING: "未找到 mise 或 winget：请先安装其中之一（winget 随 Windows 11 自带）",
+  TOOLCHAIN_VERSION_INVALID: "版本号非法：只允许数字、点号、连字符与 lts 别名",
+  TOOLCHAIN_INSTALL_FAILED: "安装失败，已保留原有工具与配置：可检查网络后重试，或换用其他 provider",
+  TOOLCHAIN_PERMISSION: "provider 需要管理员权限：请改用系统安装器完成安装，SuperTask 不会提权",
+  MISSING_TOOL: "安装命令成功但未解析到工具：请重新探测；若刚安装可重启应用刷新 PATH",
+  PROXY_INVALID: "代理 URL 非法：只允许 http/https，且不能内嵌用户名密码",
 };
 
 /** 长操作失败的中文提示；未知 code 原样返回。 */

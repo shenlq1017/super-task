@@ -167,13 +167,15 @@
 
 **没有** `script.runRaw`。禁止 IPC 传 `cmds`。
 
-### 4.6 探测
+### 4.6 探测与工具链（1.2 增量）
 
 | 命令 | 入参 | 出参 |
 |------|------|------|
-| `toolchain.probe` | — | `{ java?, maven?, node?, npm?, pnpm?, yarn? }` 每项 `{ found, version, path? }` |
+| `toolchain.probe` | — | `{ java…yarn }` 每项 `{ found, version, path? }` + `managers: { mise, winget }`（1.2） |
+| `toolchain.install` | `{ tool, version?, manager?, persist?, base_hash? }` | `{ operation_id }`（1.2 起 live，hub 长操作 `toolchain.install`） |
+| `toolchain.upgrade` | 同上 | `{ operation_id }`（1.2 起 live） |
 
-不安装。`toolchain.install` → `FEATURE_SOON` / since 1.2。
+安装行为、错误码（`TOOLCHAIN_*`）、persist 写回语义见 1.2 功能规格 §4/§13.1。`tool` 只接受 `java|maven|node|npm|pnpm|yarn`。
 
 ### 4.7 日志（请求/响应部分）
 
@@ -190,9 +192,9 @@
 
 下列调用一律 `FEATURE_SOON`，不要未注册导致前端 catch 不到 code：
 
-`docker.ps` · `docker.build` · `gateway.apply` · `cloud.login` · `cloud.sync` · `ai.complete` · `toolchain.install`
+`docker.ps` · `docker.build` · `gateway.apply` · `cloud.login` · `cloud.sync` · `ai.complete`
 
-（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节。）
+（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6。）
 
 ---
 
