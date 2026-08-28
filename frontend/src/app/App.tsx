@@ -5,6 +5,7 @@ import { RuntimeProvider } from "../providers/runtime-provider";
 import { LogsProvider } from "../providers/logs-provider";
 import { YamlProvider } from "../providers/yaml-provider";
 import { ToastProvider } from "../components/ui/toast";
+import { TooltipProvider } from "../components/ui/tooltip";
 import { migrateLocalRecents } from "../lib/migrate-recents";
 import { AppRoutes } from "./routes";
 
@@ -47,7 +48,9 @@ export function App() {
   return (
     <SessionProvider>
       <ToastProvider>
-        <Gate />
+        <TooltipProvider delayDuration={1000}>
+          <Gate />
+        </TooltipProvider>
       </ToastProvider>
     </SessionProvider>
   );

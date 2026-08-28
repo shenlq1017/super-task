@@ -177,6 +177,18 @@
 
 安装行为、错误码（`TOOLCHAIN_*`）、persist 写回语义见 1.2 功能规格 §4/§13.1。`tool` 只接受 `java|maven|node|npm|pnpm|yarn`。
 
+### 4.6.1 Docker（1.3 增量）
+
+| 命令 | 入参 | 出参 |
+|------|------|------|
+| `docker.probe` | `{ refresh?: bool }` | `{ found, version?, compose_version?, running }`（会话缓存，refresh 强制刷新） |
+| `docker.ps` | `{ workspace_id }` | `{ containers: ContainerSummary[] }`（限当前 compose project，无 compose 文件则空） |
+| `docker.images` | `{}` | `{ images: ImageSummary[] }`（本机只读，无缓存承诺） |
+| `docker.build` | `{ workspace_id, name }` | `{ operation_id }`（长操作 `docker.build`，可取消） |
+| `docker.buildCancel` | `{ workspace_id, operation_id }` | `{ ok }`（best effort，已提交层缓存不回滚） |
+
+`ContainerSummary = { service, container_id, image, state, health?, ports: number[] }`；`ImageSummary = { repository, tag, id, size_bytes, created_ms }`。compose 服务的起停/快照/日志/搜索/端口复用现有命令（§4.4/§4.7），无新增；compose 服务构建经 `runtime.build`（kind `compose.build`）。构建事件走 `st.operation`（Engine 内置 hub 与壳层 hub 均桥接）。错误码 `DOCKER_*`/`COMPOSE_*` 见 1.3 规格 §10.1。
+
 ### 4.7 日志（请求/响应部分）
 
 | 命令 | 入参 | 出参 |
@@ -192,9 +204,9 @@
 
 下列调用一律 `FEATURE_SOON`，不要未注册导致前端 catch 不到 code：
 
-`docker.ps` · `docker.build` · `gateway.apply` · `cloud.login` · `cloud.sync` · `ai.complete`
+`gateway.apply` · `cloud.login` · `cloud.sync` · `ai.complete`
 
-（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6。）
+（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6；1.3 起已转 live：`docker.probe` / `docker.ps` / `docker.images` / `docker.build` / `docker.buildCancel`，见 §4.6.1。）
 
 ---
 
@@ -399,20 +411,30 @@ templates.list
   output: { templates: TemplateSummary[] }
 
 TemplateSummary = {
-  id: string,            // "spring-multimodule-node" | "spring-multimodule-node-minimal"
+  id: string,
   version: string,
   name: string,
   description: string,
   stacks: string[],      // ["spring-boot", "node"]
   files: string[],       // 相对路径概览，仅展示
+  source: "builtin" | "local",   // 模板来源（本地 = %APPDATA%/SuperTask/templates/<id>/）
+  invalid: boolean,      // 仅 local：清单损坏
+  invalid_reason: string | null,
+  params?: { key, label, required }[],   // 创建参数声明
+  blocks?: { id, label, kind, requires, default_port, services }[],  // 组合模板服务块
 }
 
 templates.create
-  input:  { template_id, parent_path, directory_name }
+  input:  { template_id, parent_path, directory_name, source?, params?,
+            blocks?, ports? }   // blocks/ports 仅组合模板：选中块与服务端口分配
   output: { operation_id }
+
+templates.preview
+  input:  { template_id, source?, blocks?, ports?, params? }
+  output: { services: object, files: string[], warnings: string[] }
 ```
 
-`directory_name` 必须是单层目录名（禁止 `..`、路径分隔符、UNC）；目标不存在则创建，存在则必须为空，否则 `TARGET_NOT_EMPTY`。operation `succeeded` 的 `result = { workspace_id }`。创建完成后写入含 `templates:` 元数据的 `supertask.yaml`。
+`directory_name` 必须是单层目录名（禁止 `..`、路径分隔符、UNC）；目标不存在则创建，存在则必须为空，否则 `TARGET_NOT_EMPTY`。operation `succeeded` 的 `result = { workspace_id }`。创建完成后写入含 `templates:` 元数据的 `supertask.yaml`（组合模板的 yaml 由所选块的 services 片段生成，`{{port}}` 占位随端口分配替换）。与 builtin 同 id 的 local 模板在 list 中跳过、create 拒绝（`TEMPLATE_ID_CONFLICT`）。`templates.preview` 是纯计算，无任何落盘副作用；组合校验（依赖闭合 `TEMPLATE_BLOCK_DEP`、端口查重 `TEMPLATE_BLOCK_PORT`）与 create 共用同一实现。参数错误码：`TEMPLATE_PARAM_MISSING` / `TEMPLATE_PARAM_UNKNOWN`。
 
 ### 10.2 Git
 

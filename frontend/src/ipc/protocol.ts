@@ -46,12 +46,18 @@ export const cmd = {
   PROFILES_LIST: "profiles.list",
   PROFILES_ACTIVATE: "profiles.activate",
   RUNTIME_BUILD: "runtime.build",
+  DOCKER_PROBE: "docker.probe",
+  DOCKER_PS: "docker.ps",
+  DOCKER_IMAGES: "docker.images",
+  DOCKER_BUILD: "docker.build",
+  DOCKER_BUILD_CANCEL: "docker.buildCancel",
   LOGS_SUBSCRIBE: "logs.subscribe",
   LOGS_UNSUBSCRIBE: "logs.unsubscribe",
   LOGS_SNAPSHOT: "logs.snapshot",
   LOGS_CLEAR_VIEW: "logs.clearView",
   TEMPLATES_LIST: "templates.list",
   TEMPLATES_CREATE: "templates.create",
+  TEMPLATES_PREVIEW: "templates.preview",
   GIT_CLONE: "git.clone",
   GIT_STATUS: "git.status",
   GIT_PULL: "git.pull",
@@ -169,7 +175,7 @@ export type LogSearchHit = {
   text: string;
   ts: number | null;
 };
-export type LogsSearchResult = { items: LogSearchHit[]; truncated: boolean };
+export type LogsSearchResult = { items: LogSearchHit[]; truncated: boolean; files_scanned: number };
 
 /** 1.2 §9：指标样本。 */
 export type ServiceMetrics = {
@@ -475,6 +481,27 @@ export type LogsEventPayload = {
 // (templates / git / scan merge / operation / update)
 // ---------------------------------------------------------------------------
 
+export type TemplateSource = "builtin" | "local";
+
+/** 模板创建参数声明（清单 params 段；仅展示 key/label/required）。 */
+export type TemplateParam = {
+  key: string;
+  label: string;
+  required: boolean;
+};
+
+/** 组合模板的服务块声明（向导勾选单位）。 */
+export type TemplateBlockSummary = {
+  id: string;
+  label: string;
+  kind: string;
+  /** 依赖的其他块 id；选择时自动闭合 */
+  requires: string[];
+  default_port: number | null;
+  /** 块内声明的服务 id（端口分配的键） */
+  services: string[];
+};
+
 export type TemplateSummary = {
   id: string;
   version: string;
@@ -483,9 +510,25 @@ export type TemplateSummary = {
   stacks: string[];
   /** 模板内相对路径概览（`/` 分隔），仅展示 */
   files: string[];
+  /** 模板来源（升级计划 Phase 1）：官方内置 / 用户本地目录 */
+  source: TemplateSource;
+  /** 仅 local：清单损坏时为 true，此时禁止创建 */
+  invalid: boolean;
+  invalid_reason: string | null;
+  /** 创建参数声明（无参数模板缺省） */
+  params?: TemplateParam[] | null;
+  /** 组合模板的服务块声明（非组合模板缺省） */
+  blocks?: TemplateBlockSummary[] | null;
 };
 
 export type TemplatesListOut = { templates: TemplateSummary[] };
+
+/** `templates.preview` 输出：将生成的 services / 文件清单 / 警告（纯计算）。 */
+export type TemplatesPreviewOut = {
+  services: Record<string, Record<string, unknown>>;
+  files: string[];
+  warnings: string[];
+};
 
 /** 全 snake_case（serde 默认），mirror `crates/supertask-core/src/git.rs`。 */
 export type GitStatus = {
@@ -502,7 +545,8 @@ export type GitStatus = {
   remote: string | null;
 };
 
-export type OpState = "queued" | "running" | "succeeded" | "failed";
+/** 1.3：镜像构建可取消，补 cancelled 终态（feature spec §3.2）。 */
+export type OpState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export type OperationEventPayload = {
   protocol: number;
@@ -541,6 +585,42 @@ export type IdeTarget = "explorer" | "cursor" | "idea" | "code";
 export type OpenIdeOut = { accepted: boolean; ide: string; path: string };
 
 export type OperationIdOut = { operation_id: string };
+
+// ---------------------------------------------------------------------------
+// 1.3 DTOs — docker probe / compose 容器 / 本机镜像（feature spec §9）
+// ---------------------------------------------------------------------------
+
+/** `docker.probe` 输出：found=PATH 有 docker；running=daemon 可达。 */
+export type DockerProbe = {
+  found: boolean;
+  version: string | null;
+  compose_version: string | null;
+  running: boolean;
+};
+
+/** `docker.ps` 条目：限于当前 compose project。state 为 docker 容器态（running/exited/…）。 */
+export type ContainerSummary = {
+  service: string;
+  container_id: string;
+  image: string;
+  state: string;
+  health?: string | null;
+  ports: number[];
+};
+
+/** `docker.images` 条目：本机只读列表，不做删除。 */
+export type ImageSummary = {
+  repository: string;
+  tag: string;
+  id: string;
+  /** 字节；输出解析失败时为 null（UI 显示 —） */
+  size_bytes: number | null;
+  /** epoch ms；时间解析失败时为 null（UI 显示 —） */
+  created_ms: number | null;
+};
+
+export type DockerPsOut = { containers: ContainerSummary[] };
+export type DockerImagesOut = { images: ImageSummary[] };
 
 export type UpdateCheckResult = {
   status: "up_to_date" | "available";

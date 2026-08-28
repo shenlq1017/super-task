@@ -32,6 +32,8 @@ pub struct SearchHit {
 pub struct SearchResult {
     pub items: Vec<SearchHit>,
     pub truncated: bool,
+    /// 实际读到并扫描过的历史文件数；为 0 表示该范围还没有可搜索的历史。
+    pub files_scanned: usize,
 }
 
 /// 一个源（服务/脚本/system）的文件列表：活动文件在前，轮转文件从新到旧。
@@ -116,9 +118,11 @@ pub fn search_logs(
     };
     let mut items = Vec::new();
     let mut truncated = false;
+    let mut files_scanned = 0usize;
     'outer: for src in sources {
         for file in source_files(root, &src) {
             let Ok(text) = fs::read_to_string(&file) else { continue };
+            files_scanned += 1;
             let fname = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
             for (idx, line) in text.lines().enumerate() {
                 let matched = if case_sensitive {
@@ -148,7 +152,7 @@ pub fn search_logs(
             }
         }
     }
-    Ok(SearchResult { items, truncated })
+    Ok(SearchResult { items, truncated, files_scanned })
 }
 
 /// §8.4 导出。format: text | jsonl；目标已存在 → 拒绝（不覆盖）。
@@ -193,9 +197,11 @@ pub fn export_logs(
                 None => all_sources(root),
             };
             let mut items = Vec::new();
+            let mut files_scanned = 0usize;
             for src in sources {
                 for file in source_files(root, &src) {
                     let Ok(text) = fs::read_to_string(&file) else { continue };
+                    files_scanned += 1;
                     let fname = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
                     for (idx, line) in text.lines().enumerate() {
                         items.push(SearchHit {
@@ -213,7 +219,7 @@ pub fn export_logs(
                     }
                 }
             }
-            SearchResult { items, truncated: false }
+            SearchResult { items, truncated: false, files_scanned }
         }
     };
     let mut f = fs::File::create(dest)

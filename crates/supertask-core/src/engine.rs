@@ -24,6 +24,28 @@ use crate::runtime::{apply, RtEvent, RtState};
 use crate::sandbox;
 use crate::spec::{parse_yaml, spec_hash, to_yaml, HealthType, ParseWarning, SuperTaskFile};
 
+use crate::docker::{DockerRunner, DockerSpawn};
+
+/// 1.3 §5.1 compose 服务默认宽限：60s（覆盖首次拉镜像的慢启动）。
+const COMPOSE_DEFAULT_GRACE_SECS: u64 = 60;
+/// compose up 超时：首次拉镜像可能数分钟，up 属于 runtime 状态机而非 operation。
+const COMPOSE_UP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// compose stop 超时。
+const COMPOSE_STOP_TIMEOUT: Duration = Duration::from_secs(60);
+/// ps / images 类只读命令超时（§4.2）。
+const COMPOSE_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// compose 服务的运行期上下文：由哪个 compose 文件 / 项目启动。
+/// `started_by_engine` 只在本引擎执行过 up 后为 true——退出清场只处理这些
+/// 服务（§5.6：用户手工起的容器不动）。
+#[derive(Debug, Clone)]
+pub struct ComposeInfo {
+    pub file: PathBuf,
+    pub project: Option<String>,
+    pub service: String,
+    pub started_by_engine: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthView {
     pub ok: bool,
@@ -145,6 +167,8 @@ struct Slot {
     artifact: Option<PathBuf>,
     /// 1.2 §8.5：进程退出原因（crash / stop）
     exit_reason: Option<&'static str>,
+    /// 1.3：compose 服务的容器运行时上下文（kind != compose 时为 None）
+    compose: Option<ComposeInfo>,
 }
 
 struct ScriptSlot {
@@ -212,24 +236,37 @@ pub struct Engine {
     inner: Arc<Mutex<Inner>>,
     events_rx: Mutex<Receiver<EngineEvent>>,
     spawner: SpawnerKind,
+    /// 1.3：docker CLI runner（fake 可注入，测试不真调 docker）
+    docker: Arc<dyn DockerRunner>,
+    /// 1.3：compose config 解析（mtime+hash 缓存；spec 打开/端口检查/启动共用）
+    compose_loader: crate::docker::ComposeConfigLoader,
+    /// 1.3 §4.1：探测结果会话内缓存，`refresh=true` 强制刷新
+    probe_cache: Mutex<Option<crate::docker::DockerProbe>>,
+    /// 1.3 §3.2：镜像构建长操作（queued → running → succeeded/failed/cancelled）
+    operations: crate::operation::OperationHub,
 }
 
 impl Engine {
     pub fn new() -> Self {
-        Self::create(SpawnerKind::Real)
+        Self::create(SpawnerKind::Real, Arc::new(crate::docker::ProcessDockerRunner))
+    }
+
+    /// 注入自定义 DockerRunner（测试用 fake；生产走 [`Engine::new`]）。
+    pub fn with_docker_runner(runner: Arc<dyn DockerRunner>) -> Self {
+        Self::create(SpawnerKind::Real, runner)
     }
 
     #[cfg(test)]
     pub fn ping_for_test() -> Self {
-        Self::create(SpawnerKind::Ping)
+        Self::create(SpawnerKind::Ping, Arc::new(crate::docker::ProcessDockerRunner))
     }
 
     #[cfg(test)]
     pub fn fail_for_test() -> Self {
-        Self::create(SpawnerKind::Fail)
+        Self::create(SpawnerKind::Fail, Arc::new(crate::docker::ProcessDockerRunner))
     }
 
-    fn create(spawner: SpawnerKind) -> Self {
+    fn create(spawner: SpawnerKind, docker: Arc<dyn DockerRunner>) -> Self {
         let (events_tx, events_rx) = mpsc::sync_channel(512);
         let (log_tx, log_rx) = mpsc::channel::<LogLine>();
         let inner = Arc::new(Mutex::new(Inner {
@@ -260,6 +297,10 @@ impl Engine {
             inner,
             events_rx: Mutex::new(events_rx),
             spawner,
+            compose_loader: crate::docker::ComposeConfigLoader::new(Arc::clone(&docker)),
+            docker,
+            probe_cache: Mutex::new(None),
+            operations: crate::operation::OperationHub::new(),
         }
     }
 
@@ -313,9 +354,13 @@ impl Engine {
                     managed,
                     artifact: None,
                     exit_reason: None,
+                    compose: None,
                 },
             );
         }
+        // 1.3 §2.4/§4.3：compose 引用打开时校验（service 存在 / 端口一致）。
+        // Docker 不可用或解析失败 → 静默跳过，启动时再给出真实错误。
+        warnings.extend(self.compose_open_warnings(&file, &root));
         {
             let mut g = self.inner.lock().expect("engine lock");
             if !g.workspace_id.is_empty() {
@@ -369,6 +414,66 @@ impl Engine {
             slot.job = Some(d.job);
             slot.cancel = Arc::new(AtomicBool::new(false));
         }
+    }
+
+    /// 1.3 §2.4/§4.3：打开时对 `kind: compose` 服务做静态引用校验。
+    /// 只做「能便宜验证」的部分：compose 文件解析结果里有没有这个 service、
+    /// YAML port 与 compose 映射端口是否一致。失败不阻塞打开。
+    fn compose_open_warnings(&self, file: &SuperTaskFile, root: &Path) -> Vec<ParseWarning> {
+        let mut out = Vec::new();
+        if !file.services.values().any(|s| s.kind == "compose") {
+            return out;
+        }
+        let Some(docker_cfg) = file.docker.as_ref() else {
+            return out;
+        };
+        let rel = match docker_cfg.compose_file.clone() {
+            Some(r) => r,
+            None => match crate::scan::discover_compose_file(root) {
+                Some(r) => r,
+                None => {
+                    out.push(ParseWarning {
+                        code: ErrorCode::ComposeFileMissing,
+                        message: "未找到 compose 文件（compose.yaml / compose.yml / docker-compose.yml / docker-compose.yaml）"
+                            .into(),
+                    });
+                    return out;
+                }
+            },
+        };
+        // 加载失败（docker 不可用 / config 非零 / 不可解析）→ 打开不阻塞
+        let Ok(model) = self
+            .compose_loader
+            .load(root, &rel, docker_cfg.project_name.as_deref())
+        else {
+            return out;
+        };
+        for (id, svc) in &file.services {
+            if svc.kind != "compose" {
+                continue;
+            }
+            let name = svc.service.as_deref().unwrap_or("");
+            match model.find(name) {
+                None => out.push(ParseWarning {
+                    code: ErrorCode::ComposeServiceMissing,
+                    message: format!("{id}: compose 文件中没有服务 {name:?}"),
+                }),
+                Some(m) => {
+                    if let Some(p) = svc.port {
+                        if m.port.is_some() && m.port != Some(p) {
+                            out.push(ParseWarning {
+                                code: ErrorCode::ComposePortMismatch,
+                                message: format!(
+                                    "{id}: YAML port {p} 与 compose 映射端口 {} 不一致（健康与冲突检查以 YAML 为准，需同步修改 compose 文件）",
+                                    m.port.unwrap()
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Write a fresh `supertask.yaml` from a spec, then open the workspace.
@@ -637,6 +742,32 @@ impl Engine {
             if matches!(slot.state, RtState::Stopped) {
                 return Ok(());
             }
+            // 1.3 §5.2/§5.6：compose 服务走容器运行时分支——容器进程不进
+            // Job/taskkill，只 `docker compose stop`；未由本引擎启动过的容器不动。
+            if slot.kind == "compose" {
+                match slot.compose.clone().filter(|c| c.started_by_engine) {
+                    Some(info) => {
+                        slot.stop_requested = true;
+                        slot.cancel.store(true, Ordering::SeqCst);
+                        if let Ok(next) = apply(slot.state, RtEvent::StopRequested) {
+                            slot.state = next;
+                        }
+                        emit_runtime(&g);
+                        drop(g);
+                        return self.compose_stop(id, info);
+                    }
+                    None => {
+                        if slot.compose.is_some() && slot.state == RtState::Starting {
+                            // up 仍在执行：置位请求，up 完成后自动补 stop（compose_up_flow）
+                            slot.stop_requested = true;
+                            slot.cancel.store(true, Ordering::SeqCst);
+                            emit_runtime(&g);
+                        }
+                        // 其余（外部手工起的容器 / 从未启动）：不动（§5.6）
+                        return Ok(());
+                    }
+                }
+            }
             // 外部进程：无 Job 可 terminate，按端口找到 pid 后 taskkill 整棵树
             if !slot.managed {
                 let port = slot.port;
@@ -830,6 +961,11 @@ impl Engine {
             // 1.2 §10：base + active profile overlay（不写回 base 字段）
             let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
             let eff_svc = eff_spec.services.get(id).unwrap().clone();
+            if eff_svc.kind == "compose" {
+                // 1.3 §5.2：compose 服务走容器运行时分支（up/stop），不经本地命令规划
+                drop(g);
+                return self.spawn_compose(id, &eff_svc);
+            }
             let is_jar = eff_svc.kind == "spring-boot" && eff_svc.launch.as_deref() == Some("jar");
             // §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入
             let env = build_service_env(&eff_spec, id, &g.root)?;
@@ -920,20 +1056,51 @@ impl Engine {
     // -------------------------------------------------------------------
 
     /// §5.1 端口检查：本机 TCP 监听表 + 引擎托管 PID 对照。
-    pub fn ports_inspect(&self) -> Result<Vec<crate::ipc::PortInspection>> {
-        let (spec, managed) = {
+    /// 自身进程树（含 mvn 派生的 java 等）不算占用；引擎其它 Job 树占用的端口
+    /// 标记 managed。`target = Some(p)` 时只检查该候选端口（配合环境页输入框），
+    /// 否则检查全部已配置端口。
+    pub fn ports_inspect(
+        &self,
+        id: &str,
+        target: Option<u16>,
+    ) -> Result<Vec<crate::ipc::PortInspection>> {
+        let (spec, managed, own) = {
             let g = self.inner.lock().expect("engine lock");
             require_ws(&g)?;
-            let managed: std::collections::HashSet<u32> = g
-                .slots
-                .values()
-                .filter(|s| s.managed)
-                .filter_map(|s| s.pid)
-                .collect();
-            (g.spec.clone(), managed)
+            let mut managed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            let mut own: std::collections::HashMap<String, crate::ports::OwnRuntime> =
+                std::collections::HashMap::new();
+            for (slot_id, s) in &g.slots {
+                // 本服务整个 Job 树（含派生子进程）——Spring 由 mvn 派生 java 监听
+                let mut pids = s.job.as_ref().map(|j| j.pids()).unwrap_or_default();
+                if let Some(p) = s.pid {
+                    if !pids.contains(&p) {
+                        pids.push(p);
+                    }
+                }
+                if s.managed {
+                    managed.extend(pids.iter().copied());
+                }
+                own.insert(
+                    slot_id.clone(),
+                    crate::ports::OwnRuntime {
+                        pids,
+                        running: matches!(
+                            s.state,
+                            RtState::Running | RtState::Starting | RtState::Unhealthy
+                        ),
+                    },
+                );
+            }
+            (g.spec.clone(), managed, own)
         };
         let listeners = crate::ports::tcp_listeners()?;
-        Ok(crate::ports::inspect(&spec, &listeners, &managed))
+        match target {
+            Some(p) => Ok(vec![crate::ports::inspect_single(
+                &spec, id, p, &listeners, &managed, &own,
+            )?]),
+            None => Ok(crate::ports::inspect(&spec, &listeners, &managed, &own)),
+        }
     }
 
     /// §5.2 建议端口（跳过兄弟服务/系统保留/已监听）。
@@ -1164,6 +1331,387 @@ impl Engine {
         jar_build_phase(Arc::clone(&self.inner), id, build_spec, &root)
     }
 
+    // -------------------------------------------------------------------
+    // 1.3 phase 3/4：compose 运行时（§5）与镜像构建（§6）
+    // -------------------------------------------------------------------
+
+    /// §4.1 docker 探测：会话内缓存；`refresh=true` 强制刷新（「重试探测」按钮）。
+    /// 不要求已打开工作区。结果不改写 DOCKER_HOST 等用户环境。
+    pub fn docker_probe(&self, refresh: bool) -> crate::docker::DockerProbe {
+        let mut cache = self.probe_cache.lock().expect("probe cache");
+        if refresh || cache.is_none() {
+            *cache = Some(crate::docker::probe_docker(self.docker.as_ref()));
+        }
+        cache.clone().expect("probe cache")
+    }
+
+    fn probe_ready(&self) -> Result<crate::docker::DockerProbe> {
+        let probe = self.docker_probe(false);
+        crate::docker::ensure_compose_ready(&probe)?;
+        Ok(probe)
+    }
+
+    /// §9 docker.ps：当前 compose project 的容器只读列表（无 compose 文件则空）。
+    pub fn docker_ps(&self) -> Result<Vec<crate::ipc::ContainerSummary>> {
+        let (root, file, project) = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            match self.compose_file_of(&g)? {
+                None => return Ok(Vec::new()),
+                Some((f, p)) => (g.root.clone(), f, p),
+            }
+        };
+        let mut args = crate::docker::compose_base_args(&file, project.as_deref());
+        args.extend(["ps".to_string(), "--format".to_string(), "json".to_string()]);
+        let out = self
+            .docker
+            .run(&DockerSpawn {
+                args,
+                cwd: Some(root),
+                timeout: COMPOSE_QUERY_TIMEOUT,
+            })
+            .map_err(map_docker_spawn_err)?;
+        if out.code != 0 {
+            return Err(Error::new(
+                ErrorCode::ComposeConfigFailed,
+                format!("docker compose ps 退出码 {}: {}", out.code, out.stderr.trim()),
+            ));
+        }
+        Ok(crate::docker::parse_ps(&out.stdout)
+            .iter()
+            .map(|c| c.summary())
+            .collect())
+    }
+
+    /// §9 docker.images：本机镜像只读列表（不要求工作区）。
+    pub fn docker_images(&self) -> Result<Vec<crate::ipc::ImageSummary>> {
+        let out = self
+            .docker
+            .run(&DockerSpawn {
+                args: vec!["images".into(), "--format".into(), "json".into()],
+                cwd: None,
+                timeout: COMPOSE_QUERY_TIMEOUT,
+            })
+            .map_err(map_docker_spawn_err)?;
+        if out.code != 0 {
+            return Err(Error::new(
+                ErrorCode::DockerEngineUnreachable,
+                format!("docker images 退出码 {}: {}", out.code, out.stderr.trim()),
+            ));
+        }
+        Ok(crate::docker::parse_images(&out.stdout))
+    }
+
+    /// 解析当前 compose 文件：显式 `docker.compose_file` 或按 §7 候选顺序探测。
+    /// 返回 (绝对路径, project name)；无 compose 文件 → None。
+    fn compose_file_of(&self, g: &Inner) -> Result<Option<(PathBuf, Option<String>)>> {
+        let Some(cfg) = g.spec.docker.as_ref() else {
+            return Ok(None);
+        };
+        let rel = match cfg.compose_file.clone() {
+            Some(r) => r,
+            None => match crate::scan::discover_compose_file(&g.root) {
+                Some(r) => r,
+                None => return Ok(None),
+            },
+        };
+        Ok(Some((sandbox::confine(&g.root, &rel)?, cfg.project_name.clone())))
+    }
+
+    /// §5.2 compose 启动：同步前置检查（失败不 accepted）→ 异步 up。
+    /// 同步部分：docker 三态、compose 文件存在、service 在解析结果中、
+    /// 端口 PORT_DUP（1.2 口径，compose 主机端口参与）。
+    fn spawn_compose(&self, id: &str, svc: &crate::spec::ServiceSpec) -> Result<()> {
+        // 1) docker 三态前置（probe 缓存；锁外执行，最多 5s）
+        self.probe_ready()?;
+        let service = svc.service.clone().ok_or_else(|| {
+            Error::new(ErrorCode::SpecInvalid, format!("{id}: kind: compose 缺少 service 字段"))
+        })?;
+        let (file, project) = {
+            let g = self.inner.lock().expect("engine lock");
+            match self.compose_file_of(&g)? {
+                Some(v) => v,
+                None => {
+                    return Err(Error::new(
+                        ErrorCode::ComposeFileMissing,
+                        format!(
+                            "{id}: 未找到 compose 文件（docker.compose_file 未配置且工作区根没有 compose.yaml / compose.yml / docker-compose.yml / docker-compose.yaml）"
+                        ),
+                    ))
+                }
+            }
+        };
+        // 2) service 必须在 compose 解析结果中（loader 带 mtime+hash 缓存）
+        let model = {
+            let g = self.inner.lock().expect("engine lock");
+            let rel = g
+                .spec
+                .docker
+                .as_ref()
+                .and_then(|d| d.compose_file.clone())
+                .or_else(|| crate::scan::discover_compose_file(&g.root));
+            match rel {
+                Some(r) => {
+                    let project = g.spec.docker.as_ref().and_then(|d| d.project_name.clone());
+                    self.compose_loader.load(&g.root, &r, project.as_deref())?
+                }
+                None => return Err(Error::new(ErrorCode::ComposeFileMissing, "未找到 compose 文件")),
+            }
+        };
+        if model.find(&service).is_none() {
+            return Err(Error::new(
+                ErrorCode::ComposeServiceMissing,
+                format!("{id}: compose 文件中没有服务 {service:?}"),
+            ));
+        }
+        // 3) 端口 PORT_DUP：与其他启用服务撞端口（1.2 口径）
+        if let Some(p) = svc.port {
+            let dup = {
+                let g = self.inner.lock().expect("engine lock");
+                g.spec
+                    .services
+                    .iter()
+                    .any(|(oid, osvc)| oid != id && osvc.enabled && osvc.port == Some(p))
+            };
+            if dup {
+                return Err(Error::new(
+                    ErrorCode::PortDup,
+                    format!("{id}: 端口 {p} 与其他服务重复"),
+                ));
+            }
+        }
+        // 设 Starting + compose 上下文（up 异步执行，startOne 立即 accepted）
+        let health = compose_health(svc);
+        let info = ComposeInfo {
+            file,
+            project,
+            service,
+            started_by_engine: false,
+        };
+        let port = svc.port;
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut g = self.inner.lock().expect("engine lock");
+            let slot = g.slots.get_mut(id).expect("slot exists");
+            slot.state = RtState::Starting;
+            slot.started = Some(Instant::now());
+            slot.started_at_ms = Some(now_ms());
+            slot.last_error = None;
+            slot.last_exit = None;
+            slot.exit_reason = None;
+            slot.stop_requested = false;
+            slot.cancel = Arc::clone(&cancel);
+            slot.port = port;
+            slot.kind = "compose".into();
+            slot.grace = Duration::from_secs(
+                svc.grace_secs
+                    .map(|s| s as u64)
+                    .unwrap_or(COMPOSE_DEFAULT_GRACE_SECS),
+            );
+            slot.managed = true;
+            slot.compose = Some(info.clone());
+            emit_runtime(&g);
+        }
+        let inner = Arc::clone(&self.inner);
+        let runner = Arc::clone(&self.docker);
+        let id2 = id.to_string();
+        thread::Builder::new()
+            .name(format!("st-compose-{id}"))
+            .spawn(move || {
+                compose_up_flow(inner, id2, info, port, health, cancel, runner);
+            })
+            .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法启动 compose 线程: {e}")))?;
+        Ok(())
+    }
+
+    /// §5.2 停止：`docker compose stop <service>`；非零 → 重查容器实际状态
+    /// 对齐 UI；daemon 不可达 → 记录错误，不假报成功。
+    fn compose_stop(&self, id: &str, info: ComposeInfo) -> Result<()> {
+        let root = self.inner.lock().expect("engine lock").root.clone();
+        let src = LogSource {
+            kind: LogSourceKind::Service,
+            id: id.to_string(),
+        };
+        let outcome = self.docker.run(&DockerSpawn {
+            args: compose_stop_args(&info),
+            cwd: Some(root.clone()),
+            timeout: COMPOSE_STOP_TIMEOUT,
+        });
+        let mut g = self.inner.lock().expect("engine lock");
+        let Some(slot) = g.slots.get_mut(id) else {
+            return Ok(()); // 工作区已切换：容器交给 daemon
+        };
+        match outcome {
+            Ok(out) if out.code == 0 => {
+                slot.state = RtState::Stopped;
+                slot.exit_reason = None;
+                slot.started = None;
+                emit_runtime(&g);
+                Ok(())
+            }
+            Ok(out) => {
+                push_line(
+                    &self.inner,
+                    src.clone(),
+                    LogStream::System,
+                    format!("COMPOSE_STOP_FAILED: docker compose stop 退出码 {}", out.code),
+                );
+                slot.last_error =
+                    Some(format!("COMPOSE_STOP_FAILED: docker compose stop 退出码 {}", out.code));
+                // 重查实际状态对齐 UI（§5.2）
+                match compose_container_running(&self.docker, &root, &info) {
+                    Some(false) => {
+                        slot.state = RtState::Stopped;
+                        slot.exit_reason = None;
+                        emit_runtime(&g);
+                        Ok(())
+                    }
+                    Some(true) => {
+                        slot.state = RtState::Running;
+                        emit_runtime(&g);
+                        Err(Error::new(
+                            ErrorCode::ComposeStopFailed,
+                            format!("{}: docker compose stop 退出码 {}，容器仍在运行", id, out.code),
+                        ))
+                    }
+                    None => {
+                        // daemon 不可达：保持现状，不假报成功
+                        emit_runtime(&g);
+                        Err(Error::new(
+                            ErrorCode::ComposeStopFailed,
+                            format!("{id}: 停止后无法确认容器状态（Docker 不可达？）"),
+                        ))
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = if e.kind() == std::io::ErrorKind::NotFound {
+                    "COMPOSE_STOP_FAILED: 未找到 docker。请安装 Docker Desktop 并确保在 PATH 中。".to_string()
+                } else {
+                    format!("COMPOSE_STOP_FAILED: docker compose stop 执行失败: {e}")
+                };
+                push_line(&self.inner, src, LogStream::System, msg.clone());
+                slot.last_error = Some(msg);
+                emit_runtime(&g);
+                Err(Error::new(ErrorCode::ComposeStopFailed, "docker compose stop 执行失败"))
+            }
+        }
+    }
+
+    /// §6.2 `docker.build`：builds 条目镜像构建，走 operation（可取消，无超时）。
+    /// name 必须在 YAML `docker.builds` 中；context/dockerfile 沙箱校验。
+    pub fn docker_build(&self, name: &str) -> Result<String> {
+        let (root, entry) = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            let cfg = g.spec.docker.as_ref().ok_or_else(|| {
+                Error::new(ErrorCode::DockerBuildUnknown, format!("docker.builds 中没有 {name:?}"))
+            })?;
+            let entry = cfg
+                .builds
+                .iter()
+                .find(|b| b.name == name)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::DockerBuildUnknown, format!("docker.builds 中没有 {name:?}"))
+                })?;
+            (g.root.clone(), entry)
+        };
+        // PATH_ESCAPE 同步返回（§6.2 沙箱校验）
+        let args = crate::docker::plan_build_entry(&root, &entry)?;
+        let runner = Arc::clone(&self.docker);
+        let inner = Arc::clone(&self.inner);
+        let src = LogSource {
+            kind: LogSourceKind::System,
+            id: name.to_string(),
+        };
+        let label = format!("docker build {name}");
+        let spawn_spec = DockerSpawn {
+            args,
+            cwd: Some(root),
+            timeout: Duration::from_secs(3600),
+        };
+        Ok(self.operations.spawn("docker.build", move |ctx| {
+            run_build_streaming(&inner, ctx, &runner, &spawn_spec, &src, &label)
+        }))
+    }
+
+    /// §6.1 compose 服务「构建镜像」：`docker compose build <service>`，走 operation。
+    /// 非 compose 服务调用 → SPEC_INVALID（IPC 层 runtime.build 对 compose 走这里）。
+    pub fn build_compose(&self, id: &str) -> Result<String> {
+        let (root, rel_file, project, service) = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            let slot = g
+                .slots
+                .get(id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+            if slot.kind != "compose" {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("{id} 不是 kind: compose 服务，无法构建镜像"),
+                ));
+            }
+            let svc = g
+                .spec
+                .services
+                .get(id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+            let service = svc.service.clone().ok_or_else(|| {
+                Error::new(ErrorCode::SpecInvalid, format!("{id}: kind: compose 缺少 service 字段"))
+            })?;
+            let (rel_file, project) = match g.spec.docker.as_ref() {
+                Some(d) => (
+                    d.compose_file
+                        .clone()
+                        .or_else(|| crate::scan::discover_compose_file(&g.root)),
+                    d.project_name.clone(),
+                ),
+                None => (crate::scan::discover_compose_file(&g.root), None),
+            };
+            let rel_file = rel_file.ok_or_else(|| {
+                Error::new(ErrorCode::ComposeFileMissing, "未找到 compose 文件")
+            })?;
+            (g.root.clone(), rel_file, project, service)
+        };
+        // service 存在性（缓存解析；沙箱校验）
+        let file = sandbox::confine(&root, &rel_file)?;
+        let model = self.compose_loader.load(&root, &rel_file, project.as_deref())?;
+        if model.find(&service).is_none() {
+            return Err(Error::new(
+                ErrorCode::ComposeServiceMissing,
+                format!("{id}: compose 文件中没有服务 {service:?}"),
+            ));
+        }
+        let args = crate::docker::plan_compose_build(&file, project.as_deref(), &service);
+        let runner = Arc::clone(&self.docker);
+        let inner = Arc::clone(&self.inner);
+        let src = LogSource {
+            kind: LogSourceKind::Service,
+            id: id.to_string(),
+        };
+        let label = format!("compose build {service}");
+        let spawn_spec = DockerSpawn {
+            args,
+            cwd: Some(root),
+            timeout: Duration::from_secs(3600),
+        };
+        Ok(self.operations.spawn("compose.build", move |ctx| {
+            run_build_streaming(&inner, ctx, &runner, &spawn_spec, &src, &label)
+        }))
+    }
+
+    /// 取消引擎内的长操作（镜像构建 best effort：杀进程，不删层）。
+    pub fn cancel_operation(&self, id: &str) -> bool {
+        self.operations.cancel(id)
+    }
+
+    /// 引擎内长操作 hub：`st.operation` 事件桥需要另外轮询它
+    /// （与 src-tauri 侧 git/模板 hub 相互独立）。
+    pub fn operations(&self) -> &crate::operation::OperationHub {
+        &self.operations
+    }
+
     /// 工作区引用（spec 快照 + root），供 secrets/日志等文件型操作使用。
     fn ws_ref(&self) -> Result<(SuperTaskFile, PathBuf)> {
         let g = self.inner.lock().expect("engine lock");
@@ -1331,6 +1879,7 @@ fn apply_spec_slots(g: &mut Inner, file: &SuperTaskFile) -> Result<()> {
                 managed: true,
                 artifact: None,
                 exit_reason: None,
+                compose: None,
             },
         );
     }
@@ -1361,7 +1910,8 @@ fn build_snapshot(g: &Inner) -> RuntimeSnapshot {
                 last_error: slot.last_error.clone(),
                 exit_reason: slot.exit_reason.map(str::to_string),
                 log_seq: g.logs.next_seq().saturating_sub(1),
-                managed: slot.managed,
+                // 有 Job 即本引擎托管（防止历史 slot.managed=false 误标「外部」）
+                managed: slot.managed || slot.job.is_some(),
             },
         );
     }
@@ -1762,6 +2312,8 @@ fn spawn_core(
         slot.cancel = Arc::new(AtomicBool::new(false));
         slot.stop_requested = false;
         slot.job = Some(Arc::new(job));
+        // SuperTask 已挂上 Job → 本会话托管；修复「load 时端口占用标成外部，stop 后再 start 仍 managed=false」
+        slot.managed = true;
         slot.pid = Some(pid);
         slot.started = Some(Instant::now());
         slot.started_at_ms = Some(now_ms());
@@ -2341,10 +2893,452 @@ fn flush_logs(inner: &Mutex<Inner>, items: Vec<LogLine>) {
     });
 }
 
+// ============================================================================
+// 1.3 phase 3/4：compose 运行时与镜像构建（自由函数，测试可断言 argv）
+// ============================================================================
+
+fn compose_up_args(info: &ComposeInfo) -> Vec<String> {
+    let mut a = crate::docker::compose_base_args(&info.file, info.project.as_deref());
+    // --no-deps 必带：SuperTask 依赖图是顺序唯一真源（§5.2）；只允许单服务名
+    a.extend(["up".to_string(), "-d".to_string(), "--no-deps".to_string(), info.service.clone()]);
+    a
+}
+
+fn compose_stop_args(info: &ComposeInfo) -> Vec<String> {
+    let mut a = crate::docker::compose_base_args(&info.file, info.project.as_deref());
+    a.extend(["stop".to_string(), info.service.clone()]);
+    a
+}
+
+fn compose_ps_args(info: &ComposeInfo) -> Vec<String> {
+    let mut a = crate::docker::compose_base_args(&info.file, info.project.as_deref());
+    a.extend(["ps".to_string(), "--format".to_string(), "json".to_string(), info.service.clone()]);
+    a
+}
+
+fn compose_logs_args(info: &ComposeInfo) -> Vec<String> {
+    let mut a = crate::docker::compose_base_args(&info.file, info.project.as_deref());
+    a.extend([
+        "logs".to_string(),
+        "--follow".to_string(),
+        "--no-color".to_string(),
+        "--timestamps".to_string(),
+        info.service.clone(),
+    ]);
+    a
+}
+
+/// compose 服务健康口径（§5.1）：显式 health 优先；默认 tcp（有 port 时），
+/// 无 port 则 none。
+fn compose_health(svc: &crate::spec::ServiceSpec) -> Option<crate::spec::HealthSpec> {
+    if let Some(h) = &svc.health {
+        return Some(h.clone());
+    }
+    svc.port.map(|_| crate::spec::HealthSpec {
+        r#type: HealthType::Tcp,
+        http: None,
+        interval_secs: 2,
+        timeout_secs: 2,
+    })
+}
+
+fn map_docker_spawn_err(e: std::io::Error) -> Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        Error::new(
+            ErrorCode::DockerNotFound,
+            "未找到 docker。请安装 Docker Desktop 并确保在 PATH 中。",
+        )
+    } else {
+        Error::new(
+            ErrorCode::DockerEngineUnreachable,
+            format!("docker 命令执行失败: {e}"),
+        )
+    }
+}
+
+/// 重查容器是否仍存在且未退出：Some(true/false)；查询失败（daemon 不可达）None。
+fn compose_container_running(
+    runner: &Arc<dyn DockerRunner>,
+    root: &Path,
+    info: &ComposeInfo,
+) -> Option<bool> {
+    let out = runner
+        .run(&DockerSpawn {
+            args: compose_ps_args(info),
+            cwd: Some(root.to_path_buf()),
+            timeout: COMPOSE_QUERY_TIMEOUT,
+        })
+        .ok()?;
+    if out.code != 0 {
+        return None;
+    }
+    let items = crate::docker::parse_ps(&out.stdout);
+    Some(items.iter().any(|c| !c.exited()))
+}
+
+/// compose up 后台流程（§5.2）：up -d --no-deps →（成功）日志跟随 + 健康 +
+/// 状态轮询；（失败）回 stopped + COMPOSE_UP_FAILED。
+fn compose_up_flow(
+    inner: Arc<Mutex<Inner>>,
+    id: String,
+    info: ComposeInfo,
+    port: Option<u16>,
+    health: Option<crate::spec::HealthSpec>,
+    cancel: Arc<AtomicBool>,
+    runner: Arc<dyn DockerRunner>,
+) {
+    let src = LogSource {
+        kind: LogSourceKind::Service,
+        id: id.clone(),
+    };
+    let root = inner.lock().expect("engine lock").root.clone();
+    // docker CLI 自身输出（含拉取进度）→ system stream（§5.4）
+    let code = match runner.run(&DockerSpawn {
+        args: compose_up_args(&info),
+        cwd: Some(root.clone()),
+        timeout: COMPOSE_UP_TIMEOUT,
+    }) {
+        Ok(out) => {
+            for line in out.stdout.lines().chain(out.stderr.lines()) {
+                if !line.trim().is_empty() {
+                    push_line(&inner, src.clone(), LogStream::System, line.to_string());
+                }
+            }
+            out.code
+        }
+        Err(e) => {
+            push_line(
+                &inner,
+                src.clone(),
+                LogStream::System,
+                format!("docker compose up 执行失败: {e}"),
+            );
+            -1
+        }
+    };
+    if code != 0 {
+        // up 非零 → 状态回 stopped，last_error 带输出摘要；不进 running（§5.2）
+        let mut g = inner.lock().expect("engine lock");
+        if let Some(slot) = g.slots.get_mut(&id) {
+            if let Ok(s) = apply(slot.state, RtEvent::ProcessExited { stop_requested: true }) {
+                slot.state = s;
+            }
+            slot.started = None;
+            slot.pid = None;
+            slot.last_error = Some(format!("COMPOSE_UP_FAILED: docker compose up 退出码 {code}"));
+            emit_runtime(&g);
+        }
+        return;
+    }
+    let stop_after_up = {
+        let mut g = inner.lock().expect("engine lock");
+        let Some(slot) = g.slots.get_mut(&id) else { return };
+        if let Some(c) = slot.compose.as_mut() {
+            c.started_by_engine = true;
+        }
+        // up 期间用户已请求停止：立即补一次 stop，不进入 running
+        let stop_requested = slot.stop_requested;
+        if !stop_requested {
+            let health_none = health
+                .as_ref()
+                .map(|h| h.r#type == HealthType::None)
+                .unwrap_or(true);
+            if health_none {
+                slot.state = RtState::Running;
+            }
+            emit_runtime(&g);
+        }
+        stop_requested
+    };
+    if stop_after_up {
+        let _ = runner.run(&DockerSpawn {
+            args: compose_stop_args(&info),
+            cwd: Some(root),
+            timeout: COMPOSE_STOP_TIMEOUT,
+        });
+        let mut g = inner.lock().expect("engine lock");
+        if let Some(slot) = g.slots.get_mut(&id) {
+            slot.state = RtState::Stopped;
+            slot.started = None;
+            emit_runtime(&g);
+        }
+        return;
+    }
+    compose_follow_logs(&inner, &id, &info, &cancel, &runner);
+    if let Some(hs) = &health {
+        if hs.r#type != HealthType::None {
+            spawn_health(inner.clone(), id.clone(), hs.clone(), port, cancel.clone());
+        }
+    }
+    compose_monitor(inner, id, info, health, cancel, runner, root);
+}
+
+/// §5.4 日志跟随：`logs --follow --no-color --timestamps`，从当前开始不回放。
+/// 容器停止后 --follow 自然结束；cancel 时 kill docker 进程收尾。
+fn compose_follow_logs(
+    inner: &Arc<Mutex<Inner>>,
+    id: &str,
+    info: &ComposeInfo,
+    cancel: &Arc<AtomicBool>,
+    runner: &Arc<dyn DockerRunner>,
+) {
+    let src = LogSource {
+        kind: LogSourceKind::Service,
+        id: id.to_string(),
+    };
+    let root = inner.lock().expect("engine lock").root.clone();
+    let stream = match runner.run_stream(&DockerSpawn {
+        args: compose_logs_args(info),
+        cwd: Some(root),
+        timeout: COMPOSE_UP_TIMEOUT, // run_stream 不使用超时
+    }) {
+        Ok(s) => s,
+        Err(e) => {
+            push_line(
+                inner,
+                src,
+                LogStream::System,
+                format!("日志跟随启动失败（不影响服务状态）: {e}"),
+            );
+            return;
+        }
+    };
+    let crate::docker::DockerStream {
+        stdout,
+        stderr,
+        kill,
+        wait: _, // --follow 无需退出码
+    } = stream;
+    // stderr：docker CLI 自身错误 → system stream
+    spawn_pump(inner.clone(), src.clone(), LogStream::System, stderr, cancel.clone());
+    let done = Arc::new(AtomicBool::new(false));
+    // stdout：容器日志 → stdout stream；EOF → done
+    {
+        let inner2 = Arc::clone(inner);
+        let src2 = src.clone();
+        let cancel2 = Arc::clone(cancel);
+        let done2 = Arc::clone(&done);
+        let _ = thread::Builder::new()
+            .name(format!("st-clog-{id}"))
+            .spawn(move || {
+                let mut reader = BufReader::new(stdout);
+                let mut buf: Vec<u8> = Vec::with_capacity(512);
+                loop {
+                    if cancel2.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    if buf.last() == Some(&b'\n') {
+                        buf.pop();
+                    }
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                    push_line(&inner2, src2.clone(), LogStream::Stdout, decode_line(&buf));
+                }
+                done2.store(true, Ordering::SeqCst);
+            });
+    }
+    // watcher：cancel → kill docker logs 进程；正常结束（done）→ 直接退出
+    let cancel_w = Arc::clone(cancel);
+    let done_w = Arc::clone(&done);
+    thread::Builder::new()
+        .name(format!("st-clog-kill-{id}"))
+        .spawn(move || loop {
+            if done_w.load(Ordering::Relaxed) {
+                break;
+            }
+            if cancel_w.load(Ordering::Relaxed) {
+                kill();
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        })
+        .ok();
+}
+
+/// §5.3 状态轮询：按健康探测节奏 `compose ps --format json <service>`。
+/// 容器 exited 且非本引擎 stop 请求 → exited/crash（复用 1.2 崩溃通知路径）。
+#[allow(clippy::too_many_arguments)]
+fn compose_monitor(
+    inner: Arc<Mutex<Inner>>,
+    id: String,
+    info: ComposeInfo,
+    health: Option<crate::spec::HealthSpec>,
+    cancel: Arc<AtomicBool>,
+    runner: Arc<dyn DockerRunner>,
+    root: PathBuf,
+) {
+    let interval = Duration::from_secs(
+        health
+            .as_ref()
+            .map(|h| h.interval_secs.max(1) as u64)
+            .unwrap_or(2),
+    );
+    let _ = thread::Builder::new()
+        .name(format!("st-cps-{id}"))
+        .spawn(move || loop {
+            thread::sleep(interval);
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            {
+                let g = inner.lock().expect("engine lock");
+                match g.slots.get(&id).map(|s| s.state) {
+                    None
+                    | Some(RtState::Stopped)
+                    | Some(RtState::Exited)
+                    | Some(RtState::Stopping) => break,
+                    _ => {}
+                }
+            }
+            // daemon 暂不可达：跳过本轮，恢复后自动纠正（§12 可靠性）
+            let Ok(out) = runner.run(&DockerSpawn {
+                args: compose_ps_args(&info),
+                cwd: Some(root.clone()),
+                timeout: COMPOSE_QUERY_TIMEOUT,
+            }) else {
+                continue;
+            };
+            if out.code != 0 {
+                continue;
+            }
+            let Some(c) = crate::docker::parse_ps(&out.stdout).into_iter().find(|c| c.exited()) else {
+                continue;
+            };
+            let mut g = inner.lock().expect("engine lock");
+            let Some(slot) = g.slots.get_mut(&id) else { break };
+            if slot.stop_requested {
+                continue; // 引擎 stop 流程负责收尾
+            }
+            // 外部退出（docker stop / OOM）→ exited + crash
+            slot.last_exit = Some(ExitView {
+                code: c.exit_code.unwrap_or(-1),
+                at_ms: now_ms(),
+            });
+            slot.exit_reason = Some("crash");
+            slot.pid = None;
+            slot.started = None;
+            slot.cancel.store(true, Ordering::SeqCst); // 停健康探测与日志泵
+            if let Ok(s) = apply(slot.state, RtEvent::ProcessExited { stop_requested: false }) {
+                slot.state = s;
+            }
+            emit_runtime(&g);
+            break;
+        });
+}
+
+/// §6.2 镜像构建公共执行：流式输出进日志 + 尾部 20 行作 operation message +
+/// 逐行检查取消（取消杀进程，不删层，状态如实 cancelled）。
+fn run_build_streaming(
+    inner: &Arc<Mutex<Inner>>,
+    ctx: &crate::operation::OperationCtx,
+    runner: &Arc<dyn DockerRunner>,
+    spawn: &DockerSpawn,
+    src: &LogSource,
+    label: &str,
+) -> Result<serde_yaml::Value> {
+    let crate::docker::DockerStream { stdout, stderr, kill, wait } = match runner.run_stream(spawn)
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(map_docker_spawn_err(e));
+        }
+    };
+    ctx.on_cancel(kill); // 取消 → 杀构建进程（best effort，不删已提交层）
+    // stderr 独立线程排水（BuildKit 进度走 stderr；防管道写满互卡）
+    let inner2 = Arc::clone(inner);
+    let src2 = src.clone();
+    let ctx2 = ctx.clone();
+    let err_thread = thread::spawn(move || {
+        let mut lines: Vec<String> = Vec::new();
+        let mut reader = BufReader::new(stderr);
+        let mut buf: Vec<u8> = Vec::with_capacity(512);
+        loop {
+            if ctx2.cancelled() {
+                break;
+            }
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            if buf.last() == Some(&b'\n') {
+                buf.pop();
+            }
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            let text = decode_line(&buf);
+            push_line(&inner2, src2.clone(), LogStream::System, text.clone());
+            lines.push(text);
+        }
+        lines
+    });
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut reader = BufReader::new(stdout);
+    let mut buf: Vec<u8> = Vec::with_capacity(512);
+    loop {
+        if ctx.cancelled() {
+            break;
+        }
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+        let text = decode_line(&buf);
+        push_line(inner, src.clone(), LogStream::System, text.clone());
+        out_lines.push(text);
+    }
+    let err_lines = err_thread.join().unwrap_or_default();
+    if ctx.cancelled() {
+        return Err(Error::new(ErrorCode::Spawn, "构建已取消"));
+    }
+    let code = { let mut wait = wait; wait() };
+    let mut all = out_lines;
+    all.extend(err_lines);
+    // 单行截断由日志管道负责；operation message 只带尾部摘要（默认最后 20 行）
+    let tail = tail_lines(&all, 20);
+    if code != 0 {
+        return Err(Error::new(
+            ErrorCode::ImageBuildFailed,
+            format!("{label} 退出码 {code}：{tail}"),
+        ));
+    }
+    ctx.report(None, tail.clone());
+    Ok(serde_yaml::Value::String(tail))
+}
+
+/// 取输出尾部（最后 n 行，空行跳过），作构建失败/成功的摘要。
+fn tail_lines(lines: &[String], n: usize) -> String {
+    let mut tail: Vec<String> = lines
+        .iter()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(n)
+        .map(|l| crate::log::truncate_line(l.clone()))
+        .collect();
+    tail.reverse();
+    tail.join("\n")
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
+
+    use crate::docker::FakeDockerRunner;
 
     /// 回归：node 服务日志出现乱码
     /// 1) cmd/npm 包装层 echo 的中文是 GBK（936）字节，UTF-8 严格解码必乱
@@ -2415,6 +3409,468 @@ services:
         false
     }
 
+    fn wait_eq_for(eng: &Engine, id: &str, want: RtState, secs: u64) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if eng.state_of(id) == Some(want) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+        false
+    }
+
+    // ---- 1.3 phase 3/4：compose 运行时与镜像构建（全 fake，不真调 docker） ----
+
+    fn script_probe_ok(fake: &FakeDockerRunner) {
+        fake.push_ok(r#"{"Client":{"Version":"27.1.1"},"Server":{"Version":"27.1.1"}}"#);
+        fake.push_ok(r#"{"ComposeVersion":"v2.29.1"}"#);
+    }
+
+    fn compose_config_json() -> String {
+        r#"{"services":{
+            "redis":{"image":"redis:7","ports":[{"target":6379,"published":6379}],"build":{"context":"."}},
+            "mysql":{"image":"mysql:8","ports":[{"target":3306,"published":3306}]}
+        }}"#
+        .into()
+    }
+
+    /// compose 工作区：supertask.yaml + compose.yaml。
+    fn compose_ws(services_yaml: &str, docker_yaml: &str) -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("st-eng-comp{}-{}", std::process::id(), n));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        fs::write(
+            root.join("supertask.yaml"),
+            format!(
+                "version: 1\nservices:\n{services_yaml}\ndocker:\n  compose_file: compose.yaml\n{docker_yaml}"
+            ),
+        )
+        .unwrap();
+        root
+    }
+
+    fn redis_only_yaml() -> &'static str {
+        "  redis:\n    kind: compose\n    service: redis\n"
+    }
+
+    #[test]
+    fn compose_start_running_stop_and_argv() {
+        let root = compose_ws(redis_only_yaml(), "");
+        let fake = Arc::new(FakeDockerRunner::new());
+        // open 时的 compose 校验（config）
+        fake.push_ok(compose_config_json());
+        // start：probe ×2 + up（config 走缓存不重复 spawn）
+        script_probe_ok(&fake);
+        fake.push_ok("");
+        fake.push_stream_ok("redis log line\n");
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+        eng.subscribe_logs().unwrap();
+        eng.start_one("redis").unwrap();
+
+        assert!(
+            wait_eq(&eng, "redis", RtState::Running),
+            "{:?}",
+            eng.state_of("redis")
+        );
+
+        let calls = fake.calls();
+        // up argv：compose --ansi never -f <file> up -d --no-deps <单服务名>
+        let up = calls
+            .iter()
+            .find(|c| c.args.contains(&"up".to_string()))
+            .expect("up call");
+        assert_eq!(&up.args[0..4], &["compose".to_string(), "--ansi".to_string(), "never".to_string(), "-f".to_string()]);
+        assert!(up.args[4].ends_with("compose.yaml"));
+        assert_eq!(
+            &up.args[5..],
+            &["up".to_string(), "-d".to_string(), "--no-deps".to_string(), "redis".to_string()],
+            "up 必带 --no-deps 且只允许单服务名"
+        );
+        assert_eq!(up.cwd.as_deref(), Some(root.as_path()));
+
+        // config 缓存：open 1 次 + start 0 次
+        let config_calls = calls
+            .iter()
+            .filter(|c| c.args.windows(2).any(|w| w == ["config".to_string(), "--format".to_string()]))
+            .count();
+        assert_eq!(config_calls, 1, "config 应命中 mtime+hash 缓存");
+
+        // logs --follow argv + 输出进 stdout stream
+        let logs = calls
+            .iter()
+            .find(|c| c.args.contains(&"logs".to_string()))
+            .expect("logs call");
+        assert_eq!(
+            &logs.args[logs.args.len() - 5..],
+            &[
+                "logs".to_string(),
+                "--follow".to_string(),
+                "--no-color".to_string(),
+                "--timestamps".to_string(),
+                "redis".to_string(),
+            ]
+        );
+        thread::sleep(Duration::from_millis(300));
+        let (lines, _) = eng
+            .logs_snapshot(
+                Some(&LogSource { kind: LogSourceKind::Service, id: "redis".into() }),
+                50,
+            )
+            .unwrap();
+        assert!(
+            lines.iter().any(|l| l.text.contains("redis log line")),
+            "{lines:?}"
+        );
+
+        // snapshot：compose 服务 pid=None、metrics 不出现、managed=true、kind=compose
+        let snap = eng.snapshot().unwrap();
+        let view = snap.services.get("redis").unwrap();
+        assert_eq!(view.kind, "compose");
+        assert_eq!(view.pid, None);
+        assert!(view.managed);
+        assert!(snap.metrics.get("redis").is_none());
+
+        // stop：不带 --rm / down / rm
+        eng.stop_one("redis").unwrap();
+        assert_eq!(eng.state_of("redis"), Some(RtState::Stopped));
+        let calls = fake.calls();
+        let stop = calls
+            .iter()
+            .find(|c| c.args.contains(&"stop".to_string()))
+            .expect("stop call");
+        assert_eq!(
+            &stop.args[stop.args.len() - 2..],
+            &["stop".to_string(), "redis".to_string()],
+        );
+        assert!(!stop.args.iter().any(|a| a == "--rm" || a == "down" || a == "rm"));
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_up_failure_back_to_stopped() {
+        let root = compose_ws(redis_only_yaml(), "");
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(compose_config_json());
+        script_probe_ok(&fake);
+        fake.push_fail(1, "pull access denied for redis");
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+        eng.start_one("redis").unwrap(); // accepted，up 异步执行
+        assert!(
+            wait_eq_for(&eng, "redis", RtState::Stopped, 5),
+            "{:?}",
+            eng.state_of("redis")
+        );
+        let snap = eng.snapshot().unwrap();
+        let err = snap.services.get("redis").unwrap().last_error.clone().unwrap();
+        assert!(err.contains("COMPOSE_UP_FAILED"), "{err}");
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_external_exit_becomes_exited_crash() {
+        let root = compose_ws(redis_only_yaml(), "");
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(compose_config_json());
+        script_probe_ok(&fake);
+        fake.push_ok(""); // up
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+        eng.start_one("redis").unwrap();
+        assert!(wait_eq(&eng, "redis", RtState::Running));
+        // 外部 docker stop / OOM：compose ps 报 exited
+        fake.push_ok(
+            r#"[{"ID":"a1","Name":"ws-redis-1","Service":"redis","Image":"redis:7","State":"exited","ExitCode":137}]"#,
+        );
+        assert!(
+            wait_eq_for(&eng, "redis", RtState::Exited, 6),
+            "状态轮询应发现容器退出"
+        );
+        let snap = eng.snapshot().unwrap();
+        let view = snap.services.get("redis").unwrap();
+        assert_eq!(view.exit_reason.as_deref(), Some("crash"));
+        assert_eq!(view.last_exit.as_ref().unwrap().code, 137);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_cleanup_stops_only_engine_started() {
+        let root = compose_ws(
+            "  redis:\n    kind: compose\n    service: redis\n  mysql:\n    kind: compose\n    service: mysql\n",
+            "",
+        );
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(compose_config_json());
+        script_probe_ok(&fake);
+        fake.push_ok(""); // up redis
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+        eng.start_one("redis").unwrap();
+        assert!(wait_eq(&eng, "redis", RtState::Running));
+        eng.close().unwrap();
+        let calls = fake.calls();
+        assert!(
+            calls.iter().any(|c| c.args.ends_with(&["stop".to_string(), "redis".to_string()])),
+            "引擎启动过的 redis 应被清场"
+        );
+        assert!(
+            !calls.iter().any(|c| c.args.ends_with(&["stop".to_string(), "mysql".to_string()])),
+            "未由引擎启动的 mysql 不应被清场（§5.6）"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_precheck_error_mapping() {
+        // a) PATH 无 docker → DOCKER_NOT_FOUND
+        let root = compose_ws(redis_only_yaml(), "");
+        let fake = Arc::new(FakeDockerRunner::new());
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap(); // open 校验：config 默认 ok → 解析失败静默跳过
+        fake.push_err(std::io::ErrorKind::NotFound); // probe 时 spawn 失败
+        let e = eng.start_one("redis").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DockerNotFound);
+        eng.close().unwrap();
+
+        // b) Docker Desktop 已装未运行 → DOCKER_ENGINE_UNREACHABLE
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(r#"{"Client":{"Version":"27.1.1"},"Server":null}"#);
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+        let e = eng.start_one("redis").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DockerEngineUnreachable);
+        eng.close().unwrap();
+
+        // c) compose 文件缺失 → COMPOSE_FILE_MISSING（不 spawn config）
+        let root2 = std::env::temp_dir()
+            .join(format!("st-eng-compmiss-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root2);
+        fs::create_dir_all(&root2).unwrap();
+        fs::write(
+            root2.join("supertask.yaml"),
+            "version: 1\nservices:\n  redis:\n    kind: compose\n    service: redis\ndocker:\n  compose_file: missing.yaml\n",
+        )
+        .unwrap();
+        let fake = Arc::new(FakeDockerRunner::new());
+        script_probe_ok(&fake);
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root2).unwrap();
+        let e = eng.start_one("redis").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ComposeFileMissing);
+        assert!(
+            !fake.calls().iter().any(|c| c.args.windows(2).any(|w| w == ["config".to_string(), "--format".to_string()])),
+            "文件缺失时不应 spawn config"
+        );
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root2);
+
+        // d) service 不在 compose 文件中 → COMPOSE_SERVICE_MISSING
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(r#"{"services":{"mysql":{"image":"mysql:8"}}}"#); // open 校验
+        script_probe_ok(&fake);
+        fake.push_ok(r#"{"services":{"mysql":{"image":"mysql:8"}}}"#); // start 校验
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+        let e = eng.start_one("redis").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ComposeServiceMissing);
+        eng.close().unwrap();
+
+        // e) 端口与其他服务重复 → PORT_DUP（用高位端口，避免真机 6379 被占用）
+        let root3 = compose_ws(
+            "  redis:\n    kind: compose\n    service: redis\n    port: 36379\n  mysql:\n    kind: compose\n    service: mysql\n    port: 36379\n",
+            "",
+        );
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(compose_config_json());
+        script_probe_ok(&fake);
+        fake.push_ok(compose_config_json());
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root3).unwrap();
+        let e = eng.start_one("redis").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::PortDup);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&root3);
+    }
+
+    #[test]
+    fn compose_open_warnings_service_missing_and_port_mismatch() {
+        let root = compose_ws(
+            "  redis:\n    kind: compose\n    service: redis\n    port: 7000\n  ghost:\n    kind: compose\n    service: nosuch\n",
+            "",
+        );
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(compose_config_json());
+        let eng = Engine::with_docker_runner(fake.clone());
+        let (warnings, _) = eng.open(&root).unwrap();
+        assert!(warnings.iter().any(|w| w.code == ErrorCode::ComposeServiceMissing));
+        assert!(warnings.iter().any(|w| w.code == ErrorCode::ComposePortMismatch));
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn docker_build_entry_and_unknown() {
+        let root = compose_ws(
+            redis_only_yaml(),
+            "  builds:\n    - name: mall-user\n      context: .\n      tags:\n        - mall-user:local\n",
+        );
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(compose_config_json());
+        fake.push_stream_ok("Step 1/2 : FROM scratch\nSuccessfully built abc\n");
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+
+        // DOCKER_BUILD_UNKNOWN：name 不在 builds 列表
+        let e = eng.docker_build("nope").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DockerBuildUnknown);
+
+        let op_id = eng.docker_build("mall-user").unwrap();
+        let mut terminal = None;
+        for _ in 0..200 {
+            if let Some(ev) = eng.operations().get(&op_id) {
+                if matches!(ev.state, crate::operation::OpState::Succeeded | crate::operation::OpState::Failed) {
+                    terminal = Some(ev);
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let ev = terminal.expect("operation terminal");
+        assert_eq!(ev.state, crate::operation::OpState::Succeeded);
+        assert_eq!(ev.kind, "docker.build");
+        assert!(ev.message.as_deref().unwrap().contains("Successfully built"));
+
+        // build argv 顺序：build -t <tag> <context>
+        let all_calls = fake.calls();
+        let build = all_calls
+            .iter()
+            .find(|c| c.args.first().map(String::as_str) == Some("build"))
+            .expect("build call");
+        assert_eq!(build.args[0], "build");
+        assert_eq!(&build.args[1..3], &["-t".to_string(), "mall-user:local".to_string()]);
+        assert_eq!(build.args.len(), 4);
+        assert_eq!(build.cwd.as_deref(), Some(root.as_path()));
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_build_via_operation_and_non_compose_rejected() {
+        let root = compose_ws(
+            "  redis:\n    kind: compose\n    service: redis\n  api:\n    kind: spring-boot\n    module: api\n    port: 8080\n    health:\n      type: none\n",
+            "",
+        );
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(compose_config_json());
+        fake.push_stream_full(1, "Step 1\n", "ERROR: failed to solve\n");
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+
+        // 非 compose 服务 → SPEC_INVALID
+        let e = eng.build_compose("api").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
+
+        // compose 构建：compose --ansi never -f <file> build <service>
+        let op_id = eng.build_compose("redis").unwrap();
+        let mut terminal = None;
+        for _ in 0..200 {
+            if let Some(ev) = eng.operations().get(&op_id) {
+                if matches!(ev.state, crate::operation::OpState::Succeeded | crate::operation::OpState::Failed) {
+                    terminal = Some(ev);
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let ev = terminal.expect("operation terminal");
+        assert_eq!(ev.state, crate::operation::OpState::Failed);
+        assert_eq!(ev.kind, "compose.build");
+        assert_eq!(ev.error_code.as_deref(), Some("IMAGE_BUILD_FAILED"));
+        assert!(ev.message.as_deref().unwrap().contains("failed to solve"));
+
+        let all_calls = fake.calls();
+        let build = all_calls
+            .iter()
+            .find(|c| c.args.contains(&"build".to_string()))
+            .expect("compose build call");
+        assert_eq!(&build.args[0..3], &["compose".to_string(), "--ansi".to_string(), "never".to_string()]);
+        assert_eq!(
+            &build.args[build.args.len() - 2..],
+            &["build".to_string(), "redis".to_string()]
+        );
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn docker_probe_cache_and_refresh() {
+        let fake = Arc::new(FakeDockerRunner::new());
+        script_probe_ok(&fake);
+        script_probe_ok(&fake); // refresh 用
+        let eng = Engine::with_docker_runner(fake.clone());
+        let p1 = eng.docker_probe(false);
+        assert!(p1.found && p1.running);
+        assert_eq!(p1.compose_version.as_deref(), Some("2.29.1"));
+        assert_eq!(fake.calls().len(), 2);
+        let p2 = eng.docker_probe(false);
+        assert_eq!(fake.calls().len(), 2, "会话内缓存不重复 spawn");
+        assert_eq!(p1, p2);
+        let _ = eng.docker_probe(true);
+        assert_eq!(fake.calls().len(), 4, "refresh=true 强制重新探测");
+    }
+
+    #[test]
+    fn docker_ps_and_images() {
+        let root = compose_ws(redis_only_yaml(), "");
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_ok(compose_config_json());
+        fake.push_ok(
+            r#"[{"ID":"abc","Name":"ws-redis-1","Service":"redis","Image":"redis:7","State":"running","Publishers":[{"PublishedPort":6379}]}]"#,
+        );
+        // images NDJSON
+        fake.push_ok(
+            r#"{"ID":"sha256:aaa","RepoTags":["mall:local"],"Size":42,"CreatedAt":"2026-01-02T03:04:05Z"}"#,
+        );
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.open(&root).unwrap();
+
+        let containers = eng.docker_ps().unwrap();
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0].service, "redis");
+        assert_eq!(containers[0].state, "running");
+        assert_eq!(containers[0].ports, vec![6379]);
+
+        let images = eng.docker_images().unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].repository, "mall");
+        assert_eq!(images[0].size_bytes, Some(42));
+        assert!(images[0].created_ms.is_some());
+
+        // daemon 不可达 → DOCKER_NOT_FOUND
+        fake.push_err(std::io::ErrorKind::NotFound);
+        let e = eng.docker_images().unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DockerNotFound);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+
+        // 无 compose 文件的工作区 → docker_ps 为空（不 spawn）
+        let root2 = write_ws_yaml(ping_yaml());
+        let eng2 = Engine::with_docker_runner(Arc::new(FakeDockerRunner::new()));
+        eng2.open(&root2).unwrap();
+        assert!(eng2.docker_ps().unwrap().is_empty());
+        eng2.close().unwrap();
+        let _ = fs::remove_dir_all(&root2);
+    }
+
     #[test]
     fn ping_start_stop_and_logs() {
         let root = write_ws_yaml(ping_yaml());
@@ -2423,6 +3879,9 @@ services:
         eng.subscribe_logs().unwrap();
         eng.start_one("ping").unwrap();
         assert!(wait_eq(&eng, "ping", RtState::Running), "{:?}", eng.state_of("ping"));
+        let snap = eng.snapshot().unwrap();
+        let view = snap.services.get("ping").expect("ping view");
+        assert!(view.managed, "spawned service must be managed (not external)");
         thread::sleep(Duration::from_millis(400));
         let (lines, _) = eng.logs_snapshot(None, 50).unwrap();
         assert!(!lines.is_empty(), "ping should emit stdout");

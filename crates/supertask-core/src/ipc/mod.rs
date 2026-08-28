@@ -16,6 +16,9 @@ pub const PROTOCOL: u32 = 1;
 mod v12;
 pub use v12::*;
 
+mod v13;
+pub use v13::*;
+
 /// Stable invoke names. Tauri layer must register these (or map 1:1).
 pub mod cmd {
     pub const SESSION_HELLO: &str = "session.hello";
@@ -63,6 +66,11 @@ pub mod cmd {
     pub const PROFILES_LIST: &str = "profiles.list";
     pub const PROFILES_ACTIVATE: &str = "profiles.activate";
     pub const RUNTIME_BUILD: &str = "runtime.build";
+    // ---- 1.3 (types only; handlers in later phases) ----
+    pub const DOCKER_PROBE: &str = "docker.probe";
+    pub const DOCKER_PS: &str = "docker.ps";
+    pub const DOCKER_IMAGES: &str = "docker.images";
+    pub const DOCKER_BUILD: &str = "docker.build";
 }
 
 pub mod event {

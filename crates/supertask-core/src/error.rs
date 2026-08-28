@@ -35,6 +35,11 @@ pub enum ErrorCode {
     TargetNotEmpty,
     TemplateInvalid,
     TemplateWrite,
+    TemplateIdConflict,
+    TemplateParamMissing,
+    TemplateParamUnknown,
+    TemplateBlockDep,
+    TemplateBlockPort,
     GitNotFound,
     GitNotRepository,
     GitDirty,
@@ -142,6 +147,12 @@ impl Error {
     pub fn code(&self) -> ErrorCode {
         match self {
             Self::App { code, .. } => *code,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::App { message, .. } => message,
         }
     }
 

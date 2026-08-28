@@ -2,12 +2,10 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { groupedFeatures, navLabel, GROUP_TITLE, type NavGroup } from "../features/registry";
 import { useFeatures, useSession } from "../providers/session-provider";
 import { useWorkspace } from "../providers/workspace-provider";
-import { useRuntime } from "../providers/runtime-provider";
 import { useToast } from "@/components/ui/toast";
 import { CommandPalette } from "@/components/command-palette";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
@@ -17,7 +15,6 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Search,
   Play,
-  Square,
   ScanLine,
   FolderOpen,
   Folders,
@@ -146,7 +143,6 @@ export function AppShell() {
   const features = useFeatures();
   const { state } = useSession();
   const ws = useWorkspace();
-  const runtime = useRuntime();
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
@@ -157,7 +153,6 @@ export function AppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [follow, setFollow] = useState(true);
   const [compact, setCompact] = useState(false);
-  const [confirmStopAll, setConfirmStopAll] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -338,33 +333,6 @@ export function AppShell() {
               <Button variant="outline" size="sm" className="gap-1" onClick={onDir} title="打开工作区目录">
                 <FolderOpen /> <span className={cn(collapsed && "hidden")}>目录</span>
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1 hover:border-[#DC2626] hover:bg-[#FDECEC] hover:text-[#DC2626]"
-                onClick={() => {
-                  const n = Object.values(runtime.state.services).filter((s) => s.state === "running").length;
-                  if (n === 0) {
-                    toast("没有运行中的服务", "info");
-                    return;
-                  }
-                  setConfirmStopAll(true);
-                }}
-                disabled={!ws.state.workspaceId}
-                title="停止全部（⌘.）"
-              >
-                <Square /> <span className={cn(collapsed && "hidden")}>停止</span>
-              </Button>
-              <Button
-                variant="default"
-                size="sm"
-                className="gap-1"
-                onClick={() => runtime.actions.startAll().then(() => toast("已发起启动全部", "ok"))}
-                disabled={!ws.state.workspaceId}
-                title="启动全部（⌘⇧R）"
-              >
-                <Play /> <span className={cn(collapsed && "hidden")}>启动全部</span>
-              </Button>
             </div>
           </header>
           <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -397,20 +365,6 @@ export function AppShell() {
       </footer>
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} features={features} />
-
-      <ConfirmDialog
-        open={confirmStopAll}
-        title="停止全部服务？"
-        description={`将停止 ${Object.values(runtime.state.services).filter((s) => s.state === "running").length} 个运行中的服务（各服务的整棵进程树）。`}
-        confirmText="全部停止"
-        cancelText="取消"
-        destructive
-        onConfirm={() => {
-          setConfirmStopAll(false);
-          runtime.actions.stopAll().then(() => toast("已停止全部", "ok"));
-        }}
-        onCancel={() => setConfirmStopAll(false)}
-      />
     </div>
   );
 }

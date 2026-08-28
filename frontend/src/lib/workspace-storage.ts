@@ -1,6 +1,9 @@
 const LAST_KEY = "st:lastWorkspace";
 const RECENTS_KEY = "st:recents";
 const CARDS_COLLAPSED_KEY = "st:runCardsCollapsed";
+const LOG_WRAP_KEY = "st:logWrap";
+const LOG_LIMIT_KEY = "st:logLineLimit";
+const LOG_SHOW_TIME_KEY = "st:logShowTime";
 
 export function readLastWorkspace(): string | null {
   try {
@@ -70,6 +73,57 @@ export function readCardsCollapsedPref(): boolean | null {
 export function writeCardsCollapsedPref(collapsed: boolean) {
   try {
     localStorage.setItem(CARDS_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readLogWrapPref(): boolean {
+  try {
+    return localStorage.getItem(LOG_WRAP_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeLogWrapPref(wrap: boolean) {
+  try {
+    localStorage.setItem(LOG_WRAP_KEY, wrap ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readLogLineLimitPref(): number {
+  try {
+    const n = Number(localStorage.getItem(LOG_LIMIT_KEY));
+    return Number.isInteger(n) && n >= 50 && n <= 5000 ? n : 500;
+  } catch {
+    return 500;
+  }
+}
+
+export function writeLogLineLimitPref(limit: number) {
+  try {
+    localStorage.setItem(LOG_LIMIT_KEY, String(Math.max(50, Math.min(5000, limit))));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readLogShowTimePref(): boolean {
+  try {
+    const v = localStorage.getItem(LOG_SHOW_TIME_KEY);
+    if (v === null) return true;
+    return v === "1";
+  } catch {
+    return true;
+  }
+}
+
+export function writeLogShowTimePref(show: boolean) {
+  try {
+    localStorage.setItem(LOG_SHOW_TIME_KEY, show ? "1" : "0");
   } catch {
     /* ignore */
   }

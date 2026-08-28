@@ -143,7 +143,8 @@ pub fn apply(
     Ok(out)
 }
 
-/// 身份一致：kind 相同，且 spring-boot 的 module / node 的 dir 相同。
+/// 身份一致：kind 相同，且 spring-boot 的 module / node 的 dir / compose 的
+/// service（1.3 §7 ②'）相同。
 fn same_identity(a: &ServiceSpec, b: &ServiceSpec) -> bool {
     if a.kind != b.kind {
         return false;
@@ -151,6 +152,8 @@ fn same_identity(a: &ServiceSpec, b: &ServiceSpec) -> bool {
     match a.kind.as_str() {
         "spring-boot" => a.module == b.module,
         "node" => a.dir == b.dir,
+        // compose 服务身份是 compose 文件内的服务名
+        "compose" => a.service.is_some() && a.service == b.service,
         _ => true,
     }
 }
@@ -647,6 +650,45 @@ mod tests {
         assert_eq!(item(&p, "api").status, MergeStatus::MatchSame);
         assert_eq!(item(&p, "web").status, MergeStatus::Added);
         assert_eq!(item(&p, "gone").status, MergeStatus::Missing);
+    }
+
+    #[test]
+    fn compose_identity_matches_by_service_name() {
+        // 1.3 §7 ②'：kind: compose 且 service 相同 → 视为同一服务（MatchSame）
+        let current = parse(
+            "version: 1\nservices:\n  redis:\n    kind: compose\n    service: redis\n    port: 6379\ndocker:\n  compose_file: compose.yaml\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  cache:\n    kind: compose\n    service: redis\n    port: 6380\ndocker:\n  compose_file: compose.yaml\n",
+        );
+        let p = preview(&current, &discovered, vec![]);
+        assert_eq!(p.items.len(), 1);
+        let m = item(&p, "redis");
+        assert_eq!(m.status, MergeStatus::MatchSame);
+        assert!(m.field_diffs.is_empty());
+
+        // service 不同 → 不是同一服务（Added + Missing）
+        let discovered2 = parse(
+            "version: 1\nservices:\n  redis:\n    kind: compose\n    service: mysql\n",
+        );
+        let p2 = preview(&current, &discovered2, vec![]);
+        assert_eq!(item(&p2, "redis").status, MergeStatus::IdConflict);
+
+        // add 后 service 字段入库
+        let out = apply(
+            &current,
+            &discovered2,
+            &[MergeChoice {
+                id: "redis".into(),
+                action: MergeAction::Add,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            out.services.get("redis-2").unwrap().service.as_deref(),
+            Some("mysql")
+        );
     }
 
     #[test]

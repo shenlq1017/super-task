@@ -22,6 +22,7 @@ const OP_STATE_LABEL: Record<OpState, string> = {
   running: "进行中",
   succeeded: "已完成",
   failed: "失败",
+  cancelled: "已取消",
 };
 
 const OP_STATE_COLOR: Record<OpState, string> = {
@@ -29,6 +30,7 @@ const OP_STATE_COLOR: Record<OpState, string> = {
   running: "var(--st-accent,#5e6ad2)",
   succeeded: "var(--st-ok-deep,#1e7e35)",
   failed: "var(--st-danger,#dc2626)",
+  cancelled: "var(--t3,#8a8f98)",
 };
 
 /** 单层目录名校验（clone 目标目录名，与模板页同一套规则）。 */
@@ -367,7 +369,7 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
             {lastRefresh ? (
               <span className="font-mono text-[0.66rem] text-[var(--t3,#8a8f98)]">刷新于 {fmtTime(lastRefresh)}</span>
             ) : null}
-            <Button variant="outline" size="sm" className="gap-1" onClick={() => void refresh()} disabled={loading}>
+            <Button variant="soft" size="sm" className="gap-1" onClick={() => void refresh()} disabled={loading}>
               <RefreshCw className={cn(loading && "animate-spin")} /> 刷新
             </Button>
           </div>

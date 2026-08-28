@@ -114,7 +114,7 @@ function UpdateCard() {
       </p>
 
       <div className="mt-3 flex items-center gap-2">
-        <Button size="sm" onClick={() => void startCheck()} disabled={checkRunning || installRunning}>
+        <Button size="sm" variant="soft" onClick={() => void startCheck()} disabled={checkRunning || installRunning}>
           检查更新
         </Button>
         {checkRunning ? (
@@ -190,7 +190,7 @@ function UpdateCard() {
           role="alert"
         >
           <span className="min-w-0 flex-1">{blocked}</span>
-          <Button variant="outline" size="sm" onClick={() => void runtime.actions.stopAll()}>
+          <Button variant="destructive" size="sm" onClick={() => void runtime.actions.stopAll()}>
             停止全部
           </Button>
         </div>
@@ -277,7 +277,7 @@ export function SettingsPage() {
               />
             </div>
             <div className="mt-3 flex justify-end">
-              <Button size="sm" onClick={() => void save()}>
+              <Button size="sm" variant="success" onClick={() => void save()}>
                 保存
               </Button>
             </div>

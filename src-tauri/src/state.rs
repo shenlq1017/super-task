@@ -70,3 +70,10 @@ pub fn save_appdata(handle: &AppDataHandle) -> Result<(), Error> {
     let data = handle.lock().expect("appdata lock");
     appdata::save_at(&path, &data)
 }
+
+/// 本地用户模板目录 `%APPDATA%/SuperTask/templates/`；APPDATA 缺失时返回 None
+///（视为无本地模板，不报错）。目录不存在时由 core 按空处理。
+pub fn templates_dir() -> Option<PathBuf> {
+    let base = std::env::var("APPDATA").ok()?;
+    Some(PathBuf::from(base).join("SuperTask").join("templates"))
+}

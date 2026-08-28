@@ -14,6 +14,7 @@ import {
 import { DiscoverPage } from "../pages/discover-page";
 import { TemplatesPage } from "../pages/templates-page";
 import { GitPage } from "../pages/git-page";
+import { DockerPage } from "../pages/docker-page";
 import { useFeatures } from "../providers/session-provider";
 import { useWorkspace } from "../providers/workspace-provider";
 import { OperationProvider } from "../providers/operation-provider";
@@ -27,6 +28,7 @@ const LIVE_PAGES: Record<string, ComponentType> = {
   discover: DiscoverPage,
   templates: TemplatesPage,
   git: GitPage,
+  docker: DockerPage,
   settings: SettingsPage,
 };
 

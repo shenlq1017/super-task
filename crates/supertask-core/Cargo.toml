@@ -12,6 +12,8 @@ netstat2 = "0.9"
 indexmap = { version = "2", features = ["serde"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
+# docker CLI `--format json` 输出解析（1.3）：YAML 不是 JSON 超集的安全解析器
+serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 thiserror = "2"

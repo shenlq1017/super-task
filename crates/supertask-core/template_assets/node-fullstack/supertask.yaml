@@ -1,0 +1,22 @@
+# SuperTask 官方模板：纯 Node 双服务（API + Web）
+# web 依赖 api：SuperTask 启动 web 前会先拉起 api
+version: 1
+kind: workspace
+name: demo-node-fullstack
+description: 纯 Node 双服务：API（3001）+ Web（5173），web 依赖 api
+root: "."
+services:
+  api:
+    kind: node
+    dir: api
+    port: 3001
+    health:
+      type: tcp
+  web:
+    kind: node
+    dir: web
+    port: 5173
+    depends_on:
+      - api
+    health:
+      type: tcp

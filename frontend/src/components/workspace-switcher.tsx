@@ -17,6 +17,9 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
   const wsName =
     ws.state.workspaceId?.split(/[\\/]/).filter(Boolean).pop() ?? "未打开工作区";
 
+  // 当前工作区已在顶部单独展示，最近列表里排除自身
+  const otherRecents = ws.state.recents.filter((p) => p !== ws.state.workspaceId);
+
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
@@ -104,14 +107,13 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
             </div>
           ) : null}
 
-          {ws.state.recents.length > 0 ? (
+          {otherRecents.length > 0 ? (
             <div className="max-h-48 overflow-y-auto p-1">
               <div className="px-2 py-1 text-[0.58rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">
                 最近
               </div>
-              {ws.state.recents.map((path) => {
+              {otherRecents.map((path) => {
                 const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-                const active = path === ws.state.workspaceId;
                 return (
                   <button
                     key={path}
@@ -119,9 +121,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
                     onClick={() => void switchTo(path)}
                     className={cn(
                       "flex w-full flex-col rounded-[var(--r-sm,8px)] px-2 py-1.5 text-left transition-colors duration-150",
-                      active
-                        ? "bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent-hover,#4f5ac8)]"
-                        : "text-[var(--t1,#222326)] hover:bg-[rgb(0_0_0_/_0.045)]",
+                      "text-[var(--t1,#222326)] hover:bg-[rgb(0_0_0_/_0.045)]",
                     )}
                     title={path}
                   >

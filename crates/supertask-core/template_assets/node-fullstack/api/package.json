@@ -1,0 +1,10 @@
+{
+  "name": "demo-api",
+  "version": "0.0.1",
+  "private": true,
+  "description": "SuperTask 官方模板：零依赖 Node API 服务",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  }
+}

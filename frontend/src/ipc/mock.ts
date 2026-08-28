@@ -21,7 +21,6 @@ import type {
   YamlView,
   YamlSaveOut,
   RtState,
-  ScriptState,
 } from "./protocol";
 import { PROTOCOL } from "./protocol";
 
@@ -157,6 +156,55 @@ function demoSpec(): SuperTaskFile {
         script: "serve",
         logging: null,
       },
+      // 1.3 kind: compose sidecar：redis 运行中、mysql 已退出（覆盖两种容器态展示）
+      redis: {
+        kind: "compose",
+        service: "redis",
+        enabled: true,
+        group: "sidecar",
+        labels: {},
+        port: 6379,
+        ports: [6379],
+        env: {},
+        env_file: [],
+        depends_on: [],
+        grace_secs: 60,
+        health: { type: "tcp", interval_secs: 5, timeout_secs: 3 },
+        restart: null,
+        extra_args: [],
+        cwd: null,
+        launch: null,
+        module: null,
+        jvm_args: [],
+        dir: null,
+        package_manager: null,
+        script: null,
+        logging: null,
+      },
+      "mall-db": {
+        kind: "compose",
+        service: "mysql",
+        enabled: true,
+        group: "sidecar",
+        labels: {},
+        port: 3306,
+        ports: [3306],
+        env: {},
+        env_file: [],
+        depends_on: ["redis"],
+        grace_secs: 60,
+        health: { type: "tcp", interval_secs: 5, timeout_secs: 3 },
+        restart: null,
+        extra_args: [],
+        cwd: null,
+        launch: null,
+        module: null,
+        jvm_args: [],
+        dir: null,
+        package_manager: null,
+        script: null,
+        logging: null,
+      },
     },
     scripts: {
       build: {
@@ -169,6 +217,14 @@ function demoSpec(): SuperTaskFile {
       },
     },
     logging: null,
+    // 1.3：compose sidecar + 显式镜像构建条目（feature spec §5.1/§6）
+    docker: {
+      compose_file: "compose.yaml",
+      project_name: "mall",
+      builds: [
+        { name: "mall-user", context: "user-service", dockerfile: null, tags: ["mall-user:local"] },
+      ],
+    },
   };
 }
 
@@ -189,7 +245,7 @@ const state = {
   opened: false,
   spec: demoSpec(),
   services: {} as Record<string, ServiceRT>,
-  script: { id: "build", state: "idle" as ScriptState, pid: null, last_exit: null, last_error: null } as ScriptRuntimeView,
+  script: null as ScriptRuntimeView | null,
   logSeq: 0,
   logs: [] as LogLine[],
   /** git.pull 成功后 ahead/behind 归零（确定性状态机） */
@@ -212,19 +268,29 @@ function defaultDiscover(): ForeignService[] {
 function seedRuntime() {
   if (Object.keys(state.services).length) return;
   for (const [id, s] of Object.entries(state.spec.services)) {
-    const running = id === "gateway" || id === "auth-service";
+    const compose = s.kind === "compose";
+    // compose sidecar 覆盖两种容器态：redis 运行中、mall-db 已退出（外部退出语义）
+    const running = id === "gateway" || id === "auth-service" || id === "redis";
+    const exited = id === "mall-db";
     state.services[id] = {
       id,
-      state: running ? "running" : "stopped",
-      pid: running ? 1000 + Object.keys(state.services).length : null,
+      state: exited ? "exited" : running ? "running" : "stopped",
+      // compose 服务无宿主进程：pid 恒为 null，UI 显示「容器托管」
+      pid: running && !compose ? 1000 + Object.keys(state.services).length : null,
       port: s.port ?? null,
       kind: s.kind,
       health: running ? { ok: true, at_ms: Date.now(), detail: "200 OK" } : null,
       started_at_ms: running ? Date.now() - 120000 : null,
-      last_exit: null,
+      last_exit: exited ? { code: 0, at_ms: Date.now() - 60000 } : null,
       last_error: null,
       log_seq: 0,
     };
+  }
+  // compose 服务日志样例：stdout 容器输出 + system 来源的 docker CLI 行（§5.4）
+  if (state.services["redis"]?.state === "running") {
+    pushLog({ kind: "service", id: "redis" }, "system", "[docker] docker compose -f compose.yaml logs --follow redis");
+    pushLog({ kind: "service", id: "redis" }, "stdout", "1:M 28 Aug 2026 10:00:00.031 * Redis version=7.2.5, bits=64, commit=00000000, modified=0");
+    pushLog({ kind: "service", id: "redis" }, "stdout", "1:M 28 Aug 2026 10:00:00.033 * Ready to accept connections tcp");
   }
 }
 
@@ -247,7 +313,7 @@ function snapshot(): RuntimeSnapshot {
     protocol: PROTOCOL,
     workspace_id: state.spec.root,
     services,
-    script: { ...state.script },
+    script: state.script ? { ...state.script } : null,
   };
 }
 
@@ -391,7 +457,7 @@ function writeMockPrefs(prefs: Prefs) {
 }
 
 // ---------------------------------------------------------------------------
-// Mock 内置模板（与 crates/supertask-core/src/template.rs 的 manifest 概览一致）
+// Mock 模板（与 crates/supertask-core/src/template.rs 的清单概览一致）
 // ---------------------------------------------------------------------------
 
 const MOCK_TEMPLATES: TemplateSummary[] = [
@@ -410,6 +476,9 @@ const MOCK_TEMPLATES: TemplateSummary[] = [
       "web/package.json",
       "web/server.js",
     ],
+    source: "builtin",
+    invalid: false,
+    invalid_reason: null,
   },
   {
     id: "spring-multimodule-node-minimal",
@@ -425,8 +494,139 @@ const MOCK_TEMPLATES: TemplateSummary[] = [
       "web/package.json",
       "web/server.js",
     ],
+    source: "builtin",
+    invalid: false,
+    invalid_reason: null,
+  },
+  // 本地模板（%APPDATA%/SuperTask/templates/）：一好一坏，覆盖 invalid 展示
+  {
+    id: "my-node-api",
+    version: "2",
+    name: "我的 Node API",
+    description: "团队自用的 Express API 起步模板（本地示例）",
+    stacks: ["node"],
+    files: ["supertask.yaml", "package.json", "src/index.js"],
+    source: "local",
+    invalid: false,
+    invalid_reason: null,
+  },
+  {
+    id: "broken-tpl",
+    version: "",
+    name: "broken-tpl",
+    description: "template.yaml 缺少 name 字段",
+    stacks: [],
+    files: [],
+    source: "local",
+    invalid: true,
+    invalid_reason: "template.yaml: 缺少 name 字段",
+  },
+  {
+    id: "spring-boot-single",
+    version: "1",
+    name: "Spring Boot 单模块",
+    description: "最简单的 Spring Boot Web 应用，module 为 \".\"，直接 mvn spring-boot:run 启动",
+    stacks: ["spring-boot"],
+    files: [
+      "pom.xml",
+      "src/main/java/com/supertask/demo/DemoApplication.java",
+      "src/main/resources/application.properties",
+      "supertask.yaml",
+    ],
+    source: "builtin",
+    invalid: false,
+    invalid_reason: null,
+    params: [{ key: "project_name", label: "项目名", required: false }],
+  },
+  {
+    id: "node-fullstack",
+    version: "1",
+    name: "Node 双服务（API + Web）",
+    description: "零依赖 Node 前后端：API 服务 + Web 服务，含 depends_on 依赖关系",
+    stacks: ["node"],
+    files: ["api/package.json", "api/server.js", "supertask.yaml", "web/package.json", "web/server.js"],
+    source: "builtin",
+    invalid: false,
+    invalid_reason: null,
+  },
+  {
+    id: "spring-node-combo",
+    version: "1",
+    name: "Spring + Node（自由组合）",
+    description: "按需组合 Spring Boot 后端与 Node 前端，向导中勾选服务块并分配端口",
+    stacks: ["spring-boot", "node"],
+    files: [
+      "pom.xml",
+      "backend/pom.xml",
+      "backend/src/main/java/com/supertask/demo/DemoApplication.java",
+      "backend/src/main/resources/application.properties",
+      "web/package.json",
+      "web/server.js",
+    ],
+    source: "builtin",
+    invalid: false,
+    invalid_reason: null,
+    blocks: [
+      { id: "backend", label: "Spring Boot 后端", kind: "spring-boot", requires: [], default_port: 8081, services: ["backend"] },
+      { id: "web", label: "Node 前端", kind: "node", requires: ["backend"], default_port: 5173, services: ["web"] },
+    ],
   },
 ];
+
+/** 组合模板 mock 的 services 片段（{{port}} 占位在端口分配时替换）。 */
+const MOCK_BLOCK_SERVICES: Record<string, Record<string, unknown>> = {
+  backend: {
+    kind: "spring-boot",
+    module: "backend",
+    health: { type: "http", http: "http://127.0.0.1:{{port}}/actuator/health" },
+  },
+  web: { kind: "node", dir: "web", depends_on: ["backend"], health: { type: "tcp" } },
+};
+
+/** mock 端的块组合计划：依赖闭合 + 端口查重，语义对齐 core 的 plan_blocks。 */
+function mockPlanBlocks(
+  tpl: TemplateSummary,
+  blockIds?: string[],
+  ports?: Record<string, number>,
+): { chosen: string[]; services: Record<string, Record<string, unknown>>; files: string[] } | null {
+  const blocks = tpl.blocks ?? [];
+  if (blocks.length === 0) return null;
+  const chosen = [...(blockIds ?? blocks.map((b) => b.id))];
+  for (const id of chosen) {
+    if (!blocks.some((b) => b.id === id)) {
+      throw { protocol: PROTOCOL, code: "TEMPLATE_BLOCK_DEP", message: `块 ${id} 在模板中不存在`, retryable: false };
+    }
+  }
+  for (let i = 0; i < chosen.length; i++) {
+    const b = blocks.find((x) => x.id === chosen[i]);
+    for (const r of b?.requires ?? []) {
+      if (!chosen.includes(r)) chosen.push(r);
+    }
+  }
+  const services: Record<string, Record<string, unknown>> = {};
+  const used = new Map<number, string>();
+  const files: string[] = [];
+  for (const b of blocks) {
+    if (!chosen.includes(b.id)) continue;
+    for (const svcId of b.services) {
+      const port = ports?.[svcId] ?? b.default_port;
+      if (port == null) {
+        throw { protocol: PROTOCOL, code: "TEMPLATE_BLOCK_PORT", message: `服务 ${svcId} 未分配端口`, retryable: false };
+      }
+      if (used.has(port)) {
+        throw { protocol: PROTOCOL, code: "TEMPLATE_BLOCK_PORT", message: `端口 ${port} 同时分配给 ${used.get(port)} 与 ${svcId}`, retryable: false };
+      }
+      used.set(port, svcId);
+      const fragment = JSON.stringify(MOCK_BLOCK_SERVICES[svcId] ?? { kind: b.kind });
+      services[svcId] = JSON.parse(fragment.split("{{port}}").join(String(port)));
+    }
+    for (const f of tpl.files) {
+      const belongs = (b.id === "backend" && (f.startsWith("backend/") || f === "pom.xml")) || (b.id === "web" && f.startsWith("web/"));
+      if (belongs && !files.includes(f)) files.push(f);
+    }
+  }
+  return { chosen, services, files };
+}
 
 /** 单层目录名校验，语义对齐 core 的 validate_directory_name。 */
 function invalidDirectoryName(name: string): string | null {
@@ -561,7 +761,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         { id: "workspaces", path: "/workspaces", status: "live", since: "1.1" },
         { id: "discover", path: "/discover", status: "live", since: "1.1" },
         { id: "git", path: "/git", status: "live", since: "1.1" },
-        { id: "docker", path: "/docker", status: "soon", since: "1.3" },
+        { id: "docker", path: "/docker", status: "live", since: "1.3" },
         { id: "gateway", path: "/gateway", status: "soon", since: "1.6" },
         { id: "cloud", path: "/cloud", status: "soon", since: "2.0" },
         { id: "ai", path: "/ai", status: "soon", since: "2.1" },
@@ -742,15 +942,29 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   // -------------------------------------------------------------------------
 
   if (command === "ports.inspect") {
-    const items = Object.values(state.services).map((s) => {
-      const running = s.state === "running" || s.state === "starting";
+    // 与真机语义一致：服务自身运行占用已排除（运行中 → 该端口算可用）；
+    // 外部占用用固定演示集：4100 始终被一个外部进程占用
+    const EXTERNAL_OCCUPIED = new Set<number>([4100]);
+    const runningPorts: Set<number> =
+      Object.values(state.services)
+        .filter((s) => s.state === "running" && s.port != null)
+        .map((s) => s.port!)
+        .reduce((set, p) => set.add(p), new Set<number>());
+    // 传了 port → 只查该服务/候选端口（用输入框填的号）；否则逐个已配置端口
+    const ids = args?.port != null ? [args.id as string] : Object.keys(state.services);
+    const items = ids.map((sid) => {
+      const s = state.services[sid];
+      const port = args?.port != null ? (args.port as number) : (s?.port ?? 0);
+      // 自身运行占用不计：运行中服务的当前端口视为本服务持有
+      const selfOwned = port !== 0 && runningPorts.has(port);
+      const external = port !== 0 && EXTERNAL_OCCUPIED.has(port) && !selfOwned;
       return {
-        id: s.id,
-        port: s.port ?? 0,
-        in_use: running,
-        pid: running ? s.pid : null,
-        process_name: running ? "java.exe" : null,
-        managed: running,
+        id: sid,
+        port,
+        in_use: external,
+        pid: external ? 41355 : null,
+        process_name: external ? "python.exe" : null,
+        managed: false,
       };
     });
     return { items };
@@ -809,7 +1023,9 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
 
   if (command === "logs.search") {
     const q = ((args?.query as string) ?? "").toLowerCase();
-    const items = state.logs
+    const src = args?.source as { kind: string; id: string } | null;
+    const inScope = state.logs.filter((l) => !src || (l.source.kind === src.kind && l.source.id === src.id));
+    const items = inScope
       .filter((l) => l.text.toLowerCase().includes(q))
       .slice(0, (args?.limit as number) ?? 200)
       .map((l, i) => ({
@@ -823,7 +1039,15 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     const opId = `op-${++opSeq}`;
     emitOperation("logs.search", opId, "queued", null, "排队中…", null, null);
     setTimeout(() => emitOperation("logs.search", opId, "running", 0.5, "正在读取历史日志…", null, null), 180);
-    setTimeout(() => emitOperation("logs.search", opId, "succeeded", 1, "搜索完成", null, { items, truncated: false }), 420);
+    setTimeout(
+      () =>
+        emitOperation("logs.search", opId, "succeeded", 1, "搜索完成", null, {
+          items,
+          truncated: false,
+          files_scanned: inScope.length > 0 ? 1 : 0,
+        }),
+      420,
+    );
     return { operation_id: opId };
   }
 
@@ -881,6 +1105,129 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     return { operation_id: opId };
   }
 
+  // -------------------------------------------------------------------------
+  // 1.3：docker probe / ps / images / build（feature spec §9）
+  // 浏览器调试 fixture：
+  //   localStorage["st:mockDockerMode"] = "online"（默认）
+  //     | "desktop_stopped"（已装未运行）| "not_found"（未安装）| "no_compose"（无 compose 插件）
+  //   localStorage["st:mockDockerBuildFail"] = "1" → 下一次 docker.build 失败（IMAGE_BUILD_FAILED）
+  // -------------------------------------------------------------------------
+
+  type DockerMockMode = "online" | "desktop_stopped" | "not_found" | "no_compose";
+
+  function mockDockerMode(): DockerMockMode {
+    try {
+      const v = localStorage.getItem("st:mockDockerMode");
+      if (v === "desktop_stopped" || v === "not_found" || v === "no_compose") return v;
+    } catch {
+      /* ignore */
+    }
+    return "online";
+  }
+
+  function dockerUnavailableError() {
+    if (mockDockerMode() === "not_found") {
+      return { protocol: PROTOCOL, code: "DOCKER_NOT_FOUND", message: "PATH 中没有 docker 可执行文件", retryable: false };
+    }
+    return { protocol: PROTOCOL, code: "DOCKER_ENGINE_UNREACHABLE", message: "Docker 引擎未运行，请启动 Docker Desktop", retryable: true };
+  }
+
+  const MOCK_CONTAINER_META: Record<string, { container_id: string; image: string; health: string | null }> = {
+    redis: { container_id: "a1b2c3d4e5f6", image: "redis:7.2-alpine", health: "healthy" },
+    mysql: { container_id: "f6e5d4c3b2a1", image: "mysql:8.4", health: null },
+  };
+
+  if (command === "docker.probe") {
+    const mode = mockDockerMode();
+    if (mode === "not_found") {
+      return { found: false, version: null, compose_version: null, running: false };
+    }
+    if (mode === "desktop_stopped") {
+      return { found: true, version: "27.1.1", compose_version: "2.29.1", running: false };
+    }
+    if (mode === "no_compose") {
+      return { found: true, version: "27.1.1", compose_version: null, running: true };
+    }
+    return { found: true, version: "27.1.1", compose_version: "2.29.1", running: true };
+  }
+
+  if (command === "docker.ps") {
+    if (mockDockerMode() !== "online") throw dockerUnavailableError();
+    const containers = Object.entries(state.spec.services)
+      .filter(([, s]) => s.kind === "compose")
+      .map(([id, s]) => {
+        const svcName = s.service ?? id;
+        const meta = MOCK_CONTAINER_META[svcName] ?? {
+          container_id: "000000000000",
+          image: `${svcName}:latest`,
+          health: null,
+        };
+        const running = state.services[id]?.state === "running";
+        return {
+          service: svcName,
+          container_id: meta.container_id,
+          image: meta.image,
+          state: running ? "running" : "exited",
+          health: running ? meta.health : null,
+          ports: [...s.ports],
+        };
+      });
+    return { containers };
+  }
+
+  const MOCK_IMAGES = [
+    { repository: "mall-user", tag: "local", id: "sha256:9f2c81b0a7de", size_bytes: 238_016_512, created_ms: Date.now() - 26 * 3600_000 },
+    { repository: "redis", tag: "7.2-alpine", id: "sha256:5d12c7a3beff", size_bytes: 40_632_320, created_ms: Date.now() - 30 * 24 * 3600_000 },
+  ];
+
+  if (command === "docker.images") {
+    if (mockDockerMode() !== "online") throw dockerUnavailableError();
+    return { images: MOCK_IMAGES.map((i) => ({ ...i })) };
+  }
+
+  if (command === "docker.build") {
+    const name = args?.name as string;
+    const build = state.spec.docker?.builds?.find((b) => b.name === name);
+    if (!build) {
+      throw { protocol: PROTOCOL, code: "DOCKER_BUILD_UNKNOWN", message: `docker.builds 中没有条目 ${name}`, retryable: false };
+    }
+    if (mockDockerMode() !== "online") throw dockerUnavailableError();
+    let fail = false;
+    try {
+      fail = localStorage.getItem("st:mockDockerBuildFail") === "1";
+      if (fail) localStorage.removeItem("st:mockDockerBuildFail");
+    } catch {
+      /* ignore */
+    }
+    const opId = `op-${++opSeq}`;
+    emitOperation("docker.build", opId, "queued", null, "排队中…", null, { name });
+    setTimeout(() => emitOperation("docker.build", opId, "running", 0.2, "[1/4] FROM node:20-alpine", null, { name }), 400);
+    setTimeout(() => emitOperation("docker.build", opId, "running", 0.6, "[3/4] RUN npm ci --omit=dev", null, { name }), 900);
+    setTimeout(() => {
+      if (fail) {
+        emitOperation(
+          "docker.build",
+          opId,
+          "failed",
+          null,
+          "ERROR: failed to solve: process \"/bin/sh -c npm ci\" did not complete successfully: exit code: 1",
+          "IMAGE_BUILD_FAILED",
+          { name },
+        );
+        return;
+      }
+      emitOperation("docker.build", opId, "succeeded", 1, `naming to ${build.tags[0]} done`, null, { name, image: build.tags[0] });
+    }, 1500);
+    return { operation_id: opId };
+  }
+
+  if (command === "docker.buildCancel") {
+    // mock 语义：best effort —— 直接把该 operation 标记为 cancelled（已提交层缓存不回滚）
+    const opId = args?.operationId as string;
+    emitOperation("docker.build", opId, "cancelled", null, "已取消（已提交的层缓存保留）", null, null);
+    return { ok: true };
+  }
+
   if (command === "yaml.get") {
     const text = toYaml(state.spec);
     const view: YamlView = { text, spec: state.spec, hash: hashOf(text) };
@@ -908,11 +1255,17 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     const id = args?.id as string;
     const s = state.services[id];
     if (s) {
+      const compose = s.kind === "compose";
       s.state = "running";
-      s.pid = ++pidCounter;
+      s.pid = compose ? null : ++pidCounter;
       s.started_at_ms = Date.now();
-      s.health = { ok: true, at_ms: Date.now(), detail: "200 OK" };
-      pushLog({ kind: "service", id }, "stdout", `[mock] ${id} 已启动 (pid ${s.pid})`);
+      s.health = { ok: true, at_ms: Date.now(), detail: compose ? "tcp 6379" : "200 OK" };
+      if (compose) {
+        pushLog({ kind: "service", id }, "system", "[docker] docker compose -f compose.yaml up -d --no-deps");
+        pushLog({ kind: "service", id }, "system", "[mock] Container started（容器托管，无宿主 pid）");
+      } else {
+        pushLog({ kind: "service", id }, "stdout", `[mock] ${id} 已启动 (pid ${s.pid})`);
+      }
     }
     return { accepted: true, order: null };
   }
@@ -921,11 +1274,17 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     const id = args?.id as string;
     const s = state.services[id];
     if (s) {
+      const compose = s.kind === "compose";
       s.state = "stopped";
       s.pid = null;
       s.health = null;
       s.started_at_ms = null;
-      pushLog({ kind: "service", id }, "stdout", `[mock] ${id} 已停止`);
+      if (compose) {
+        pushLog({ kind: "service", id }, "system", "[docker] docker compose -f compose.yaml stop");
+        pushLog({ kind: "service", id }, "system", "[mock] Container stopped");
+      } else {
+        pushLog({ kind: "service", id }, "stdout", `[mock] ${id} 已停止`);
+      }
     }
     return { accepted: true, order: null };
   }
@@ -943,11 +1302,13 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   if (command === "runtime.startAll") {
     const order: string[] = [];
     for (const s of Object.values(state.services)) {
-      if (state.spec.services[s.id]?.enabled) {
+      const specSvc = state.spec.services[s.id];
+      if (specSvc?.enabled) {
+        const compose = s.kind === "compose";
         s.state = "running";
-        s.pid = ++pidCounter;
+        s.pid = compose ? null : ++pidCounter;
         s.started_at_ms = Date.now();
-        s.health = { ok: true, at_ms: Date.now(), detail: "200 OK" };
+        s.health = { ok: true, at_ms: Date.now(), detail: compose ? "tcp" : "200 OK" };
         order.push(s.id);
       }
     }
@@ -958,25 +1319,56 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     const id = args?.id as string;
     const s = state.services[id];
     if (s) {
+      const compose = s.kind === "compose";
       s.state = "running";
-      s.pid = ++pidCounter;
+      s.pid = compose ? null : ++pidCounter;
       s.started_at_ms = Date.now();
-      s.health = { ok: true, at_ms: Date.now(), detail: "200 OK" };
-      pushLog({ kind: "service", id }, "stdout", `[mock] ${id} 已重启`);
+      s.health = { ok: true, at_ms: Date.now(), detail: compose ? "tcp" : "200 OK" };
+      pushLog({ kind: "service", id }, compose ? "system" : "stdout", `[mock] ${id} 已重启`);
     }
     return { accepted: true, order: null };
   }
 
   if (command === "script.run") {
-    state.script.state = "running";
-    state.script.pid = ++pidCounter;
-    pushLog({ kind: "script", id: "build" }, "stdout", "[mock] build 开始执行…");
+    const id = args?.id as string;
+    if (state.script?.state === "running") {
+      throw { protocol: PROTOCOL, code: "SCRIPT_BUSY", message: "已有脚本在运行", retryable: false };
+    }
+    if (!state.spec.scripts[id]) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `没有脚本 ${id}`, retryable: false };
+    }
+    const cmds = state.spec.scripts[id].cmds;
+    state.script = {
+      id,
+      state: "running",
+      pid: ++pidCounter,
+      last_exit: null,
+      last_error: null,
+    };
+    pushLog({ kind: "script", id }, "stdout", `[mock] ${id} 开始执行…`);
+    // 引擎语义：cmds 顺序执行，全部成功 → 退出码 0；与真机一致走 Exited 终态
+    window.setTimeout(() => {
+      if (state.script?.id !== id || state.script.state !== "running") return;
+      for (const c of cmds) {
+        pushLog({ kind: "script", id }, "stdout", `[mock] $ ${c}`);
+      }
+      state.script.state = "exited";
+      state.script.pid = null;
+      state.script.last_exit = { code: 0, at_ms: Date.now() };
+      pushLog({ kind: "script", id }, "stdout", `[mock] ${id} 执行完成`);
+    }, 2500);
     return { accepted: true, order: null };
   }
 
   if (command === "script.cancel") {
-    state.script.state = "exited";
-    state.script.last_exit = { code: 130, at_ms: Date.now() };
+    if (state.script?.state === "running") {
+      const id = state.script.id;
+      state.script.state = "exited";
+      state.script.pid = null;
+      state.script.last_exit = { code: 130, at_ms: Date.now() };
+      state.script.last_error = "已取消";
+      pushLog({ kind: "script", id }, "system", `[mock] ${id} 已取消`);
+    }
     return { accepted: true, order: null };
   }
 
@@ -1028,12 +1420,43 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     return { templates: MOCK_TEMPLATES.map((t) => ({ ...t })) };
   }
 
+  if (command === "templates.preview") {
+    const templateId = args?.templateId as string;
+    const tpl = MOCK_TEMPLATES.find((t) => t.id === templateId);
+    if (!tpl) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `模板不存在: ${templateId}`, retryable: false };
+    }
+    if (tpl.invalid) {
+      throw { protocol: PROTOCOL, code: "TEMPLATE_INVALID", message: tpl.invalid_reason ?? "模板清单损坏", retryable: false };
+    }
+    const plan = mockPlanBlocks(tpl, args?.blocks as string[] | undefined, args?.ports as Record<string, number> | undefined);
+    return {
+      services: plan?.services ?? {},
+      files: plan?.files ?? tpl.files,
+      warnings: [] as string[],
+    };
+  }
+
   if (command === "templates.create") {
     const templateId = args?.templateId as string;
+    const source = (args?.source as string) ?? "builtin";
     const parentPath = ((args?.parentPath as string) ?? "").trim();
     const dirName = ((args?.directoryName as string) ?? "").trim();
-    if (!MOCK_TEMPLATES.some((t) => t.id === templateId)) {
+    const tpl = MOCK_TEMPLATES.find((t) => t.id === templateId);
+    if (!tpl || (source === "local" && tpl.source === "builtin")) {
       throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `模板不存在: ${templateId}`, retryable: false };
+    }
+    if (source === "local" && templateId === "spring-multimodule-node") {
+      // 与后端一致的冲突防御（mock 里 builtin id 不会被 local 覆盖，仅为语义对齐）
+      throw { protocol: PROTOCOL, code: "TEMPLATE_ID_CONFLICT", message: `本地模板 id ${templateId} 与内置模板冲突`, retryable: false };
+    }
+    if (tpl.invalid) {
+      throw {
+        protocol: PROTOCOL,
+        code: "TEMPLATE_INVALID",
+        message: tpl.invalid_reason ?? "模板清单损坏",
+        retryable: false,
+      };
     }
     if (!parentPath) {
       throw { protocol: PROTOCOL, code: "CWD_MISSING", message: "请选择父目录", retryable: false };
@@ -1042,6 +1465,24 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     if (invalid) {
       throw { protocol: PROTOCOL, code: "PATH_ESCAPE", message: `非法目录名 ${JSON.stringify(dirName)}: ${invalid}`, retryable: false };
     }
+    // 参数校验语义对齐 core：required 缺失 → TEMPLATE_PARAM_MISSING；未声明键 → TEMPLATE_PARAM_UNKNOWN
+    const declared = tpl.params ?? [];
+    const provided = (args?.params as Record<string, string> | undefined) ?? {};
+    for (const [k, v] of Object.entries(provided)) {
+      if (!declared.some((p) => p.key === k)) {
+        throw { protocol: PROTOCOL, code: "TEMPLATE_PARAM_UNKNOWN", message: `模板未声明参数 ${k}`, retryable: false };
+      }
+      if (!v?.trim()) {
+        throw { protocol: PROTOCOL, code: "TEMPLATE_PARAM_MISSING", message: `参数 ${k} 的值不能为空`, retryable: false };
+      }
+    }
+    for (const p of declared) {
+      if (p.required && !provided[p.key]?.trim()) {
+        throw { protocol: PROTOCOL, code: "TEMPLATE_PARAM_MISSING", message: `缺少必填参数 ${p.key}`, retryable: false };
+      }
+    }
+    // 组合模板：与 preview 同一套块校验（依赖闭合 + 端口查重）
+    mockPlanBlocks(tpl, args?.blocks as string[] | undefined, args?.ports as Record<string, number> | undefined);
     const opId = `op-${++opSeq}`;
     const wsId = `${parentPath.replace(/[\\/]+$/, "")}\\${dirName}`;
     emitOperation("templates.create", opId, "queued", null, "排队中…", null, null);

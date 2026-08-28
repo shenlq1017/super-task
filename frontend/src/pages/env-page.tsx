@@ -154,7 +154,7 @@ export function EnvPage() {
             {wsTc?.manager && wsTc.manager !== "auto" && (
               <Badge variant="secondary">工作区指定 {wsTc.manager}</Badge>
             )}
-            <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={probing}>
+            <Button variant="soft" size="sm" onClick={() => void refresh()} disabled={probing}>
               {probing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               重新探测
             </Button>
@@ -270,11 +270,11 @@ function ToolCard(p: ToolCardProps) {
         <div className="flex flex-wrap items-center gap-2">
           {isFound ? (
             <>
-              <Button variant="outline" size="sm" onClick={p.onUpgrade} disabled={!p.managers || (!p.managers.mise && !p.managers.winget)}>
+              <Button variant="warn" size="sm" onClick={p.onUpgrade} disabled={!p.managers || (!p.managers.mise && !p.managers.winget)}>
                 <ArrowUpCircle className="size-3.5" /> 升级
               </Button>
               {p.canPin && (
-                <Button variant="ghost" size="sm" onClick={p.onPin} title={`把当前版本写入工作区 toolchain`}>
+                <Button variant="outline" size="sm" onClick={p.onPin} title={`把当前版本写入工作区 toolchain`}>
                   <Pin className="size-3.5" /> 固定当前版本
                 </Button>
               )}
@@ -289,7 +289,7 @@ function ToolCard(p: ToolCardProps) {
                 aria-label={`${p.meta.label} 版本`}
               />
               <select
-                className="h-8 rounded-[var(--r-sm,8px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-1.5 text-[0.75rem] text-[var(--t1,#222326)]"
+                className="h-8 cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-1.5 text-[0.75rem] text-[var(--t1,#222326)]"
                 value={p.managerPick}
                 onChange={(e) => p.onManagerPick(e.target.value as "auto" | "mise" | "winget")}
                 aria-label="安装 provider"

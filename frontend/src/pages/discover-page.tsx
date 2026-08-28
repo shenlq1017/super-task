@@ -243,7 +243,7 @@ export function DiscoverPage() {
                 本机所有 java / node / python 等开发服务的监听进程。每 {REFRESH_MS / 1000}s 自动刷新，点击行查看详情。
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={loading} className="gap-1">
+            <Button variant="soft" size="sm" onClick={() => void refresh()} disabled={loading} className="gap-1">
               <RefreshCw className={cn(loading && "animate-spin")} /> 刷新
             </Button>
           </div>

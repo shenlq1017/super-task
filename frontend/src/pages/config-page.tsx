@@ -1,9 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  KeyRound,
+  Layers,
+  RefreshCw,
+  SlidersHorizontal,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { EnvVariablesEditor } from "@/components/env-variables-editor";
 import { cn } from "@/lib/utils";
 import { useYaml } from "@/providers/yaml-provider";
 import { useWorkspace } from "@/providers/workspace-provider";
@@ -28,7 +45,6 @@ import type {
   SuperTaskFile,
 } from "@/ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
-import { FileText, SlidersHorizontal } from "lucide-react";
 
 function detectCycle(spec: SuperTaskFile): string[] | null {
   const deps: Record<string, string[]> = {};
@@ -71,6 +87,7 @@ function V12ConfigPanel() {
   const [secrets, setSecrets] = useState<import("@/ipc/protocol").SecretsStatusOut | null>(null);
   const [secretKey, setSecretKey] = useState("");
   const [secretValue, setSecretValue] = useState("");
+  const [deleteKey, setDeleteKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const reload = async () => {
@@ -90,7 +107,11 @@ function V12ConfigPanel() {
   useEffect(() => { void reload(); }, [wid]);
 
   const activate = async (id: string) => {
-    if (!wid || !yaml.state.hash) return;
+    if (!wid || !yaml.state.hash) {
+      toast("配置尚未加载完成，请稍后再切换 profile", "warn");
+      return;
+    }
+    if (profiles?.active === id) return;
     try {
       await apiProfilesActivate(wid, id, yaml.state.hash);
       await Promise.all([yaml.actions.reload(), ws.actions.refreshSpec()]);
@@ -134,53 +155,136 @@ function V12ConfigPanel() {
     }
   };
 
+  const secretCount = secrets?.keys.length ?? 0;
+  const activeProfile = profiles?.active ?? "default";
+  const profileOptions = useMemo(() => {
+    const items = profiles?.profiles ?? [];
+    const ids = new Set<string>(["default", ...items.map((p) => p.id)]);
+    return [...ids].map((id) => {
+      const meta = items.find((p) => p.id === id);
+      const suffix = meta?.enabled_count != null ? ` · ${meta.enabled_count} 项启用` : "";
+      return { id, label: id === "default" ? `default（隐式）${suffix}` : `${id}${suffix}` };
+    });
+  }, [profiles]);
+  const canSwitchProfile = (profiles?.profiles.length ?? 0) > 0;
+
   return (
-    <section className="border-b border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] px-4 py-3">
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div>
+    <section className="shrink-0 border-b border-[var(--line,#e6e6e6)] bg-[var(--bg,#f7f8f8)] px-4 py-3">
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] p-3">
           <div className="mb-2 flex items-center gap-2">
+            <Layers className="size-3.5 text-[var(--st-accent,#5e6ad2)]" />
             <h3 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">Profile</h3>
-            <Badge variant="secondary">只覆盖 env / enabled / port</Badge>
+            <Badge variant="secondary" className="text-[10px]">env / enabled / port</Badge>
+            <Button className="ml-auto" variant="soft" size="sm" onClick={() => void reload()} disabled={!wid || loading}>
+              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} /> 刷新
+            </Button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <select
-              className="h-8 min-w-[10rem] rounded-[var(--r-sm,8px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-2 text-xs"
-              value={profiles?.active ?? "default"}
-              onChange={(e) => void activate(e.target.value)}
-              disabled={!wid || loading || !profiles || profiles.profiles.length === 0}
-              aria-label="当前 profile"
-            >
-              <option value="default">default（隐式）</option>
-              {profiles?.profiles.map((p) => <option key={p.id} value={p.id}>{p.id}{p.enabled_count != null ? ` · ${p.enabled_count} 项启用` : ""}</option>)}
-            </select>
-            <Button variant="outline" size="sm" onClick={() => void reload()} disabled={!wid || loading}>刷新</Button>
+            {canSwitchProfile ? (
+              <Select
+                value={activeProfile}
+                onValueChange={(id) => void activate(id)}
+                disabled={!wid || loading || !profiles}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="h-8 min-w-[12rem] flex-1 cursor-pointer border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] text-xs"
+                  aria-label="当前 profile"
+                >
+                  <SelectValue placeholder="选择 profile" />
+                </SelectTrigger>
+                <SelectContent>
+                  {profileOptions.map((p) => (
+                    <SelectItem key={p.id} value={p.id} className="cursor-pointer text-xs">
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="flex min-h-8 flex-1 items-center gap-2">
+                <Badge variant="outline" className="font-mono text-xs">{activeProfile}</Badge>
+                <span className="text-[0.7rem] text-[var(--t3,#8a8f98)]">yaml 未定义其他 profile</span>
+              </div>
+            )}
           </div>
-          <p className="mt-2 text-[0.7rem] text-[var(--t3,#8a8f98)]">运行中的服务或脚本会阻止切换，避免运行态与配置不一致。</p>
+          <p className="mt-2 text-[0.7rem] leading-relaxed text-[var(--t3,#8a8f98)]">
+            运行中服务/脚本会阻止切换，避免运行态与配置不一致。
+            {!yaml.state.hash ? " 配置加载中，切换暂不可用。" : null}
+          </p>
         </div>
 
-        <div>
+        <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] p-3">
           <div className="mb-2 flex items-center gap-2">
-            <h3 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">Secret 文件</h3>
-            {secrets?.file ? <Badge variant="outline">{secrets.file}</Badge> : <Badge variant="outline">用户环境</Badge>}
-            <Button className="ml-auto" variant="outline" size="sm" onClick={() => void validateSecrets()} disabled={!wid}>校验必需项</Button>
+            <KeyRound className="size-3.5 text-[var(--st-accent,#5e6ad2)]" />
+            <h3 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">Secrets</h3>
+            {secrets?.file ? <Badge variant="outline" className="max-w-[10rem] truncate" title={secrets.file}>{secrets.file}</Badge> : <Badge variant="outline">用户环境</Badge>}
+            <Badge variant="secondary" className="font-mono text-[10px]">{secretCount}</Badge>
+            <Button className="ml-auto" variant="soft" size="sm" onClick={() => void validateSecrets()} disabled={!wid}>校验必需项</Button>
           </div>
-          <div className="flex flex-col gap-1.5">
+
+          <div className="flex max-h-[10rem] flex-col gap-1 overflow-y-auto">
             {secrets?.keys.length ? secrets.keys.map((item) => (
-              <div key={item.key} className="flex items-center gap-2 rounded bg-[var(--surface,#fff)] px-2 py-1 text-xs">
-                <code className="min-w-0 flex-1 truncate font-mono">{item.key}</code>
+              <div
+                key={item.key}
+                className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-2 py-1.5 text-xs"
+              >
+                <code className="min-w-0 truncate font-mono" title={item.key}>{item.key}</code>
                 <Badge variant={item.present ? "default" : "outline"}>{item.present ? "已设置" : "缺失"}</Badge>
-                {item.git_tracked ? <Badge variant="outline" className="border-red-200 text-red-600">Git tracked</Badge> : null}
-                <Button variant="ghost" size="sm" onClick={() => void deleteSecret(item.key)}>删除</Button>
+                {item.git_tracked ? <Badge variant="outline" className="border-red-200 text-red-600">Git</Badge> : <span />}
+                <button
+                  type="button"
+                  onClick={() => setDeleteKey(item.key)}
+                  className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)]"
+                  title={`删除 ${item.key}`}
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
               </div>
-            )) : <span className="text-xs text-[var(--t3,#8a8f98)]">暂无状态；可在下方新增 key。</span>}
+            )) : (
+              <p className="py-1 text-xs text-[var(--t3,#8a8f98)]">暂无登记密钥；在下方添加。</p>
+            )}
           </div>
-          <div className="mt-2 flex gap-2">
-            <Input className="h-8 font-mono text-xs" placeholder="KEY_NAME" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} aria-label="secret key" />
-            <Input className="h-8 text-xs" type="password" placeholder="值不会回显" value={secretValue} onChange={(e) => setSecretValue(e.target.value)} aria-label="secret value" />
-            <Button size="sm" onClick={() => void saveSecret()} disabled={!wid || !secretKey.trim()}>保存</Button>
+
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
+            <Input
+              className="h-8 font-mono text-xs"
+              placeholder="KEY_NAME"
+              value={secretKey}
+              onChange={(e) => setSecretKey(e.target.value)}
+              aria-label="secret key"
+            />
+            <Input
+              className="h-8 text-xs"
+              type="password"
+              placeholder="值（保存后不回显）"
+              value={secretValue}
+              onChange={(e) => setSecretValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && secretKey.trim()) void saveSecret();
+              }}
+              aria-label="secret value"
+            />
+            <Button size="sm" variant="success" onClick={() => void saveSecret()} disabled={!wid || !secretKey.trim()}>
+              保存
+            </Button>
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={deleteKey != null}
+        title="删除密钥"
+        description={deleteKey ? `确定删除 ${deleteKey}？值将从用户环境中移除，已运行服务可能仍持有旧值直到重启。` : undefined}
+        confirmText="删除"
+        destructive
+        onConfirm={() => {
+          if (deleteKey) void deleteSecret(deleteKey);
+          setDeleteKey(null);
+        }}
+        onCancel={() => setDeleteKey(null)}
+      />
     </section>
   );
 }
@@ -192,10 +296,20 @@ function FormTab() {
   const spec = ws.state.spec;
   const [draft, setDraft] = useState<SuperTaskFile | null>(spec);
   const [saving, setSaving] = useState(false);
+  const serviceIds = useMemo(() => (draft ? Object.keys(draft.services) : []), [draft]);
+  const [openIds, setOpenIds] = useState<Set<string>>(() => new Set(serviceIds.slice(0, 1)));
+  const [wsEnvOpen, setWsEnvOpen] = useState(false);
 
   useEffect(() => {
     setDraft(spec);
   }, [spec]);
+
+  useEffect(() => {
+    setOpenIds((prev) => {
+      if (prev.size > 0) return prev;
+      return new Set(serviceIds.slice(0, 1));
+    });
+  }, [serviceIds]);
 
   if (!spec || !draft) return <div className="p-4 text-[0.875rem] text-[var(--t3,#8a8f98)]">无配置</div>;
 
@@ -204,6 +318,14 @@ function FormTab() {
 
   const setEnv = (id: string, env: Record<string, string>) => setSvc(id, { env });
   const setWsEnv = (env: Record<string, string>) => setDraft((d) => (d ? { ...d, env } : d));
+
+  const toggleOpen = (id: string) =>
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const save = async () => {
     const cycle = detectCycle(draft!);
@@ -218,104 +340,115 @@ function FormTab() {
     else toast(yaml.state.error ?? "保存失败（可能外部已修改）", "err");
   };
 
+  const wsEnvCount = Object.keys(draft.env).length;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 px-4 py-2">
-        <Button size="sm" onClick={save} disabled={saving}>
-          保存
+      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-4 py-2">
+        <Button size="sm" variant="success" onClick={save} disabled={saving}>
+          {saving ? "保存中…" : "保存表单"}
         </Button>
+        <span className="font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">
+          {serviceIds.length} 服务 · {wsEnvCount} 工作区变量
+        </span>
         {yaml.state.warnings.length ? (
           <span className="text-[0.75rem] text-[var(--st-warn,#9a6700)]">{yaml.state.warnings.length} 条解析警告</span>
         ) : null}
+        <div className="ml-auto flex gap-1">
+          <Button size="sm" variant="outline" onClick={() => setOpenIds(new Set(serviceIds))}>全部展开</Button>
+          <Button size="sm" variant="outline" onClick={() => setOpenIds(new Set())}>全部收起</Button>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        <section className="mb-6">
-          <h3 className="mb-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">工作区环境变量</h3>
-          <EnvEditor value={draft.env} onChange={setWsEnv} />
-        </section>
-        <section className="flex flex-col gap-3">
-          <h3 className="text-[0.875rem] font-semibold text-[var(--t1,#222326)]">服务</h3>
-          {Object.entries(draft.services).map(([id, s]) => (
-            <div key={id} className="rounded-[var(--r-md,12px)] border border-[var(--line,#e6e6e6)] p-3 shadow-[var(--shadow-1,0_1px_2px_rgb(16_24_40_/_0.05))]">
-              <div className="mb-2 flex items-center gap-2">
-                <span className="font-semibold text-[var(--t1,#222326)]">{id}</span>
-                <Badge variant="outline" className="text-[10px] uppercase">
-                  {s.kind}
-                </Badge>
-                <label className="ml-auto flex items-center gap-1 text-[0.75rem] text-[var(--t3,#8a8f98)]">
-                  <input
-                    type="checkbox"
-                    checked={s.enabled}
-                    onChange={(e) => setSvc(id, { enabled: e.target.checked })}
-                  />
-                  启用
-                </label>
-              </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
-                  端口
-                  <Input
-                    type="number"
-                    className="mt-1"
-                    value={s.port ?? ""}
-                    onChange={(e) => setSvc(id, { port: e.target.value ? Number(e.target.value) : null })}
-                  />
-                </label>
-                <label className="col-span-2 text-[0.75rem] text-[var(--t3,#8a8f98)] sm:col-span-2">
-                  depends_on（逗号分隔）
-                  <Input
-                    className="mt-1"
-                    value={(s.depends_on ?? []).join(", ")}
-                    onChange={(e) =>
-                      setSvc(id, {
-                        depends_on: e.target.value
-                          .split(",")
-                          .map((x) => x.trim())
-                          .filter(Boolean),
-                      })
-                    }
-                  />
-                </label>
-              </div>
-              <div className="mt-3">
-                <div className="mb-1 text-[0.75rem] text-[var(--t3,#8a8f98)]">环境变量</div>
-                <EnvEditor value={s.env} onChange={(env) => setEnv(id, env)} />
-              </div>
+        <section className="mb-4 rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)]">
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-[var(--surface-2,#f3f4f5)]"
+            onClick={() => setWsEnvOpen((v) => !v)}
+            aria-expanded={wsEnvOpen}
+          >
+            {wsEnvOpen ? <ChevronDown className="size-4 text-[var(--t3,#8a8f98)]" /> : <ChevronRight className="size-4 text-[var(--t3,#8a8f98)]" />}
+            <span className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">工作区环境变量</span>
+            <Badge variant="secondary" className="font-mono text-[10px]">{wsEnvCount}</Badge>
+          </button>
+          {wsEnvOpen ? (
+            <div className="border-t border-[var(--line,#e6e6e6)] px-3 py-3">
+              <EnvVariablesEditor value={draft.env} onChange={setWsEnv} hideTitle />
             </div>
-          ))}
+          ) : null}
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 px-0.5">
+            <h3 className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">服务</h3>
+            <span className="font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">{serviceIds.length}</span>
+          </div>
+          {Object.entries(draft.services).map(([id, s]) => {
+            const open = openIds.has(id);
+            const envN = Object.keys(s.env ?? {}).length;
+            return (
+              <div key={id} className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] shadow-[var(--shadow-1,0_1px_2px_rgb(16_24_40_/_0.05))]">
+                <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+                    onClick={() => toggleOpen(id)}
+                    aria-expanded={open}
+                  >
+                    {open ? <ChevronDown className="size-4 shrink-0 text-[var(--t3,#8a8f98)]" /> : <ChevronRight className="size-4 shrink-0 text-[var(--t3,#8a8f98)]" />}
+                    <span className="truncate font-semibold text-[var(--t1,#222326)]">{id}</span>
+                    <Badge variant="outline" className="shrink-0 text-[10px] uppercase">{s.kind}</Badge>
+                    {s.port != null ? <span className="shrink-0 font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">{s.port}</span> : null}
+                    <span className="shrink-0 font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]">{envN} env</span>
+                  </button>
+                  <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-[0.75rem] text-[var(--t2,#62666d)]">
+                    <input
+                      type="checkbox"
+                      checked={s.enabled}
+                      onChange={(e) => setSvc(id, { enabled: e.target.checked })}
+                    />
+                    启用
+                  </label>
+                </div>
+                {open ? (
+                  <div className="space-y-3 border-t border-[var(--line,#e6e6e6)] px-3 py-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[7.5rem_1fr]">
+                      <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                        端口
+                        <Input
+                          type="number"
+                          className="mt-1 font-mono"
+                          value={s.port ?? ""}
+                          onChange={(e) => setSvc(id, { port: e.target.value ? Number(e.target.value) : null })}
+                        />
+                      </label>
+                      <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                        depends_on（逗号分隔）
+                        <Input
+                          className="mt-1 font-mono"
+                          value={(s.depends_on ?? []).join(", ")}
+                          onChange={(e) =>
+                            setSvc(id, {
+                              depends_on: e.target.value
+                                .split(",")
+                                .map((x) => x.trim())
+                                .filter(Boolean),
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div>
+                      <div className="mb-1.5 text-[0.75rem] font-medium text-[var(--t3,#8a8f98)]">服务环境变量</div>
+                      <EnvVariablesEditor value={s.env} onChange={(env) => setEnv(id, env)} hideTitle />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </section>
       </div>
-    </div>
-  );
-}
-
-function EnvEditor({ value, onChange }: { value: Record<string, string>; onChange: (v: Record<string, string>) => void }) {
-  const entries = Object.entries(value);
-  return (
-    <div className="flex flex-col gap-1.5">
-      {entries.map(([k, v]) => (
-        <div key={k} className="flex items-center gap-2">
-          <code className="w-40 shrink-0 truncate rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] px-2 py-1 font-mono text-[0.72rem]">{k}</code>
-          <Input value={v} onChange={(e) => onChange({ ...value, [k]: e.target.value })} />
-          <button
-            className="text-[var(--t3,#8a8f98)] transition-colors hover:text-[var(--st-danger,#dc2626)]"
-            onClick={() => {
-              const n = { ...value };
-              delete n[k];
-              onChange(n);
-            }}
-            title="删除"
-          >
-            ✕
-          </button>
-        </div>
-      ))}
-      <button
-        className="self-start text-[0.75rem] font-semibold text-[var(--st-accent,#5e6ad2)] hover:underline"
-        onClick={() => onChange({ ...value, [`NEW_${entries.length + 1}`]: "" })}
-      >
-        + 添加变量
-      </button>
     </div>
   );
 }
@@ -329,6 +462,8 @@ function RawTab() {
   useEffect(() => {
     setText(yaml.state.text);
   }, [yaml.state.text]);
+
+  const dirty = text !== yaml.state.text;
 
   const ports = useMemo(() => {
     const map: Record<number, number> = {};
@@ -353,22 +488,35 @@ function RawTab() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 px-4 py-2">
-        <Button size="sm" onClick={save} disabled={saving}>
-          保存
+      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-4 py-2">
+        <Button size="sm" variant="success" onClick={save} disabled={saving || !dirty}>
+          {saving ? "保存中…" : "保存 YAML"}
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!dirty}
+          onClick={() => setText(yaml.state.text)}
+          title="丢弃未保存修改"
+        >
+          还原
+        </Button>
+        {dirty ? <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">未保存</Badge> : null}
         {ports ? (
-          <span className="text-[0.75rem] text-[var(--st-warn,#9a6700)]">端口 {ports} 重复（仍可保存，运行时会按 base_hash 校验）</span>
+          <span className="text-[0.75rem] text-[var(--st-warn,#9a6700)]">端口 {ports} 重复（仍可保存）</span>
         ) : (
           <span className="text-[0.75rem] text-[var(--st-ok-deep,#1e7e35)]">端口无重复</span>
         )}
-        <span className="ml-auto font-mono text-[0.75rem] text-[var(--t3,#8a8f98)]">base_hash: {yaml.state.hash.slice(0, 8)}</span>
+        <span className="ml-auto font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">
+          hash {yaml.state.hash.slice(0, 8) || "—"} · {text.split("\n").length} 行
+        </span>
       </div>
       <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        className="min-h-0 flex-1 rounded-none border-0 font-mono"
+        className="min-h-0 flex-1 resize-none rounded-none border-0 bg-[#FBFBFC] px-4 py-3 font-mono text-[0.78rem] leading-[1.65]"
         spellCheck={false}
+        aria-label="supertask.yaml 原文"
       />
     </div>
   );
@@ -480,7 +628,7 @@ function ScanItemRow({
 }) {
   const kind = item.discovered?.kind ?? item.current?.kind ?? "";
   return (
-    <div className="rounded-[var(--r-md,12px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-2.5">
+    <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] p-2.5">
       <div className="flex flex-wrap items-center gap-2">
         {item.status === "added" || item.status === "id_conflict" ? (
           <label className="flex shrink-0 items-center gap-1.5 text-[0.76rem] font-medium text-[var(--t1,#222326)]">
@@ -536,6 +684,7 @@ function ScanPreviewPanel({
   preview,
   addChecked,
   onToggleAdd,
+  onSelectAllAddable,
   fieldChoices,
   onFieldChoice,
   applying,
@@ -546,6 +695,7 @@ function ScanPreviewPanel({
   preview: ScanPreviewOut;
   addChecked: Record<string, boolean>;
   onToggleAdd: (id: string, v: boolean) => void;
+  onSelectAllAddable: (v: boolean) => void;
   fieldChoices: Record<string, Record<string, FieldChoice>>;
   onFieldChoice: (id: string, field: string, c: FieldChoice) => void;
   applying: boolean;
@@ -553,56 +703,69 @@ function ScanPreviewPanel({
   onApply: () => void;
   onClose: () => void;
 }) {
+  const addable = preview.items.filter((it) => it.status === "added" || it.status === "id_conflict");
+  const allAddableChecked = addable.length > 0 && addable.every((it) => addChecked[it.service_id]);
+
   return (
-    <section className="mx-4 mb-3 rounded-[var(--r-lg,16px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] p-3" aria-label="重新扫描预览">
-      <div className="flex flex-wrap items-center gap-2">
+    <section
+      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--r-lg,16px)] border border-[rgb(94_106_210_/_0.35)] bg-[var(--surface,#fff)] shadow-[var(--shadow-2,0_6px_20px_rgb(16_24_40_/_0.09))]"
+      aria-label="重新扫描预览"
+    >
+      <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-t-[var(--r-lg,16px)] border-b border-[var(--line,#e6e6e6)] bg-[var(--st-accent-tint,#eef0fb)] px-3 py-2.5">
         <h3 className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">重新扫描预览</h3>
         <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{preview.items.length} 项</span>
+        {addable.length > 0 ? (
+          <Button size="sm" variant="outline" onClick={() => onSelectAllAddable(!allAddableChecked)}>
+            {allAddableChecked ? "取消全选新发现" : `全选新发现（${addable.length}）`}
+          </Button>
+        ) : null}
         <Button variant="outline" size="sm" className="ml-auto" onClick={onClose}>
           关闭
         </Button>
       </div>
 
       {preview.warnings.length > 0 ? (
-        <div className="mt-2 rounded-[var(--r-sm,8px)] border border-[#f0d58a] bg-[#fdf6e3] px-2.5 py-1.5 text-[0.74rem] leading-relaxed text-[#B7791F]" role="alert">
+        <div className="mx-3 mt-2 rounded-[var(--r-sm,8px)] border border-[#f0d58a] bg-[#fdf6e3] px-2.5 py-1.5 text-[0.74rem] leading-relaxed text-[#B7791F]" role="alert">
           {preview.warnings.map((w, i) => (
             <div key={i}>{w}</div>
           ))}
         </div>
       ) : null}
 
-      <div className="mt-2 flex max-h-[22rem] flex-col gap-3 overflow-y-auto pr-1">
-        {SCAN_GROUPS.map(({ status, title }) => {
-          const items = preview.items.filter((it) => it.status === status);
-          if (items.length === 0) return null;
-          return (
-            <div key={status}>
-              <div className="mb-1.5 flex items-center gap-2 px-0.5">
-                <span className="text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{title}</span>
-                <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{items.length}</span>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+        <div className="flex flex-col gap-3">
+          {SCAN_GROUPS.map(({ status, title }) => {
+            const items = preview.items.filter((it) => it.status === status);
+            if (items.length === 0) return null;
+            return (
+              <div key={status}>
+                <div className="mb-1.5 flex items-center gap-2 px-0.5">
+                  <span className="text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{title}</span>
+                  <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{items.length}</span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {items.map((it) => (
+                    <ScanItemRow
+                      key={it.service_id}
+                      item={it}
+                      checked={addChecked[it.service_id] ?? false}
+                      onToggle={(v) => onToggleAdd(it.service_id, v)}
+                      fieldChoices={fieldChoices[it.service_id] ?? {}}
+                      onFieldChoice={(f, c) => onFieldChoice(it.service_id, f, c)}
+                    />
+                  ))}
+                </div>
               </div>
-              <div className="flex flex-col gap-1.5">
-                {items.map((it) => (
-                  <ScanItemRow
-                    key={it.service_id}
-                    item={it}
-                    checked={addChecked[it.service_id] ?? false}
-                    onToggle={(v) => onToggleAdd(it.service_id, v)}
-                    fieldChoices={fieldChoices[it.service_id] ?? {}}
-                    onFieldChoice={(f, c) => onFieldChoice(it.service_id, f, c)}
-                  />
-                ))}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
-      <div className="mt-2.5 flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2 rounded-b-[var(--r-lg,16px)] border-t border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] px-3 py-2.5">
         <span className="min-w-0 flex-1 text-[0.74rem] text-[var(--t3,#8a8f98)]">
-          应用以所选内容写回 supertask.yaml（带 base_hash 校验）。
+          应用所选写回 yaml（base_hash 校验）。一致/未发现项不会删除。
         </span>
-        <Button size="sm" onClick={onApply} disabled={applying || applyCount === 0}>
+        <Button size="sm" variant="default" onClick={onApply} disabled={applying || applyCount === 0}>
           {applying ? "应用中…" : `应用所选（${applyCount}）`}
         </Button>
       </div>
@@ -708,19 +871,20 @@ export function ConfigPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-[var(--line,#e6e6e6)] px-4 py-2">
-        <div className="flex items-center gap-1">
+      <div className="flex items-center gap-2 border-b border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-4 py-2">
+        <div className="inline-flex items-center gap-0.5 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-0.5">
           {([
             { k: "form", label: "表单", icon: SlidersHorizontal },
             { k: "raw", label: "原文 YAML", icon: FileText },
           ] as const).map((t) => (
             <button
               key={t.k}
+              type="button"
               onClick={() => setTab(t.k)}
               className={cn(
-                "flex items-center gap-1 rounded-full px-3 py-1 text-[0.73rem] font-semibold transition-all duration-150",
+                "flex cursor-pointer items-center gap-1 rounded-[7px] px-3 py-1.5 text-[0.73rem] font-semibold transition-all duration-150",
                 tab === t.k
-                  ? "bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent-hover,#4f5ac8)]"
+                  ? "bg-[var(--surface,#fff)] text-[var(--st-accent,#5e6ad2)] shadow-sm"
                   : "text-[var(--t2,#62666d)] hover:text-[var(--t1,#222326)]",
               )}
             >
@@ -729,36 +893,51 @@ export function ConfigPage() {
           ))}
         </div>
         <Button
-          variant="outline"
+          variant="soft"
           size="sm"
           className="ml-auto gap-1"
           onClick={() => void rescan()}
           disabled={!ws.state.workspaceId || scanning}
           title={ws.state.workspaceId ? "重新扫描磁盘并生成合并预览" : "请先打开工作区"}
         >
-          <RefreshCw className={cn("size-3.5", scanning && "animate-spin")} /> 重新扫描
+          <RefreshCw className={cn("size-3.5", scanning && "animate-spin")} />
+          {scanning ? "扫描中…" : preview ? "重新扫描" : "重新扫描"}
         </Button>
+        {preview ? <Badge variant="outline" className="border-[rgb(94_106_210_/_0.35)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)]">预览中</Badge> : null}
       </div>
 
       <V12ConfigPanel />
 
-      {preview ? (
-        <ScanPreviewPanel
-          preview={preview}
-          addChecked={addChecked}
-          onToggleAdd={(id, v) => setAddChecked((m) => ({ ...m, [id]: v }))}
-          fieldChoices={fieldChoices}
-          onFieldChoice={(id, f, c) =>
-            setFieldChoices((m) => ({ ...m, [id]: { ...(m[id] ?? {}), [f]: c } }))
-          }
-          applying={applying}
-          applyCount={applyCount}
-          onApply={() => void applyChoices()}
-          onClose={closePreview}
-        />
-      ) : null}
-
-      {tab === "form" ? <FormTab /> : <RawTab />}
+      <div className="flex min-h-0 flex-1 flex-col">
+        {preview ? (
+          <div className="flex min-h-0 flex-1 flex-col p-4">
+            <ScanPreviewPanel
+              preview={preview}
+              addChecked={addChecked}
+              onToggleAdd={(id, v) => setAddChecked((m) => ({ ...m, [id]: v }))}
+              onSelectAllAddable={(v) => {
+                const next: Record<string, boolean> = {};
+                for (const it of preview.items) {
+                  if (it.status === "added" || it.status === "id_conflict") next[it.service_id] = v;
+                }
+                setAddChecked((m) => ({ ...m, ...next }));
+              }}
+              fieldChoices={fieldChoices}
+              onFieldChoice={(id, f, c) =>
+                setFieldChoices((m) => ({ ...m, [id]: { ...(m[id] ?? {}), [f]: c } }))
+              }
+              applying={applying}
+              applyCount={applyCount}
+              onApply={() => void applyChoices()}
+              onClose={closePreview}
+            />
+          </div>
+        ) : tab === "form" ? (
+          <FormTab />
+        ) : (
+          <RawTab />
+        )}
+      </div>
 
       <ConfirmDialog
         open={conflictOpen}

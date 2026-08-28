@@ -1,7 +1,7 @@
 # SuperTask 1.3 实现计划
 
 > 日期：2026-08-28  
-> 状态：phase 1（模型与兼容层）完成。进度见 [2026-08-28-v1-3-progress.md](2026-08-28-v1-3-progress.md)  
+> 状态：phase 1–6 完成（compose 运行时/构建/扫描/前端/docker feature 已翻 live），剩 phase 7 真机验收。进度见 [2026-08-28-v1-3-progress.md](2026-08-28-v1-3-progress.md)  
 > 功能规格真源：[2026-08-28-v1-3-feature-spec.md](2026-08-28-v1-3-feature-spec.md)  
 > 上位：[AGENTS.md](../../AGENTS.md) · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md)
 
@@ -84,7 +84,7 @@
 
 ## 建议下一轮
 
-**Phase 2 Docker CLI 适配层。**
+**Phase 3 compose 运行时**（phase 2 已交付：`crates/supertask-core/src/docker/` runner/probe/compose_config + 26 个 fake 测试）。
 
 ## 文档债
 

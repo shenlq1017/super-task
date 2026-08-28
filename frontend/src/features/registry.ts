@@ -17,7 +17,7 @@ export const NAV_META: Record<string, NavMeta> = {
   discover: { label: "发现", group: "workspace" },
   templates: { label: "模板", group: "workspace" },
   git: { label: "Git", group: "workspace" },
-  docker: { label: "容器", group: "extend" },
+  docker: { label: "容器", group: "workspace" },
   gateway: { label: "网关", group: "extend" },
   cloud: { label: "云", group: "extend" },
   ai: { label: "AI", group: "extend" },

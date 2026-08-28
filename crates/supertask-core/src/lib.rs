@@ -2,6 +2,7 @@
 
 pub mod appdata;
 pub mod discover;
+pub mod docker;
 pub mod engine;
 pub mod error;
 pub mod features;

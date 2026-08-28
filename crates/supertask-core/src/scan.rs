@@ -14,6 +14,14 @@ const MAX_DEPTH: usize = 4;
 const MAX_VISITED_DIRS: usize = 2000;
 const MAX_POM_READS: usize = 500;
 
+/// 1.3 §7.1 compose 文件候选（工作区根，不递归），按优先级降序。
+pub const COMPOSE_CANDIDATES: &[&str] = &[
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+];
+
 /// One Maven reactor root discovered during the scan.
 struct Reactor {
     /// Relative dir of the pom with `<modules>` ("." for workspace root).
@@ -22,8 +30,24 @@ struct Reactor {
     modules: Vec<String>,
 }
 
+/// 按候选顺序探测工作区根的 compose 文件；都不存在 → None（不是错误）。
+pub fn discover_compose_file(root: &Path) -> Option<String> {
+    COMPOSE_CANDIDATES
+        .iter()
+        .find(|c| root.join(c).is_file())
+        .map(|c| c.to_string())
+}
+
 /// Scan a project tree into a draft spec. Does not write disk.
 pub fn scan_draft(root: &Path) -> Result<(SuperTaskFile, Vec<String>)> {
+    scan_draft_with_runner(root, &crate::docker::ProcessDockerRunner)
+}
+
+/// 可注入 runner 的扫描入口（测试用 fake，不真调 docker）。
+pub fn scan_draft_with_runner(
+    root: &Path,
+    runner: &dyn crate::docker::DockerRunner,
+) -> Result<(SuperTaskFile, Vec<String>)> {
     if !root.is_dir() {
         return Err(Error::new(
             ErrorCode::CwdMissing,
@@ -112,6 +136,9 @@ pub fn scan_draft(root: &Path) -> Result<(SuperTaskFile, Vec<String>)> {
 
     scan_node_roots(root, &reactors, &mut services, &mut warnings);
 
+    // 1.3 §7：compose 文件发现 → kind: compose 服务草稿（Docker 不可用 → 警告跳过）
+    let docker_spec = scan_compose(root, runner, &mut services, &mut warnings);
+
     if services.is_empty() {
         return Err(Error::new(
             ErrorCode::NoYaml,
@@ -138,7 +165,7 @@ pub fn scan_draft(root: &Path) -> Result<(SuperTaskFile, Vec<String>)> {
         toolchain: None,
         templates: None,
         git: None,
-        docker: None,
+        docker: docker_spec,
         gateway: None,
         cloud: None,
         ai: None,
@@ -593,6 +620,160 @@ fn pkg_has_script(txt: &str, name: &str) -> bool {
     txt.contains(&format!("\"{name}\"")) && txt.contains("\"scripts\"")
 }
 
+// ============================================================================
+// 1.3 §7 compose 导入：文件发现 → config 解析 → kind: compose 草稿
+// ============================================================================
+
+/// compose 文件发现与草稿生成。返回写入草稿的 `docker` 段（无 compose 文件
+/// 或 Docker 不可用时为 None——不是错误，其余扫描照常）。
+fn scan_compose(
+    root: &Path,
+    runner: &dyn crate::docker::DockerRunner,
+    services: &mut IndexMap<String, ServiceSpec>,
+    warnings: &mut Vec<String>,
+) -> Option<crate::spec::DockerSpec> {
+    let present: Vec<&str> = COMPOSE_CANDIDATES
+        .iter()
+        .copied()
+        .filter(|c| root.join(c).is_file())
+        .collect();
+    if present.is_empty() {
+        return None; // 没有 compose 文件：不产生 compose 草稿（§7.1）
+    }
+    let chosen = present[0];
+    if present.len() > 1 {
+        warnings.push(format!(
+            "多个 compose 文件并存：{}；采用优先级最高的 {chosen}，并显式写入 docker.compose_file",
+            present.join("、")
+        ));
+    }
+
+    // 服务清单：`docker compose config --format json`（与 ComposeConfigLoader 同 argv）。
+    // Docker 不可用 → 整段跳过并警告（§7.2），不让扫描在无 docker 机器上失败。
+    let model = match compose_config_model(root, chosen, runner) {
+        Ok(m) => m,
+        Err(e) => {
+            // 错误码随警告透出（DOCKER_NOT_FOUND / COMPOSE_CONFIG_FAILED / …）
+            let code = serde_yaml::to_string(&e.code())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            warnings.push(format!("跳过 compose 导入（{chosen}）：[{code}] {e}"));
+            return None;
+        }
+    };
+
+    // 第一遍：id 分配（compose 服务名 → 候选 id，冲突时 unique_id 兜底）
+    let mut id_map: IndexMap<String, String> = IndexMap::new();
+    for svc in &model.services {
+        let (base, renamed) = sanitize_compose_id(&svc.name);
+        if renamed {
+            warnings.push(format!(
+                "compose 服务 {:?} 含非法 id 字符，替换为 {base:?}",
+                svc.name
+            ));
+        }
+        let id = unique_id(&base, services);
+        id_map.insert(svc.name.clone(), id);
+    }
+    // 第二遍：草稿字段（port = ports[0].published；depends_on 键映射；build 标记）
+    for svc in &model.services {
+        let id = id_map.get(&svc.name).cloned().unwrap_or_default();
+        let mut depends_on = Vec::new();
+        for dep in &svc.depends_on {
+            match id_map.get(dep) {
+                Some(dep_id) => depends_on.push(dep_id.clone()),
+                None => warnings.push(format!(
+                    "compose 服务 {:?} 的 depends_on {dep:?} 未在 compose 文件中定义，已丢弃",
+                    svc.name
+                )),
+            }
+        }
+        let mut labels = IndexMap::new();
+        if svc.has_build {
+            labels.insert("supertask.docker.build".into(), "true".into());
+        }
+        services.insert(
+            id,
+            ServiceSpec {
+                kind: "compose".into(),
+                service: Some(svc.name.clone()),
+                port: svc.port,
+                depends_on,
+                labels,
+                ..ServiceSpec::default_service()
+            },
+        );
+    }
+    Some(crate::spec::DockerSpec {
+        compose_file: Some(chosen.to_string()),
+        project_name: None,
+        builds: Vec::new(),
+        extra: Default::default(),
+    })
+}
+
+/// `docker compose --ansi never -f <file> config --format json`，扫描专用（无缓存）。
+fn compose_config_model(
+    root: &Path,
+    compose_file: &str,
+    runner: &dyn crate::docker::DockerRunner,
+) -> Result<crate::docker::ComposeModel> {
+    let abs = crate::sandbox::confine(root, compose_file)?;
+    let args = crate::docker::compose_base_args(&abs, None);
+    let mut args = args;
+    args.push("config".into());
+    args.push("--format".into());
+    args.push("json".into());
+    let out = runner
+        .run(&crate::docker::DockerSpawn {
+            args,
+            cwd: Some(root.to_path_buf()),
+            timeout: std::time::Duration::from_secs(10),
+        })
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::new(
+                    ErrorCode::DockerNotFound,
+                    "未找到 docker。请安装 Docker Desktop 并确保在 PATH 中。",
+                )
+            } else {
+                Error::new(ErrorCode::ComposeConfigFailed, format!("docker compose config 执行失败: {e}"))
+            }
+        })?;
+    if out.code != 0 {
+        return Err(Error::new(
+            ErrorCode::ComposeConfigFailed,
+            format!("docker compose config 退出码 {}", out.code),
+        ));
+    }
+    crate::docker::parse_compose_config(&out.stdout)
+}
+
+/// compose 服务名 → 合法 SuperTask id：非法字符替换 `_`；仍不合法（数字开头等）
+/// 加 `svc-` 前缀。返回 (id, 是否被改写)。
+fn sanitize_compose_id(raw: &str) -> (String, bool) {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let changed = cleaned != raw;
+    if is_valid_id(&cleaned) {
+        return (cleaned, changed);
+    }
+    let prefixed = format!("svc-{cleaned}");
+    if is_valid_id(&prefixed) {
+        return (prefixed, true);
+    }
+    ("svc".into(), true)
+}
+
 fn detect_pm(root: &Path, dir: &Path, pkg_txt: &str) -> PackageManager {
     if pkg_txt.contains("\"packageManager\"") && pkg_txt.contains("pnpm") {
         return PackageManager::Pnpm;
@@ -839,6 +1020,152 @@ mod tests {
         let h = file.services.get("api").unwrap().health.as_ref().unwrap();
         assert_eq!(h.r#type, HealthType::Http);
         assert!(h.http.as_deref().unwrap().contains("/actuator/health"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- 1.3 §7 compose 导入 ----
+
+    fn compose_config_fixture() -> String {
+        r#"{
+          "services": {
+            "redis": {
+              "image": "redis:7",
+              "ports": [{"mode": "ingress", "target": 6379, "published": 6379, "protocol": "tcp"}],
+              "build": {"context": "."}
+            },
+            "mysql": {
+              "image": "mysql:8",
+              "ports": [{"mode": "ingress", "target": 3306, "published": 3306, "protocol": "tcp"}],
+              "depends_on": ["redis", "ghost"]
+            },
+            "my.db_1": {
+              "image": "pg:16"
+            }
+          }
+        }"#
+        .to_string()
+    }
+
+    #[test]
+    fn compose_candidates_and_draft_fields() {
+        let root = std::env::temp_dir().join(format!("st-scan-comp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        let fake = crate::docker::FakeDockerRunner::new();
+        fake.push_ok(compose_config_fixture());
+        let (file, warnings) = scan_draft_with_runner(&root, &fake).unwrap();
+
+        // compose_file 显式写入草稿
+        let docker = file.docker.as_ref().expect("docker section");
+        assert_eq!(docker.compose_file.as_deref(), Some("compose.yaml"));
+
+        // port = ports[0].published；build → labels 标记
+        let redis = file.services.get("redis").expect("redis candidate");
+        assert_eq!(redis.kind, "compose");
+        assert_eq!(redis.service.as_deref(), Some("redis"));
+        assert_eq!(redis.port, Some(6379));
+        assert_eq!(
+            redis.labels.get("supertask.docker.build").map(String::as_str),
+            Some("true")
+        );
+
+        // depends_on 键映射；引用不存在 id 丢弃并警告
+        let mysql = file.services.get("mysql").unwrap();
+        assert_eq!(mysql.depends_on, vec!["redis".to_string()]);
+        assert!(warnings.iter().any(|w| w.contains("ghost")));
+
+        // 非法 id 字符替换 `_` 并警告
+        let pg = file.services.get("my_db_1").expect("sanitized id");
+        assert_eq!(pg.service.as_deref(), Some("my.db_1"));
+        assert!(warnings.iter().any(|w| w.contains("my.db_1")));
+
+        // config argv 固定：compose --ansi never -f <file> config --format json
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(&calls[0].args[0..4], &["compose", "--ansi", "never", "-f"]);
+        assert_eq!(&calls[0].args[5..], &["config", "--format", "json"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_priority_and_multiple_files_warn() {
+        let root = std::env::temp_dir().join(format!("st-scan-comppri-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for name in ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"] {
+            fs::write(root.join(name), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        }
+        let fake = crate::docker::FakeDockerRunner::new();
+        fake.push_ok(compose_config_fixture());
+        let (file, warnings) = scan_draft_with_runner(&root, &fake).unwrap();
+        assert_eq!(
+            file.docker.as_ref().unwrap().compose_file.as_deref(),
+            Some("compose.yaml")
+        );
+        assert!(warnings.iter().any(|w| w.contains("docker-compose.yaml") && w.contains("compose.yaml")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_docker_unavailable_is_warning_not_error() {
+        let root = std::env::temp_dir().join(format!("st-scan-compnd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(root.join("api")).unwrap();
+        fs::write(
+            root.join("pom.xml"),
+            r#"<project><modules><module>api</module></modules></project>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("api/pom.xml"),
+            r#"<project><artifactId>api</artifactId><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>"#,
+        )
+        .unwrap();
+        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        // PATH 无 docker → DOCKER_NOT_FOUND 警告，其余扫描照常
+        let fake = crate::docker::FakeDockerRunner::new();
+        fake.push_err(std::io::ErrorKind::NotFound);
+        let (file, warnings) = scan_draft_with_runner(&root, &fake).unwrap();
+        assert!(file.docker.is_none(), "Docker 不可用时不写 docker 段");
+        assert!(warnings.iter().any(|w| w.contains("DOCKER_NOT_FOUND")), "{warnings:?}");
+        assert!(file.services.contains_key("api"), "其余扫描照常");
+        assert!(!file.services.values().any(|s| s.kind == "compose"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_unparseable_config_warns_and_skips() {
+        let root = std::env::temp_dir().join(format!("st-scan-compbad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        let fake = crate::docker::FakeDockerRunner::new();
+        fake.push_fail(1, "invalid compose file");
+        // compose 段被跳过后无任何服务：既有工作区走 NoYaml 错误路径，二者都合法
+        match scan_draft_with_runner(&root, &fake) {
+            Ok((file, warnings)) => {
+                assert!(file.docker.is_none());
+                assert!(warnings.iter().any(|w| w.contains("invalid compose file")), "{warnings:?}");
+            }
+            Err(e) => assert_eq!(e.code(), ErrorCode::NoYaml),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compose_only_workspace_scan_ok() {
+        // 只有 compose 文件、无 Maven/Node → 也能产出草稿
+        let root = std::env::temp_dir().join(format!("st-scan-componly-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        let fake = crate::docker::FakeDockerRunner::new();
+        fake.push_ok(compose_config_fixture());
+        let (file, _) = scan_draft_with_runner(&root, &fake).unwrap();
+        assert_eq!(file.services.len(), 3);
+        assert!(file.docker.as_ref().unwrap().compose_file.is_some());
         let _ = fs::remove_dir_all(&root);
     }
 }

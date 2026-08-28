@@ -104,7 +104,7 @@
 |------|----------|----------|
 | `spring-boot` | 1.0 | 可启动 |
 | `node` | 1.0 | 可启动 |
-| `compose` | 1.3 | 可解析（`service` 必填、注入类字段非法）；启动 1.3 phase 3 接入，此前 `LAUNCH` 类启动返回 `KIND_UNSUPPORTED` |
+| `compose` | 1.3 | 可启动（1.3）：`docker compose up -d --no-deps <service>`；`service` 必填、注入类字段（`env`/`env_file`/`extra_args`/`build_args`/`jvm_args`/`cwd`/`restart`/`module`/`dir`/`package_manager`/`launch`）非法即 `SPEC_INVALID`；grace 默认 60s、health 默认 `tcp(port)`；详见 1.3 规格 §5 |
 | `python` | 2.2 | 同上 |
 | `go` | 2.2 | 同上 |
 | `generic` | 1.x | argv 通用进程，1.0 不可启动 |

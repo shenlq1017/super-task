@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, FolderSearch, LayoutTemplate, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Eye, FolderSearch, LayoutTemplate, Loader2 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,9 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
-import { apiTemplatesCreate, apiTemplatesList } from "../ipc/api";
+import { apiTemplatesCreate, apiTemplatesList, apiTemplatesPreview, type TemplatesCreateArgs } from "../ipc/api";
 import { isTauri } from "../ipc/invoke";
-import { IpcFailure, type OpState, type TemplateSummary } from "../ipc/protocol";
+import { IpcFailure, type OpState, type TemplateBlockSummary, type TemplateSource, type TemplateSummary, type TemplatesPreviewOut } from "../ipc/protocol";
 import { operationResultWorkspaceId, useOperations, type OperationState } from "../providers/operation-provider";
 import { opErrorLabel } from "../lib/status";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
@@ -20,6 +20,7 @@ const OP_STATE_LABEL: Record<OpState, string> = {
   running: "进行中",
   succeeded: "已完成",
   failed: "失败",
+  cancelled: "已取消",
 };
 
 const OP_STATE_COLOR: Record<OpState, string> = {
@@ -27,6 +28,7 @@ const OP_STATE_COLOR: Record<OpState, string> = {
   running: "var(--st-accent,#5e6ad2)",
   succeeded: "var(--st-ok-deep,#1e7e35)",
   failed: "var(--st-danger,#dc2626)",
+  cancelled: "var(--t3,#8a8f98)",
 };
 
 /** 单层目录名校验（与后端 validate_directory_name 语义对齐的前端预检）。 */
@@ -37,6 +39,18 @@ function validateDirectoryName(name: string): string | null {
   if (/[/\\]/.test(n)) return "目录名必须是单层目录，不能包含 / 或 \\";
   if (n.includes(":")) return "目录名不能包含盘符分隔符 :";
   return null;
+}
+
+/** 块依赖闭合：从已选集合出发把 requires 递归并入（与后端 plan_blocks 同语义）。 */
+function closeBlockDeps(blocks: TemplateBlockSummary[], ids: string[]): string[] {
+  const chosen = [...ids];
+  for (let i = 0; i < chosen.length; i++) {
+    const b = blocks.find((x) => x.id === chosen[i]);
+    for (const r of b?.requires ?? []) {
+      if (!chosen.includes(r)) chosen.push(r);
+    }
+  }
+  return chosen;
 }
 
 function joinPath(parent: string, name: string): string {
@@ -91,6 +105,49 @@ function TemplateOperationCard({ op, targetDir }: { op: OperationState; targetDi
   );
 }
 
+const SOURCE_TABS: { key: TemplateSource; label: string }[] = [
+  { key: "builtin", label: "官方模板" },
+  { key: "local", label: "本地模板" },
+];
+
+function SourceSegmented({
+  value,
+  hasLocal,
+  onChange,
+}: {
+  value: TemplateSource;
+  hasLocal: boolean;
+  onChange: (s: TemplateSource) => void;
+}) {
+  // 没有 local 模板时不渲染分段，避免出现点了没内容的空 tab
+  const tabs = SOURCE_TABS.filter((t) => t.key === "builtin" || hasLocal);
+  if (tabs.length <= 1) return null;
+  return (
+    <div
+      className="inline-flex items-center gap-0.5 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] p-0.5"
+      role="tablist"
+      aria-label="模板来源"
+    >
+      {tabs.map((t) => (
+        <button
+          key={t.key}
+          role="tab"
+          aria-selected={value === t.key}
+          onClick={() => onChange(t.key)}
+          className={cn(
+            "cursor-pointer rounded-[6px] px-3 py-1 text-[0.75rem] font-semibold transition-colors duration-150",
+            value === t.key
+              ? "bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)] shadow-[inset_0_0_0_1px_var(--st-accent,#5e6ad2)]"
+              : "text-[var(--t2,#62666d)] hover:bg-[var(--surface,#fff)] hover:text-[var(--t1,#222326)]",
+          )}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function TemplateCard({
   template,
   selected,
@@ -101,6 +158,27 @@ function TemplateCard({
   onSelect: () => void;
 }) {
   const [filesOpen, setFilesOpen] = useState(false);
+  // 清单损坏的本地模板：不可选不可建，仅展示原因
+  if (template.invalid) {
+    return (
+      <Card className="p-4 opacity-60" aria-disabled>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{template.name}</div>
+            <div className="mt-1.5 flex items-center gap-1.5 text-[0.78rem] text-[#DC2626]">
+              <span className="shrink-0 font-semibold">清单损坏</span>
+              <span className="truncate text-[var(--t2,#62666d)]" title={template.invalid_reason ?? undefined}>
+                {template.invalid_reason}
+              </span>
+            </div>
+          </div>
+          <Badge variant="secondary" className="shrink-0">
+            本地
+          </Badge>
+        </div>
+      </Card>
+    );
+  }
   return (
     <Card
       role="button"
@@ -120,9 +198,14 @@ function TemplateCard({
           <div className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{template.name}</div>
           <div className="mt-1 text-[0.78rem] leading-relaxed text-[var(--t2,#62666d)]">{template.description}</div>
         </div>
-        <Badge variant="secondary" className="shrink-0" title="模板版本">
-          v{template.version}
-        </Badge>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Badge variant="secondary" className="shrink-0" title={template.source === "builtin" ? "官方内置模板" : "本地用户模板"}>
+            {template.source === "builtin" ? "官方" : "本地"}
+          </Badge>
+          <Badge variant="secondary" className="shrink-0" title="模板版本">
+            v{template.version}
+          </Badge>
+        </div>
       </div>
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         {template.stacks.map((s) => (
@@ -165,10 +248,16 @@ export function TemplatesPage() {
   const [templates, setTemplates] = useState<TemplateSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<TemplateSource>("builtin");
 
   const [parentPath, setParentPath] = useState("");
   const [dirName, setDirName] = useState("");
   const [dirNameError, setDirNameError] = useState<string | null>(null);
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
+  const [selectedBlocks, setSelectedBlocks] = useState<string[]>([]);
+  const [portValues, setPortValues] = useState<Record<string, number>>({});
+  const [preview, setPreview] = useState<TemplatesPreviewOut | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const [activeOpId, setActiveOpId] = useState<string | null>(null);
@@ -203,6 +292,17 @@ export function TemplatesPage() {
     };
   }, []);
 
+  // 切换模板时重置向导：参数、块选择（默认全选）、端口、预览
+  useEffect(() => {
+    setParamValues({});
+    setPreview(null);
+    const blocks = templates?.find((t) => t.id === selectedId)?.blocks;
+    setSelectedBlocks(blocks?.map((b) => b.id) ?? []);
+    setPortValues(
+      Object.fromEntries((blocks ?? []).flatMap((b) => b.services.map((s) => [s, b.default_port])).filter(([, v]) => v != null) as [string, number][]),
+    );
+  }, [selectedId, templates]);
+
   const pickParentDirectory = async () => {
     if (isTauri()) {
       try {
@@ -220,6 +320,7 @@ export function TemplatesPage() {
     if (p) setParentPath(p);
   };
 
+  const visibleTemplates = templates?.filter((t) => t.source === sourceFilter) ?? [];
   const selected = templates?.find((t) => t.id === selectedId) ?? null;
   const opRunning = !!op && (op.state === "queued" || op.state === "running");
   const targetDir = selected && dirName.trim() ? joinPath(parentPath, dirName.trim()) : "";
@@ -232,9 +333,24 @@ export function TemplatesPage() {
       if (!parentPath.trim()) toast("请先选择或填写父目录", "warn");
       return;
     }
+    if (selected.blocks?.length && !preview) {
+      toast("组合模板请先生成预览确认", "warn");
+      return;
+    }
     setSubmitting(true);
     try {
-      const { operation_id } = await apiTemplatesCreate(selected.id, parentPath.trim(), dirName.trim());
+      const args: TemplatesCreateArgs = {
+        templateId: selected.id,
+        parentPath: parentPath.trim(),
+        directoryName: dirName.trim(),
+        source: selected.source,
+        params: paramValues,
+      };
+      if (selected.blocks?.length) {
+        args.blocks = selectedBlocks;
+        args.ports = portValues;
+      }
+      const { operation_id } = await apiTemplatesCreate(args);
       handledOpRef.current = null;
       setActiveOpId(operation_id);
     } catch (e) {
@@ -242,6 +358,68 @@ export function TemplatesPage() {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  /** 勾/取消块：选择时自动闭合依赖；取消被依赖块时拒绝并说明。 */
+  const toggleBlock = (id: string) => {
+    const blocks = selected?.blocks ?? [];
+    setPreview(null);
+    if (selectedBlocks.includes(id)) {
+      const dependents = selectedBlocks.filter(
+        (other) => other !== id && blocks.find((b) => b.id === other)?.requires.includes(id),
+      );
+      if (dependents.length > 0) {
+        const names = dependents.map((d) => blocks.find((b) => b.id === d)?.label ?? d).join("、");
+        toast(`「${blocks.find((b) => b.id === id)?.label ?? id}」被 ${names} 依赖，请先取消它们`, "warn");
+        return;
+      }
+      setSelectedBlocks((cur) => cur.filter((x) => x !== id));
+    } else {
+      setSelectedBlocks((cur) => closeBlockDeps(blocks, [...cur, id]));
+    }
+  };
+
+  const changePort = (svcId: string, raw: string) => {
+    setPreview(null);
+    setPortValues((cur) => ({ ...cur, [svcId]: raw === "" ? NaN : Number(raw) }));
+  };
+
+  // 组合向导的派生状态：选中块的服务端口视图 + 端口查重
+  const wizardServices =
+    selected?.blocks
+      ?.filter((b) => selectedBlocks.includes(b.id))
+      .flatMap((b) => b.services.map((svcId) => ({ svcId, block: b, port: portValues[svcId] ?? b.default_port ?? NaN }))) ?? [];
+  const portConflict = (() => {
+    const seen = new Map<number, string>();
+    for (const { svcId, port } of wizardServices) {
+      if (seen.has(port)) return { port, a: seen.get(port)!, b: svcId };
+      seen.set(port, svcId);
+    }
+    return null;
+  })();
+  const portInvalid = wizardServices.some(({ port }) => !Number.isInteger(port) || port < 1024 || port > 65535);
+
+  const runPreview = async () => {
+    if (!selected || previewing) return;
+    if (portConflict || portInvalid) {
+      toast("端口有冲突或非法（1024–65535），请先修正", "warn");
+      return;
+    }
+    setPreviewing(true);
+    try {
+      const out = await apiTemplatesPreview({
+        templateId: selected.id,
+        source: selected.source,
+        blocks: selectedBlocks,
+        ports: Object.fromEntries(wizardServices.map(({ svcId, port }) => [svcId, port])),
+        params: paramValues,
+      });
+      setPreview(out);
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setPreviewing(false);
     }
   };
 
@@ -274,18 +452,37 @@ export function TemplatesPage() {
             </Card>
           ) : null}
 
-          {/* 模板卡片 */}
+          {/* 来源分段 + 模板卡片 */}
           {templates && templates.length > 0 ? (
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-              {templates.map((t) => (
-                <TemplateCard
-                  key={t.id}
-                  template={t}
-                  selected={t.id === selectedId}
-                  onSelect={() => setSelectedId(t.id)}
-                />
-              ))}
-            </div>
+            <>
+              <SourceSegmented
+                value={sourceFilter}
+                hasLocal={templates.some((t) => t.source === "local")}
+                onChange={(s) => {
+                  setSourceFilter(s);
+                  // 切换来源后默认选中该来源下第一个可用模板
+                  setSelectedId(templates.find((t) => t.source === s && !t.invalid)?.id ?? null);
+                }}
+              />
+              {visibleTemplates.length > 0 ? (
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  {visibleTemplates.map((t) => (
+                    <TemplateCard
+                      key={t.id}
+                      template={t}
+                      selected={t.id === selectedId}
+                      onSelect={() => setSelectedId(t.id)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <Card className="p-6 text-center text-[0.8rem] text-[var(--t3,#8a8f98)]">
+                  {sourceFilter === "local"
+                    ? "本地模板目录暂无可用模板。把含 template.yaml 的模板目录放入 %APPDATA%\\SuperTask\\templates\\ 后刷新即可。"
+                    : "没有可用模板"}
+                </Card>
+              )}
+            </>
           ) : null}
 
           {/* 创建表单 */}
@@ -322,6 +519,135 @@ export function TemplatesPage() {
               {dirNameError ? (
                 <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
                   {dirNameError}
+                </div>
+              ) : null}
+              {/* 创建参数（模板清单 params 声明） */}
+              {selected.params?.length ? (
+                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {selected.params.map((p) => (
+                    <label key={p.key} className="flex flex-col gap-1">
+                      <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">
+                        {p.label || p.key}
+                        {p.required ? <span className="ml-0.5 text-[#DC2626]">*</span> : null}
+                      </span>
+                      <Input
+                        value={paramValues[p.key] ?? ""}
+                        onChange={(e) => {
+                          setParamValues((cur) => ({ ...cur, [p.key]: e.target.value }));
+                          setPreview(null);
+                        }}
+                        placeholder={p.key === "project_name" ? "写入 supertask.yaml 的 name" : p.key}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+              {/* 组合向导（blocks 模板）：勾块 → 端口 → 预览 → 创建 */}
+              {selected.blocks?.length ? (
+                <div className="mt-4 rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
+                  <div className="text-[0.78rem] font-semibold text-[var(--t1,#222326)]">
+                    组合服务块
+                    <span className="ml-2 font-normal text-[var(--t3,#8a8f98)]">选择将被生成到新工作区的服务</span>
+                  </div>
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    {selected.blocks.map((b) => {
+                      const checked = selectedBlocks.includes(b.id);
+                      const lockedBy = selectedBlocks
+                        .filter((other) => other !== b.id && selected.blocks!.find((x) => x.id === other)?.requires.includes(b.id))
+                        .map((d) => selected.blocks!.find((x) => x.id === d)?.label ?? d);
+                      return (
+                        <label
+                          key={b.id}
+                          className={cn(
+                            "flex cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] px-2.5 py-1.5 transition-colors duration-150",
+                            checked ? "bg-[var(--st-accent-tint,#eef0fb)]" : "bg-[var(--surface,#fff)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                            lockedBy.length > 0 && "cursor-not-allowed opacity-60",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={lockedBy.length > 0}
+                            onChange={() => toggleBlock(b.id)}
+                            className="accent-[var(--st-accent,#5e6ad2)]"
+                          />
+                          <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">{b.label}</span>
+                          <Badge variant="outline" className="text-[10px]">{b.kind}</Badge>
+                          {b.requires.length ? (
+                            <span className="text-[0.68rem] text-[var(--t3,#8a8f98)]">依赖 {b.requires.join(", ")}</span>
+                          ) : null}
+                          {lockedBy.length > 0 ? (
+                            <span className="ml-auto text-[0.68rem] text-[var(--t3,#8a8f98)]">{lockedBy.join("、")} 依赖此项</span>
+                          ) : null}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {wizardServices.length > 0 ? (
+                    <div className="mt-3">
+                      <div className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">端口分配（1024–65535）</div>
+                      <div className="mt-1.5 flex flex-wrap gap-3">
+                        {wizardServices.map(({ svcId, port }) => (
+                          <label key={svcId} className="flex items-center gap-1.5 text-[0.74rem] text-[var(--t1,#222326)]">
+                            <span className="font-mono text-[var(--t2,#62666d)]">{svcId}</span>
+                            <Input
+                              type="number"
+                              value={Number.isNaN(port) ? "" : port}
+                              onChange={(e) => changePort(svcId, e.target.value)}
+                              className="h-8 w-24 font-mono"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                      {portConflict ? (
+                        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                          端口 {portConflict.port} 同时分配给 {portConflict.a} 与 {portConflict.b}
+                        </div>
+                      ) : portInvalid ? (
+                        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                          端口必须是 1024–65535 的整数
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button variant="soft" size="sm" className="gap-1" disabled={previewing || !!portConflict || portInvalid || wizardServices.length === 0} onClick={() => void runPreview()}>
+                      {previewing ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
+                      {previewing ? "生成中…" : "生成预览"}
+                    </Button>
+                    {preview ? (
+                      <span className="text-[0.72rem] text-[var(--st-ok-deep,#1e7e35)]">
+                        预览通过：{Object.keys(preview.services).length} 个服务 · {preview.files.length} 个文件
+                      </span>
+                    ) : (
+                      <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">创建前需生成预览确认</span>
+                    )}
+                  </div>
+                  {preview ? (
+                    <div className="mt-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-2.5">
+                      <table className="w-full text-left font-mono text-[0.7rem] text-[var(--t1,#222326)]">
+                        <thead>
+                          <tr className="text-[var(--t3,#8a8f98)]">
+                            <th className="py-0.5 pr-3 font-semibold">服务</th>
+                            <th className="py-0.5 pr-3 font-semibold">kind</th>
+                            <th className="py-0.5 font-semibold">port</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(preview.services).map(([id, svc]) => (
+                            <tr key={id}>
+                              <td className="py-0.5 pr-3">{id}</td>
+                              <td className="py-0.5 pr-3">{String(svc.kind ?? "—")}</td>
+                              <td className="py-0.5">{String(svc.port ?? "—")}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {preview.warnings.map((w) => (
+                        <div key={w} className="mt-1 text-[0.72rem] text-[var(--st-warn-dot,#eab308)]">{w}</div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               <div className="mt-4 flex items-center justify-between gap-3">

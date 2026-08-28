@@ -1,0 +1,15 @@
+# SuperTask 官方模板：Spring Boot 单模块应用
+# module 为 "." 时引擎省略 -pl：直接在根目录执行 mvn spring-boot:run
+version: 1
+kind: workspace
+name: demo-single
+description: Spring Boot 单模块应用（module "." 省略 -pl）
+root: "."
+services:
+  app:
+    kind: spring-boot
+    module: "."
+    port: 8080
+    health:
+      type: http
+      http: "http://127.0.0.1:8080/actuator/health"

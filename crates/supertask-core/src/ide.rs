@@ -147,9 +147,12 @@ fn argv_for(_ide: Ide, _exe: &Path, root: &Path) -> Vec<OsString> {
     vec![root.as_os_str().to_os_string()]
 }
 
-/// 打开工作区根目录。成功仅表示进程已创建（spawn，不等待），不代表 IDE 加载完成。
-/// root 不是目录 → `CwdMissing`；未找到固定候选 → `IdeNotFound`；启动失败 → `Spawn`。
-pub fn open(ide: Ide, root: &Path) -> Result<PathBuf> {
+/// 组装并交给启动器打开工作区根目录。
+/// 启动器由调用方注入，便于单元测试不拉起真实 Explorer/IDE。
+fn open_with_launcher<F>(ide: Ide, root: &Path, launch: F) -> Result<PathBuf>
+where
+    F: FnOnce(&Path, &[OsString]) -> std::io::Result<()>,
+{
     if !root.is_dir() {
         return Err(Error::new(
             ErrorCode::CwdMissing,
@@ -163,11 +166,17 @@ pub fn open(ide: Ide, root: &Path) -> Result<PathBuf> {
         )
     })?;
     let argv = argv_for(ide, &exe, root);
-    Command::new(&exe)
-        .args(&argv)
-        .spawn()
+    launch(&exe, &argv)
         .map_err(|e| Error::new(ErrorCode::Spawn, format!("启动 {} 失败: {e}", exe.display())))?;
     Ok(exe)
+}
+
+/// 打开工作区根目录。成功仅表示进程已创建（spawn，不等待），不代表 IDE 加载完成。
+/// root 不是目录 → `CwdMissing`；未找到固定候选 → `IdeNotFound`；启动失败 → `Spawn`。
+pub fn open(ide: Ide, root: &Path) -> Result<PathBuf> {
+    open_with_launcher(ide, root, |exe, argv| {
+        Command::new(exe).args(argv).spawn().map(|_| ())
+    })
 }
 
 #[cfg(test)]
@@ -232,13 +241,29 @@ mod tests {
     }
 
     #[test]
-    fn open_explorer_with_temp_dir_ok() {
-        let dir = temp_dir("open");
-        let path = open(Ide::Explorer, &dir).expect("explorer 系统必有，spawn 应成功");
+    fn open_explorer_uses_fake_launcher_without_gui_side_effect() {
+        // 这个单测不能调用真实 Explorer：spawn 成功不代表 Explorer 已完成异步路径解析。
+        // 使用当前目录作为稳定 root，fake launcher 只记录参数，不创建窗口。
+        let root = Path::new(".");
+        let mut launched: Option<(PathBuf, Vec<OsString>)> = None;
+        let path = open_with_launcher(Ide::Explorer, root, |exe, argv| {
+            launched = Some((exe.to_path_buf(), argv.to_vec()));
+            Ok(())
+        })
+        .expect("fake launcher 应成功");
         assert!(path.to_string_lossy().to_lowercase().contains("explorer"));
-        // 给资源管理器一点启动时间再清理目录
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let _ = fs::remove_dir_all(&dir);
+        let (exe, argv) = launched.expect("应记录一次启动");
+        assert_eq!(exe, path);
+        assert_eq!(argv, vec![root.as_os_str().to_os_string()]);
+    }
+
+    #[test]
+    fn launcher_error_maps_to_spawn_without_starting_gui() {
+        let err = open_with_launcher(Ide::Explorer, Path::new("."), |_exe, _argv| {
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fake launcher"))
+        })
+        .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Spawn);
     }
 
     #[test]

@@ -17,6 +17,8 @@ import {
   type ServiceRuntimeView,
   type SuperTaskFile,
   type TemplatesListOut,
+  type TemplatesPreviewOut,
+  type TemplateSource,
   type ToolchainInstallOpts,
   type ToolchainProbeOut,
   type WorkspaceOpenOut,
@@ -25,6 +27,9 @@ import {
   type Accepted,
   type ForeignService,
   type LogSource,
+  type DockerProbe,
+  type DockerPsOut,
+  type DockerImagesOut,
   type PortsInspectOut,
   type PortsSuggestOut,
   type PortsAssignOut,
@@ -165,8 +170,8 @@ export const apiToolchainUpgrade = (tool: string, opts: ToolchainInstallOpts = {
   });
 
 /** 1.2 §5–§10：端口 / secrets / 日志历史 / 指标 / profile / build。 */
-export const apiPortsInspect = (workspaceId: string) =>
-  invoke<PortsInspectOut>(cmd.PORTS_INSPECT, { workspaceId });
+export const apiPortsInspect = (workspaceId: string, id: string, port?: number) =>
+  invoke<PortsInspectOut>(cmd.PORTS_INSPECT, { workspaceId, id, ...(port != null ? { port } : {}) });
 
 export const apiPortsSuggest = (workspaceId: string, id: string) =>
   invoke<PortsSuggestOut>(cmd.PORTS_SUGGEST, { workspaceId, id });
@@ -197,19 +202,6 @@ export const apiSecretsDelete = (workspaceId: string, key: string) =>
 
 export const apiSecretsValidate = (workspaceId: string, id?: string) =>
   invoke<SecretsValidateOut>(cmd.SECRETS_VALIDATE, { workspaceId, id: id ?? null });
-
-export const apiLogsSearch = (
-  workspaceId: string,
-  query: string,
-  opts?: { source?: LogSource | null; caseSensitive?: boolean; limit?: number },
-) =>
-  invoke<OperationIdOut>(cmd.LOGS_SEARCH, {
-    workspaceId,
-    source: opts?.source ?? null,
-    query,
-    caseSensitive: opts?.caseSensitive ?? false,
-    limit: opts?.limit ?? null,
-  });
 
 export const apiLogsExport = (
   workspaceId: string,
@@ -248,6 +240,29 @@ export const apiRuntimeBuild = (workspaceId: string, id: string) =>
   invoke<OperationIdOut>(cmd.RUNTIME_BUILD, { workspaceId, id });
 
 // ---------------------------------------------------------------------------
+// Docker（1.3，feature spec §9；compose 服务起停复用 runtime.startOne/stopOne）
+// ---------------------------------------------------------------------------
+
+/** 探测 docker CLI 与 daemon（结果会话内缓存；refresh=true 强制重探）。 */
+export const apiDockerProbe = (refresh = false) =>
+  invoke<DockerProbe>(cmd.DOCKER_PROBE, { refresh });
+
+/** 当前 compose project 的容器列表（只读；无 compose 文件则空）。 */
+export const apiDockerPs = (workspaceId: string) =>
+  invoke<DockerPsOut>(cmd.DOCKER_PS, { workspaceId });
+
+/** 本机镜像列表（只读，1.3 不提供删除）。 */
+export const apiDockerImages = () => invoke<DockerImagesOut>(cmd.DOCKER_IMAGES, {});
+
+/** 触发 docker.builds 中已定义条目的镜像构建（长操作，返回 operation_id）。 */
+export const apiDockerBuild = (workspaceId: string, name: string) =>
+  invoke<OperationIdOut>(cmd.DOCKER_BUILD, { workspaceId, name });
+
+/** 取消进行中的镜像构建（best effort：已提交的层缓存不回滚）。 */
+export const apiDockerBuildCancel = (workspaceId: string, operationId: string) =>
+  invoke<{ ok: boolean }>(cmd.DOCKER_BUILD_CANCEL, { workspaceId, operationId });
+
+// ---------------------------------------------------------------------------
 // Logs
 // ---------------------------------------------------------------------------
 
@@ -266,11 +281,45 @@ export const apiLogsClearView = (source: LogSource) =>
 
 export const apiTemplatesList = () => invoke<TemplatesListOut>(cmd.TEMPLATES_LIST, {});
 
-export const apiTemplatesCreate = (templateId: string, parentPath: string, directoryName: string) =>
-  invoke<OperationIdOut>(cmd.TEMPLATES_CREATE, {
+export type TemplatesCreateArgs = {
+  templateId: string;
+  parentPath: string;
+  directoryName: string;
+  source?: TemplateSource;
+  params?: Record<string, string>;
+  /** 组合模板：选中的块 id（缺省 = 全块，依赖自动闭合在后端） */
+  blocks?: string[];
+  /** 组合模板：服务 id → 端口 */
+  ports?: Record<string, number>;
+};
+
+export const apiTemplatesCreate = (args: TemplatesCreateArgs) => {
+  const { templateId, parentPath, directoryName, source, params, blocks, ports } = args;
+  return invoke<OperationIdOut>(cmd.TEMPLATES_CREATE, {
     templateId,
     parentPath,
     directoryName,
+    ...(source ? { source } : {}),
+    ...(params && Object.keys(params).length > 0 ? { params } : {}),
+    ...(blocks ? { blocks } : {}),
+    ...(ports && Object.keys(ports).length > 0 ? { ports } : {}),
+  });
+};
+
+/** 组合模板预览（纯计算，无副作用）。 */
+export const apiTemplatesPreview = (args: {
+  templateId: string;
+  source?: TemplateSource;
+  blocks?: string[];
+  ports?: Record<string, number>;
+  params?: Record<string, string>;
+}) =>
+  invoke<TemplatesPreviewOut>(cmd.TEMPLATES_PREVIEW, {
+    templateId: args.templateId,
+    ...(args.source ? { source: args.source } : {}),
+    ...(args.blocks ? { blocks: args.blocks } : {}),
+    ...(args.ports && Object.keys(args.ports).length > 0 ? { ports: args.ports } : {}),
+    ...(args.params && Object.keys(args.params).length > 0 ? { params: args.params } : {}),
   });
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@
 //! - 事件按发生顺序经 unbounded channel 排队，由事件桥 `try_recv_event` 轮询。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -24,6 +24,8 @@ pub enum OpState {
     Running,
     Succeeded,
     Failed,
+    /// 1.3：用户取消（best effort，已提交的层不回滚，规格 §3.2/§6.2）。
+    Cancelled,
 }
 
 /// `st.operation` 事件负载（ts 由桥层补充，这里不带）。
@@ -47,6 +49,9 @@ struct OperationRecord {
     error_code: Option<String>,
     result: Option<serde_yaml::Value>,
     terminal: bool,
+    /// 1.3：取消标记 + 终止句柄（构建杀进程等）。
+    cancel: Arc<AtomicBool>,
+    kill: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// hub 共享内核：记录表 + 事件发送端（后台线程经 Arc 持有）。
@@ -85,7 +90,10 @@ impl HubInner {
             }
             record.error_code = error_code;
             record.result = result;
-            if matches!(state, OpState::Succeeded | OpState::Failed) {
+            if matches!(
+                state,
+                OpState::Succeeded | OpState::Failed | OpState::Cancelled
+            ) {
                 record.terminal = true;
             }
             OperationEvent {
@@ -151,6 +159,8 @@ impl OperationHub {
                 error_code: None,
                 result: None,
                 terminal: false,
+                cancel: Arc::new(AtomicBool::new(false)),
+                kill: Mutex::new(None),
             },
         );
         self.inner
@@ -159,6 +169,10 @@ impl OperationHub {
         let ctx = OperationCtx {
             id: id.clone(),
             inner: Arc::clone(&self.inner),
+            cancel: {
+                let records = self.inner.records.lock().unwrap();
+                records.get(&id).map(|r| r.cancel.clone()).unwrap_or_default()
+            },
         };
         let inner = Arc::clone(&self.inner);
         let id_for_thread = id.clone();
@@ -213,6 +227,29 @@ impl OperationHub {
             .values()
             .any(|r| matches!(r.state, OpState::Queued | OpState::Running))
     }
+
+    /// 1.3：请求取消。best effort：置位取消标记并执行注册的 kill（杀构建进程），
+    /// 状态转 `cancelled`（终态唯一）。已终态 → false。
+    pub fn cancel(&self, id: &str) -> bool {
+        let (cancel, kill) = {
+            let records = self.inner.records.lock().unwrap();
+            let Some(r) = records.get(id) else {
+                return false;
+            };
+            if r.terminal {
+                return false;
+            }
+            let kill = r.kill.lock().unwrap().take();
+            (r.cancel.clone(), kill)
+        };
+        cancel.store(true, Ordering::SeqCst);
+        if let Some(kill) = kill {
+            kill();
+        }
+        self.inner
+            .transition(id, OpState::Cancelled, None, None, None, None);
+        true
+    }
 }
 
 /// 错误码序列化：`ErrorCode` 已按 SCREAMING_SNAKE_CASE 派生 Serialize。
@@ -223,11 +260,12 @@ fn error_code_string(code: ErrorCode) -> String {
         .to_string()
 }
 
-/// 传给 operation 闭包的上下文：只暴露进度上报，不暴露 hub 内部。
+/// 传给 operation 闭包的上下文：只暴露进度上报与取消检查，不暴露 hub 内部。
 #[derive(Clone)]
 pub struct OperationCtx {
     id: String,
     inner: Arc<HubInner>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl OperationCtx {
@@ -242,6 +280,19 @@ impl OperationCtx {
             None,
             None,
         );
+    }
+
+    /// 1.3：是否已被请求取消（长操作循环里按行/按块检查）。
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// 1.3：注册取消时的终止动作（杀构建进程等），只保留最后一次注册。
+    pub fn on_cancel(&self, kill: Box<dyn FnOnce() + Send>) {
+        let records = self.inner.records.lock().unwrap();
+        if let Some(r) = records.get(&self.id) {
+            *r.kill.lock().unwrap() = Some(kill);
+        }
     }
 }
 
@@ -371,6 +422,46 @@ mod tests {
         wait_terminals(&hub, 1);
         assert_eq!(hub.get(&id).unwrap().state, OpState::Succeeded);
         assert!(!hub.has_active());
+    }
+
+    #[test]
+    fn cancel_transitions_to_cancelled_and_fires_kill() {
+        use std::sync::atomic::AtomicUsize;
+        let hub = OperationHub::new();
+        let killed = Arc::new(AtomicUsize::new(0));
+        let killed2 = Arc::clone(&killed);
+        let (registered_tx, registered_rx) = std::sync::mpsc::channel::<()>();
+        let id = hub.spawn("test.cancel", move |ctx| {
+            ctx.on_cancel(Box::new(move || {
+                killed2.fetch_add(1, Ordering::SeqCst);
+            }));
+            let _ = registered_tx.send(());
+            // 模拟长构建：等取消或超时
+            for _ in 0..200 {
+                if ctx.cancelled() {
+                    return Err(Error::new(ErrorCode::Spawn, "已取消"));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(serde_yaml::Value::Null)
+        });
+        assert!(hub.has_active());
+        // 等 on_cancel 注册完成再取消，避免注册与取消竞态
+        registered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("on_cancel should register");
+        assert!(hub.cancel(&id));
+        let snap = hub.get(&id).unwrap();
+        assert_eq!(snap.state, OpState::Cancelled);
+        assert_eq!(killed.load(Ordering::SeqCst), 1, "kill 句柄应被触发");
+        // 终态后重复取消无效
+        assert!(!hub.cancel(&id));
+        // 迟到的 Failed/Ok 被忽略，终态唯一
+        std::thread::sleep(Duration::from_millis(120));
+        assert_eq!(hub.get(&id).unwrap().state, OpState::Cancelled);
+        assert!(!hub.has_active());
+        // 未知 id → false
+        assert!(!hub.cancel("op-999"));
     }
 
     #[test]

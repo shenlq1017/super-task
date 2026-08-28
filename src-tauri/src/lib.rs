@@ -333,11 +333,15 @@ pub fn run() {
             commands::logs_clear_view,
             commands::templates_list,
             commands::templates_create,
+            commands::templates_preview,
             commands::git_clone,
             commands::git_status,
             commands::git_pull,
+            commands::docker_probe,
             commands::docker_ps,
+            commands::docker_images,
             commands::docker_build,
+            commands::docker_build_cancel,
             commands::gateway_apply,
             commands::cloud_login,
             commands::cloud_sync,
@@ -362,6 +366,7 @@ pub fn run() {
             commands::runtime_build,
             commands::app_update_check,
             commands::app_update_install,
+            commands::app_write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

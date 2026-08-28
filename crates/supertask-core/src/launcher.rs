@@ -190,7 +190,7 @@ services:
     }
 
     #[test]
-    fn compose_kind_cannot_start() {
+    fn compose_kind_not_planned_as_local_command() {
         let (f, w) = parse_yaml(
             r#"
 version: 1
@@ -207,12 +207,16 @@ docker: {}
 "#,
         )
         .unwrap();
-        // 1.3 起 compose 是合法 kind（解析无警告）；启动支持在 phase 3 接入，
-        // 在此之前 plan_service 返回 KIND_UNSUPPORTED
+        // 1.3 phase 3 起 compose 是可启动 kind：解析无警告，启动走 engine 的
+        // 容器运行时分支（spawn_compose），不再进入本地命令规划。
         assert!(!w.iter().any(|x| x.code == ErrorCode::KindUnsupported));
         assert!(f.docker.is_some());
+        // plan_service 只负责 spring-boot/node 的本地 argv；对 compose 返回
+        // KIND_UNSUPPORTED 作为「不该走这条路径」的兜底守卫。
         let e = plan_service(&f, "db").unwrap_err();
         assert_eq!(e.code(), ErrorCode::KindUnsupported);
+        // 本地服务规划不受影响
+        assert!(plan_service(&f, "api").is_ok());
     }
 
     #[test]

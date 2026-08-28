@@ -1,0 +1,14 @@
+# 内置模板清单：字段与创建行为见 docs/plans/2026-08-28-templates-upgrade-plan.md §3.1
+# 本文件是模板元数据真源；files 与目录内实际文件的双向一致性由单元测试兜底。
+id: node-fullstack
+version: "1"
+name: Node 双服务（API + Web）
+description: 零依赖 Node 前后端：API 服务 + Web 服务，含 depends_on 依赖关系
+stacks:
+  - node
+files:
+  - api/package.json
+  - api/server.js
+  - supertask.yaml
+  - web/package.json
+  - web/server.js

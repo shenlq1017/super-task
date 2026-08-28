@@ -699,6 +699,15 @@ fn apply_autostart(app: &AppHandle, enable: bool) -> Result<(), tauri_plugin_aut
     }
 }
 
+/// 将文本写入用户选定路径（日志视图「下载」等）；路径由前端 save 对话框提供。
+#[tauri::command(rename = "app.writeTextFile")]
+pub fn app_write_text_file(path: String, contents: String) -> Result<HashMap<&'static str, bool>, IpcError> {
+    std::fs::write(&path, contents).map_err(|e| err(ErrorCode::LogExportFailed, format!("写入文件失败: {e}")))?;
+    let mut m = HashMap::new();
+    m.insert("ok", true);
+    Ok(m)
+}
+
 /// localStorage 一次性迁移：并入 recents / last_workspace 后落盘。
 #[tauri::command(rename = "app.importRecents")]
 pub fn app_import_recents(
@@ -799,11 +808,11 @@ pub struct TemplatesListOut {
 #[tauri::command(rename = "templates.list")]
 pub fn templates_list() -> Result<TemplatesListOut, IpcError> {
     Ok(TemplatesListOut {
-        templates: template::list_templates(),
+        templates: template::list_templates(state::templates_dir().as_deref()),
     })
 }
 
-/// 用内置模板创建新工作区（长操作，立即返回 operation_id）。
+/// 用模板（builtin/local）创建新工作区（长操作，立即返回 operation_id）。
 #[tauri::command(rename = "templates.create")]
 pub fn templates_create(
     hub: HubState<'_>,
@@ -812,17 +821,42 @@ pub fn templates_create(
     template_id: String,
     parent_path: String,
     directory_name: String,
+    source: Option<String>,
+    params: Option<std::collections::BTreeMap<String, String>>,
+    blocks: Option<Vec<String>>,
+    ports: Option<std::collections::BTreeMap<String, u32>>,
 ) -> Result<OperationOut, IpcError> {
     ensure_not_exiting(&exiting)?;
     // 同步快速校验：目录名非空（完整校验在 core 的 create_template 内）
     if directory_name.is_empty() {
         return Err(err(ErrorCode::PathEscape, "目录名不能为空"));
     }
+    let source = match source.as_deref() {
+        None | Some("builtin") => template::TemplateSourceKind::Builtin,
+        Some("local") => template::TemplateSourceKind::Local,
+        Some(other) => {
+            return Err(err(
+                ErrorCode::SpecInvalid,
+                format!("未知模板来源: {other}"),
+            ))
+        }
+    };
+    let params: std::collections::BTreeMap<String, String> = params.unwrap_or_default();
+    let local_dir = state::templates_dir();
     let appdata = appdata.inner().clone();
     let parent = PathBuf::from(&parent_path);
     let dir = directory_name;
     let op_id = hub.spawn("templates.create", move |_ctx| {
-        let target = template::create_template(&template_id, &parent, &dir)?;
+        let target = template::create_template(
+            &template_id,
+            source,
+            &parent,
+            &dir,
+            local_dir.as_deref(),
+            &params,
+            blocks.as_deref(),
+            &ports.unwrap_or_default(),
+        )?;
         let ws = target.to_string_lossy().into_owned();
         {
             let mut data = appdata.lock().expect("appdata lock");
@@ -832,6 +866,36 @@ pub fn templates_create(
         Ok(json_into(serde_json::json!({ "workspace_id": ws }))?)
     });
     Ok(OperationOut { operation_id: op_id })
+}
+
+/// 组合模板预览（纯计算，无副作用）：组合选择 → 将生成的 services / 文件清单 / 警告。
+#[tauri::command(rename = "templates.preview")]
+pub fn templates_preview(
+    template_id: String,
+    source: Option<String>,
+    blocks: Option<Vec<String>>,
+    ports: Option<std::collections::BTreeMap<String, u32>>,
+    params: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<template::TemplatePreviewOut, IpcError> {
+    let source = match source.as_deref() {
+        None | Some("builtin") => template::TemplateSourceKind::Builtin,
+        Some("local") => template::TemplateSourceKind::Local,
+        Some(other) => {
+            return Err(err(
+                ErrorCode::SpecInvalid,
+                format!("未知模板来源: {other}"),
+            ))
+        }
+    };
+    Ok(template::preview_template(
+        &template_id,
+        source,
+        state::templates_dir().as_deref(),
+        blocks.as_deref(),
+        &ports.unwrap_or_default(),
+        &params.unwrap_or_default(),
+    )
+    .map_err(ipc_err)?)
 }
 
 /// clone 远端仓库为新工作区（长操作，立即返回 operation_id）。
@@ -1161,14 +1225,65 @@ pub fn app_update_install(
 // FEATURE_SOON placeholders
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 1.3 Docker（core 侧实现；这里只做 IPC 适配）
+// ---------------------------------------------------------------------------
+
+/// `docker.probe`：三态探测，会话内缓存，`refresh` 强制刷新（规格 §4.1）。
+#[tauri::command(rename = "docker.probe")]
+pub fn docker_probe(
+    state: EngineState<'_>,
+    refresh: Option<bool>,
+) -> Result<supertask_core::docker::DockerProbe, IpcError> {
+    Ok(state.docker_probe(refresh.unwrap_or(false)))
+}
+
+/// `docker.ps`：当前 compose project 的容器列表（只读；无 compose 文件则空）。
 #[tauri::command(rename = "docker.ps")]
-pub fn docker_ps() -> Result<(), IpcError> {
-    Err(soon("docker.ps"))
+pub fn docker_ps(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::ipc::DockerPsOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let containers = state.docker_ps().map_err(ipc_err)?;
+    Ok(supertask_core::ipc::DockerPsOutput { containers })
 }
+
+/// `docker.images`：本机镜像只读列表（无缓存承诺）。
+#[tauri::command(rename = "docker.images")]
+pub fn docker_images(
+    state: EngineState<'_>,
+) -> Result<supertask_core::ipc::DockerImagesOutput, IpcError> {
+    let images = state.docker_images().map_err(ipc_err)?;
+    Ok(supertask_core::ipc::DockerImagesOutput { images })
+}
+
+/// `docker.build`：构建 `docker.builds` 中已定义条目（长操作，可取消，规格 §6）。
 #[tauri::command(rename = "docker.build")]
-pub fn docker_build() -> Result<(), IpcError> {
-    Err(soon("docker.build"))
+pub fn docker_build(
+    state: EngineState<'_>,
+    exiting: State<'_, Exiting>,
+    workspace_id: String,
+    name: String,
+) -> Result<OperationOut, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    require_current_workspace(&state, &workspace_id)?;
+    let operation_id = state.docker_build(&name).map_err(ipc_err)?;
+    Ok(OperationOut { operation_id })
 }
+
+/// `docker.buildCancel`：best effort 取消构建（已提交层缓存不回滚）。
+#[tauri::command(rename = "docker.buildCancel")]
+pub fn docker_build_cancel(
+    state: EngineState<'_>,
+    workspace_id: String,
+    operation_id: String,
+) -> Result<serde_json::Value, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let ok = state.cancel_operation(&operation_id);
+    Ok(serde_json::json!({ "ok": ok }))
+}
+
 #[tauri::command(rename = "gateway.apply")]
 pub fn gateway_apply() -> Result<(), IpcError> {
     Err(soon("gateway.apply"))
@@ -1191,14 +1306,17 @@ pub fn ai_complete() -> Result<(), IpcError> {
 //（core 侧实现；这里只做 IPC 适配）
 // ---------------------------------------------------------------------------
 
-/// `ports.inspect`：每服务端口占用 + 引擎托管判定（§5.1）。
+/// `ports.inspect`：端口占用 + 引擎托管判定（§5.1）。传 `port` 时只检查该候选端口，
+/// 否则检查全部已配置端口。
 #[tauri::command(rename = "ports.inspect")]
 pub fn ports_inspect(
     state: EngineState<'_>,
     workspace_id: String,
+    id: String,
+    port: Option<u16>,
 ) -> Result<supertask_core::ipc::PortsInspectOutput, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
-    let items = state.ports_inspect().map_err(ipc_err)?;
+    let items = state.ports_inspect(&id, port).map_err(ipc_err)?;
     Ok(supertask_core::ipc::PortsInspectOutput { items })
 }
 
@@ -1305,6 +1423,7 @@ pub fn logs_search(
         Ok(json_into(serde_json::json!({
             "items": r.items,
             "truncated": r.truncated,
+            "files_scanned": r.files_scanned,
         }))?)
     });
     Ok(OperationOut { operation_id: op_id })
@@ -1422,7 +1541,8 @@ pub fn profiles_activate(
     })
 }
 
-/// `runtime.build`（长操作）：package + artifact 选择，不启动（§11）。
+/// `runtime.build`（长操作）：本地服务 package + artifact 选择，不启动（§11）；
+/// 1.3 compose 服务路由到 `compose build <service>`（1.3 规格 §6.1，Engine 内置 hub）。
 #[tauri::command(rename = "runtime.build")]
 pub fn runtime_build(
     state: EngineState<'_>,
@@ -1433,6 +1553,15 @@ pub fn runtime_build(
 ) -> Result<OperationOut, IpcError> {
     ensure_not_exiting(&exiting)?;
     require_current_workspace(&state, &workspace_id)?;
+    let is_compose = state
+        .spec()
+        .ok()
+        .and_then(|spec| spec.services.get(&id).map(|s| s.kind == "compose"))
+        .unwrap_or(false);
+    if is_compose {
+        let operation_id = state.build_compose(&id).map_err(ipc_err)?;
+        return Ok(OperationOut { operation_id });
+    }
     let engine = state.inner().clone();
     let op_id = hub.spawn("runtime.build", move |ctx| {
         ctx.report(None, format!("正在构建 {id}（package + artifact 解析）"));
@@ -1569,6 +1698,21 @@ pub fn spawn_event_bridge(app: AppHandle, engine: Arc<Engine>, hub: HubHandle) {
                 None => {}
             }
             match hub.try_recv_event() {
+                Some(ev) => {
+                    let payload = OperationEventPayload {
+                        protocol: PROTOCOL,
+                        event: EVENT_OPERATION,
+                        workspace_id: None,
+                        ts_ms: now_ms(),
+                        payload: ev,
+                    };
+                    let _ = app.emit(EVENT_OPERATION, &payload);
+                    handled = true;
+                }
+                None => {}
+            }
+            // 1.3 镜像构建走 Engine 内置 OperationHub（与壳层 hub 分开），同样桥到 st.operation
+            match engine.operations().try_recv_event() {
                 Some(ev) => {
                     let payload = OperationEventPayload {
                         protocol: PROTOCOL,

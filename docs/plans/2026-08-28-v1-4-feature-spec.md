@@ -4,7 +4,7 @@
 > 状态：范围与默认决策已确认，待实现（前置：1.2 / 1.3 交付或明确裁剪）  
 > 上位文档：[产品路线](2026-08-25-product-roadmap.md) · [1.2 功能规格](2026-08-27-v1-2-feature-spec.md) · [1.3 功能规格](2026-08-28-v1-3-feature-spec.md) · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md) · [引擎架构](../spec/architecture.md)
 
-本文把路线中的 1.4「能出门」收到可实现、可测试、可交付的粒度。1.4 沿三条轴展开：**平台**（macOS、Linux 与 Windows 行为等价，同一份 core）、**构建工具**（Gradle 多模块 Spring）、**语言**（UI 中英），外加把存量 Taskfile 项目搬进来的**一次性导入**。1.4 不是新功能堆叠，而是把 1.0–1.3 的能力抬到三个平台并补齐 Java 世界的另一半。
+本文把路线中的 1.4「能出门」收到可实现、可测试、可交付的粒度。1.4 沿三条轴展开：**平台**（macOS、Linux 与 Windows 行为等价，同一份 core）、**构建工具**（Gradle 多模块 Spring）、**语言**（UI 四语：简体中文 / 繁體中文 / English / 日本語），外加把存量 Taskfile 项目搬进来的**一次性导入**。1.4 不是新功能堆叠，而是把 1.0–1.3 的能力抬到三个平台并补齐 Java 世界的另一半。
 
 ## 1. 目标与边界
 
@@ -13,7 +13,7 @@
 1. **能出门**：macOS / Linux 开发者打开同一个工作区，起停、日志、健康、端口、密钥、profile、工具链行为与 Windows 等价。
 2. **能清场**：三平台上 SuperTask 退出的进程树无残留（Windows Job Object / Unix 进程组）。
 3. **能构建**：Gradle 多模块工程 `bootRun` 与 `bootJar`，对齐 1.2 的 jar 规则。
-4. **能看懂**：UI 提供 zh-CN / en-US 两种语言，设置页可切换，错误提示按错误码本地化。
+4. **能看懂**：UI 提供简体中文 / 繁體中文 / English / 日本語 四种语言，设置页可切换，错误提示按错误码本地化。
 5. **能搬进来**：Taskfile 项目通过预览式向导把 tasks 映射成 `scripts`，一次性导入。
 
 ### 1.2 版本范围
@@ -24,7 +24,7 @@
 | 进程树 | Windows Job Object 不变；macOS/Linux 进程组 `killpg` + 引擎退出显式清理 |
 | 工具链 | mise 在 macOS/Linux 作为安装 provider；winget 仅 Windows |
 | Gradle | `build_tool: gradle`（缺省探测），`bootRun` / `bootJar` |
-| i18n | zh-CN（默认）/ en-US；app data v3 新增 `locale` |
+| i18n | zh-CN（默认）/ zh-TW / en-US / ja-JP；app data v3 新增 `locale` |
 | Taskfile | v3 YAML 文件导入 → `scripts` 向导（预览 + 应用） |
 | 打包 | macOS dmg（签名+公证）、Linux AppImage；自动更新仅 Windows/macOS |
 | 1.3 容器 | docker CLI 跨平台，macOS/Linux 一并验收 |
@@ -38,7 +38,8 @@
 - brew / apt 代装工具链（探测可以，安装不提供；安装 provider 只有 mise）
 - Gradle Kotlin DSL 深度解析、`gradle init`、多工程 composite build 管理
 - Gradle 全局安装入口（只支持 wrapper；理由见 §5.1）
-- i18n 框架之外的 RTL、更多语种、后端 message 全量翻译（后端 message 保持中文）
+- 四语（zh-CN / zh-TW / en-US / ja-JP）之外的更多语种、RTL、后端 message 全量翻译（后端 message 保持中文）
+- 后端 operation message 的后端侧多语言模板（由前端按 `kind` 本地化，见 §6.2）
 - Taskfile 的 vars 插值、`includes`、动态 task、运行时（导入是一次性迁移，不做 Taskfile 执行器）
 - Linux 自动更新安装（检查可用，安装提示手动替换）
 - CLI、MCP、导出包（1.5）；插件、WSL2（2.2）
@@ -53,7 +54,7 @@ YAML 继续 `version: 1`，IPC 继续 protocol 1。**Windows 行为零变化**�
 2. 探测、起停、依赖拓扑、健康检查、日志批次、端口冲突、`.env.local`、profile、jar 启动全部可用，交互与 Windows 版一致。
 3. 关闭应用后 `pgrep` 不到残留的 `java`/`node`；应用崩溃（强杀 SuperTask）后 Linux 上直系子进程随引擎退出，macOS 上正常退出路径同样无残留，异常崩溃的兜底差异在文档明示。
 4. 托盘、系统通知、开机自启按平台能力提供；缺失桌面环境（无托盘的 Linux WM）时降级为普通窗口 + 应用内通知，不崩溃。
-5. 中文 UI 默认；切到 English 后导航、页面、命令面板、常见错误提示全部切换。
+5. 简体中文默认；切到 English / 日本語 / 繁體中文后导航、页面、命令面板、常见错误提示全部切换。
 
 ### 2.2 Gradle 多模块
 
@@ -63,12 +64,13 @@ YAML 继续 `version: 1`，IPC 继续 protocol 1。**Windows 行为零变化**�
 4. `launch: jar` 执行 `bootJar` 后在 `build/libs` 识别唯一可执行 jar 并 `java -jar`，排除规则与 1.2 一致。
 5. 工程没有 wrapper 且 PATH 无 gradle 时，启动返回 `GRADLE_WRAPPER_MISSING` 并给出 `gradle wrapper` 指引，不代装。
 
-### 2.3 英文 UI
+### 2.3 多语言 UI
 
-1. 设置页「语言」提供「跟随系统 / 简体中文 / English」。
+1. 设置页「语言」提供「跟随系统 / 简体中文 / 繁體中文 / English / 日本語」。
 2. 切换即时生效，无需重启；选择持久化到 app data。
-3. 导航、命令面板、表单、向导、operation 文案为双语；后端错误 `message` 保持中文，UI 优先按 `code` 显示本地化文案，`message` 作为详情折叠展示。
+3. 导航、命令面板、表单、向导、operation 文案按所选语言渲染；后端错误 `message` 保持中文，UI 优先按 `code` 显示本地化文案，`message` 作为详情折叠展示。
 4. 未知 locale 回落 zh-CN 并在设置页提示。
+5. 资源文案以 zh-CN 为源语言，en-US / ja-JP / zh-TW 为翻译目标；zh-TW 允许从 zh-CN 经 OpenCC 转换生成底稿后人工校对（见 §6.2）。
 
 ### 2.4 Taskfile 导入
 
@@ -191,26 +193,53 @@ services:
 - merge 向导字段所有权扩展：扫描器负责字段增加 `build_tool`（`update` 动作可覆盖，用户其余字段保留）。
 - `toolchain.probe` 输出增加 `gradle` 项（found/version/path，仅信息展示）。
 
-## 6. UI 中英（i18n）
+## 6. UI 四语（i18n）
 
 ### 6.1 locale 模型
 
-- 支持 locale：`zh-CN`（默认）、`en-US`；偏好值 `auto` 表示跟随 OS。
-- 生效顺序：app data `locale` 显式值 > `auto` 检测 OS > `zh-CN`；未知值回落 zh-CN 并在设置页提示。
+- 支持 locale：`zh-CN`（默认）、`zh-TW`、`en-US`、`ja-JP`；偏好值 `auto` 表示跟随 OS。
+- `auto` 检测顺序：`navigator.language` 精确匹配（如 `ja`）→ 语言主部匹配（`zh-*` → zh-CN / zh-TW，其余 zh 回落 zh-CN）→ `zh-CN`；显式 locale 未知值同样回落 zh-CN 并在设置页提示。
 - 切换即时生效（重新挂载 i18n provider），无需重启应用或重开工作区。
 
 ### 6.2 前端约定
 
-- 引入 `react-i18next`（或同等轻量方案），资源文件按 namespace 组织（导航/命令面板/页面/向导/错误码）。
+- 引入 `react-i18next`（i18next 生态），资源文件按 namespace 组织（导航/命令面板/页面/向导/错误码）。
 - feature registry 的 `navLabel` 改为 `labelKey`；导航、命令面板、路由标题全部经 i18n 渲染。**禁止组件内硬编码中文字符串**，新代码评审清单包含此项。
-- 错误展示：UI 持有 `code → 双语文案` 映射，命中时优先显示本地化文案；后端 `message`（中文）作为可展开详情保留。未命中 code 显示 message 原文。
+- 错误展示：UI 持有 `code → 四语文案` 映射，命中时优先显示本地化文案；后端 `message`（中文）作为可展开详情保留。未命中 code 显示 message 原文。
 - operation message 由后端生成（中文），UI 对常见 `kind` 提供本地化模板，参数化字段（服务名、版本）照传。
-- 不承诺英文文档；1.4 只做 UI 层双语。
+- 文案以 zh-CN 资源为源语言维护；en-US / ja-JP 为人工翻译目标，zh-TW 底稿由 OpenCC 从 zh-CN 生成后人工校对。
+- 不承诺英文/日文文档；1.4 只做 UI 层四语。
 
-### 6.3 后端
+### 6.3 开源复用清单（不重复造轮子）
+
+i18n 与平台层在动手前先确认以下选型，均为主流、维护良好的方案；新增依赖前对照本清单，避免自研同功能代码。
+
+**i18n（UI 层）**
+
+| 用途 | 复用方案 | 说明 |
+|------|----------|------|
+| i18n 框架 | `react-i18next` + `i18next` | 事实标准：namespace、插值、即时切换、TS key 类型生成齐全；不自研文案分发/回退逻辑 |
+| 复数/数字/日期 | 原生 `Intl`（`PluralRules` / `NumberFormat` / `DateTimeFormat`） | 浏览器与 WebView 内建四语支持，不上额外 date/number 库 |
+| key 完整性校验 | `i18next-parser` | CI 中提取代码 key 与资源 diff，缺 key / 多余 key 报错 |
+| zh-TW 底稿 | `opencc-js`（s2twp） | 简繁转换 + 台湾用语习惯词一次到位，再人工校对术语（如「伺服器/端口」），不逐句手写两份 |
+| locale 检测 | `navigator.language` 自写 10 行规则 | 不引 `i18next-browser-languagedetection`——locale 真源在 app data，检测规则简单到不值得加依赖 |
+
+**平台层 / 工具链（core，Rust）**
+
+| 用途 | 复用方案 | 说明 |
+|------|----------|------|
+| 进程组 / killpg / PDEATHSIG | `nix` crate | Unix 系统调用的标准封装，`setpgid`、`killpg`、`prctl` 全覆盖；不裸写 libc |
+| Linux 指标与 /proc 解析 | `procfs` crate | 成熟的 `/proc/net/tcp`、`/proc/<pid>/stat` 解析；自写易踩 64 位 inode/字节序坑 |
+| macOS 指标 | 评估 `sysinfo` crate | 若满足进程组级 CPU/内存聚合则直接用；不满足（按 pgid 聚合）再保留自写 sysctl 查询 |
+| YAML 解析 | 现有 `serde_yaml` | Taskfile/Gradle 均为文本级 + 子集解析，**不引**第三方 Taskfile 解析器（无维护良好的库，且我们只需要字段映射子集） |
+| 桌面集成 | tauri 官方插件（notification / autostart / updater / dialog） | 沿用 1.2–1.3 现状，不换方案 |
+
+选型纪律：能用原生能力（Intl、navigator）就不加依赖；加依赖前看维护状态（近一年有发布、issue 响应）；Windows 路径不因引入新 crate 而改动（`nix`/`procfs` 均 cfg 限定 Unix target）。
+
+### 6.4 后端
 
 - 后端 `message` 字段保持中文（契约不变：`code` 是稳定枚举，`message` 给人看）。
-- 系统通知文案（崩溃通知等）由壳层生成：按错误码/事件类型取双语模板，locale 读 app data。
+- 系统通知文案（崩溃通知等）由壳层生成：按错误码/事件类型取四语模板，locale 读 app data。
 
 ## 7. Taskfile 导入
 
@@ -292,7 +321,7 @@ import.taskfilePreview   { workspace_id } → { tasks, warnings }
 import.taskfileApply     { workspace_id, selected, base_hash } → { spec, hash, warnings }
 ```
 
-- `app.savePrefs` 入参扩展 `locale?: "auto" | "zh-CN" | "en-US"`；`app.load` 的 prefs 同步返回。
+- `app.savePrefs` 入参扩展 `locale?: "auto" | "zh-CN" | "zh-TW" | "en-US" | "ja-JP"`；`app.load` 的 prefs 同步返回。
 - `toolchain.probe` 输出增加 `gradle?: { found, version, path }`。
 - `session.hello` 的 `os` 如实返回三平台值（字段已有，无结构变化）。
 - `workspace.scanPreview` / `scanApply` 的扫描器负责字段增加 `build_tool`（结构不变）。
@@ -325,10 +354,11 @@ import.taskfileApply     { workspace_id, selected, base_hash } → { spec, hash,
 
 ### 11.1 i18n 落地
 
-- 新增 i18n provider 与资源文件；feature registry `navLabel` → `labelKey` 迁移。
-- 设置页「外观」组新增语言选择（跟随系统/简体中文/English）；切换即时生效。
-- 错误呈现组件统一：code 本地化优先、message 详情折叠；命令面板与 operation 文案双语。
-- Playwright 用例以 zh-CN 断言为主，抽一条 en-US 冒烟（导航 + 起停 + 一个错误路径）。
+- 新增 i18n provider 与资源文件（zh-CN / zh-TW / en-US / ja-JP 四套 namespace）；feature registry `navLabel` → `labelKey` 迁移。
+- 设置页「外观」组新增语言选择（跟随系统/简体中文/繁體中文/English/日本語）；切换即时生效。
+- 错误呈现组件统一：code 本地化优先、message 详情折叠；命令面板与 operation 文案按所选语言渲染。
+- CI 加 `i18next-parser` key 校验：四语资源 key 集合一致，缺 key 报错（zh-TW 允许标记 opencc 生成来源后仍要求显式存在）。
+- Playwright 用例以 zh-CN 断言为主，抽 en-US / ja-JP / zh-TW 各一条冒烟（导航 + 起停 + 一个错误路径）。
 
 ### 11.2 Gradle 与 Taskfile
 
@@ -370,7 +400,7 @@ import.taskfileApply     { workspace_id, selected, base_hash } → { spec, hash,
 - `build_tool` 探测/并存拒绝、gradle argv 生成、bootJar 排除规则（`*-plain.jar` 等）。
 - Gradle include 文本级解析、动态语法跳过警告。
 - Taskfile 映射表逐行对应用例（internal 跳过、插值默认不选、id 合法化与冲突、全局 env 合并）。
-- app data v3 迁移、locale 回落。
+- app data v3 迁移、locale 回落与 `auto` 检测规则（`navigator.language` 精确 → 主部匹配 → zh-CN）。
 
 ### 13.2 集成测试
 
@@ -396,7 +426,7 @@ import.taskfileApply     { workspace_id, selected, base_hash } → { spec, hash,
 
 ### 13.4 前端与回归
 
-- tsc / vite build / Playwright（zh-CN 全量 + en-US 冒烟）。
+- tsc / vite build / Playwright（zh-CN 全量 + en-US / ja-JP / zh-TW 各一条冒烟）。
 - 回归 1.0–1.3 场景清单三平台抽样（Windows 全量）。
 - 旧客户端模型读写 1.4 YAML：`build_tool` round-trip 不丢。
 
@@ -405,7 +435,7 @@ import.taskfileApply     { workspace_id, selected, base_hash } → { spec, hash,
 1. **平台抽象层**：`proc` trait + Windows 迁移（行为不变）+ Unix 进程组实现；CI matrix 三平台跑 core 全量测试。
 2. **平台服务补齐**：launcher 后缀/shell、probe 位置、PortInspector/discover Unix、appdata/通知/托盘/自启/更新分平台。
 3. **Gradle**：`build_tool` 探测、bootRun、bootJar、扫描器、probe 展示。
-4. **i18n**：框架接入、文案 key 化迁移、设置页、错误码本地化。
+4. **i18n**：react-i18next 接入、文案 key 化迁移、四语资源（zh-TW 走 OpenCC 底稿）、设置页、错误码本地化。
 5. **Taskfile 导入**：preview/apply 命令与向导。
 6. **打包与发布**：macOS 签名+公证 dmg、Linux AppImage、更新通道分平台。
 7. **三平台真机验收**：§13.3 矩阵 + 回归。
@@ -420,7 +450,7 @@ import.taskfileApply     { workspace_id, selected, base_hash } → { spec, hash,
 - 脚本 shell：Windows `cmd.exe /C`（现状）、macOS/Linux `bash -c`（缺失回落 `sh -c` 并警告）。
 - 工具链安装 provider：macOS/Linux 只有 mise（缺失报 `TOOLCHAIN_MANAGER_MISSING`），winget 仅 Windows；不提供 brew/apt 代装。
 - Gradle 只支持 wrapper 执行（PATH gradle 仅 fallback），不提供全局 Gradle 安装；bootJar 完整复用 1.2 artifact 规则。
-- i18n 范围 zh-CN / en-US；后端 `message` 保持中文，UI 以错误码本地化优先；禁止组件硬编码文案。
+- i18n 范围 zh-CN / zh-TW / en-US / ja-JP 四语；框架复用 react-i18next，zh-TW 用 OpenCC 生成底稿再人工校对，不上更多依赖；后端 `message` 保持中文，UI 以错误码本地化优先；禁止组件硬编码文案。
 - Taskfile 导入是一次性预览式迁移向导，不做 Taskfile 运行时与双向同步。
 - app data 升 version 3 仅新增 `locale`；YAML `version: 1`、protocol 1 不变。
 - 自动更新：Windows/macOS 支持，Linux 检查可用、安装返回 `PLATFORM_UNSUPPORTED` 手动替换。

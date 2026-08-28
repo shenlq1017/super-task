@@ -71,16 +71,50 @@ pub fn tcp_listeners() -> Result<Vec<TcpListener>> {
     Ok(parse_netstat_listeners(&run_netstat()?))
 }
 
+/// 服务自身运行态：排除「自己的占用」时使用。
+/// - 托管实例：拿整个 Job 树 pid（含根进程，mvn 派生的 java 也会在内），
+///   按这批 pid 精确排除——Spring 由 mvn 派生 java 实际监听，只拿根 pid 会漏；
+/// - 打开时按端口识别的外部接管实例：无 Job 句柄、`pid` 未知但
+///   `running=true`，该端口上的监听即自身实例，整体排除。
+#[derive(Debug, Clone, Default)]
+pub struct OwnRuntime {
+    /// 本服务 Job 进程树全部存活 pid（含根）。空表示无可枚举的自身进程。
+    pub pids: Vec<u32>,
+    /// 无 Job 句柄但服务在跑（外部接管实例）：该端口上的监听整体视为自身。
+    pub running: bool,
+}
+
+/// 该端口上「非自身」的监听者：剥离自身进程树/接管实例后的占用判据。
+fn non_own<'a>(listeners: &'a [TcpListener], port: u16, own: &OwnRuntime) -> Vec<&'a TcpListener> {
+    listeners
+        .iter()
+        .filter(|l| l.port == port)
+        .filter(|l| {
+            if own.pids.is_empty() {
+                // 无自身进程树：接管实例 running 时端口整体归自己，否则照常判定
+                !own.running
+            } else {
+                // 进程树内任何 pid（含派生子进程）都算自己
+                !own.pids.contains(&l.pid)
+            }
+        })
+        .collect()
+}
+
 /// §5.1：每个有 `port` 的服务一条。`managed` = listener PID 属于本引擎 Job。
+/// 「排除自己」：listener 属于该服务自身运行实例（见 [`OwnRuntime`]）时不计
+/// 占用——运行中的服务检查自己的端口是常态操作，不应提示「已被占用」。
 pub fn inspect(
     spec: &SuperTaskFile,
     listeners: &[TcpListener],
     managed_pids: &std::collections::HashSet<u32>,
+    own: &std::collections::HashMap<String, OwnRuntime>,
 ) -> Vec<crate::ipc::PortInspection> {
     let mut items = Vec::new();
     for (id, svc) in &spec.services {
         let Some(port) = svc.port else { continue };
-        let hit: Vec<&TcpListener> = listeners.iter().filter(|l| l.port == port).collect();
+        let self_run = own.get(id).cloned().unwrap_or_default();
+        let hit = non_own(listeners, port, &self_run);
         let in_use = !hit.is_empty();
         let (pid, process, managed) = match hit.first() {
             Some(l) => (
@@ -100,6 +134,41 @@ pub fn inspect(
         });
     }
     items
+}
+
+/// §5.1：检查单个「候选端口」是否可被 `id` 服务使用（用输入框里填的号，而非
+/// 配置端口）。自身进程树与接管实例同样豁免——运行中的服务复查自己的端口不应
+/// 报「已被占用」。`managed` = 监听者 pid 属于本引擎其它 Job 树。
+pub fn inspect_single(
+    spec: &SuperTaskFile,
+    id: &str,
+    port: u16,
+    listeners: &[TcpListener],
+    managed_pids: &std::collections::HashSet<u32>,
+    own: &std::collections::HashMap<String, OwnRuntime>,
+) -> Result<crate::ipc::PortInspection> {
+    if !spec.services.contains_key(id) {
+        return Err(Error::new(ErrorCode::NotFound, format!("没有服务 {id}")));
+    }
+    let self_run = own.get(id).cloned().unwrap_or_default();
+    let hit = non_own(listeners, port, &self_run);
+    let in_use = !hit.is_empty();
+    let (pid, process, managed) = match hit.first() {
+        Some(l) => (
+            Some(l.pid),
+            process_name_of(l.pid),
+            managed_pids.contains(&l.pid),
+        ),
+        None => (None, None, false),
+    };
+    Ok(crate::ipc::PortInspection {
+        id: id.to_string(),
+        port,
+        in_use,
+        pid,
+        process_name: process,
+        managed,
+    })
 }
 
 #[cfg(windows)]
@@ -272,13 +341,89 @@ mod tests {
         let s = spec(y);
         let mut managed = std::collections::HashSet::new();
         managed.insert(1234u32);
-        let items = inspect(&s, &parse_netstat_listeners(NETSTAT), &managed);
+        // db 自己以 1234 监听 6379（托管运行中的常态）；api 未运行
+        let mut own = std::collections::HashMap::new();
+        own.insert("db".to_string(), OwnRuntime { pids: vec![1234], running: true });
+        own.insert("api".to_string(), OwnRuntime::default());
+        let items = inspect(&s, &parse_netstat_listeners(NETSTAT), &managed, &own);
         assert_eq!(items.len(), 2);
         let api = items.iter().find(|i| i.id == "api").unwrap();
         assert!(api.in_use && !api.managed && api.pid == Some(4120));
         // process_name 走真实 tasklist，不按内容断言（本机进程表不可预测）
+        // db 的 6379 只被自己（1234）监听 → 排除自己 → 不算占用
         let db = items.iter().find(|i| i.id == "db").unwrap();
-        assert!(db.in_use && db.managed && db.pid == Some(1234));
+        assert!(!db.in_use, "自身监听不计入占用");
+        assert!(!db.managed && db.pid.is_none());
+    }
+
+    #[test]
+    fn inspect_excludes_own_process_tree() {
+        // 托管 Spring：根 mvn pid=2000，实际监听端口的是派生 java pid=2001。
+        // 只排除根会把 java 判成「外部进程占用」→ 必须整个进程树一起排除。
+        let y = "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8081\n";
+        let s = spec(y);
+        let mut managed = std::collections::HashSet::new();
+        managed.insert(2000u32);
+        managed.insert(2001u32);
+        let mut own = std::collections::HashMap::new();
+        own.insert("api".to_string(), OwnRuntime { pids: vec![2000, 2001], running: true });
+        let listeners = vec![
+            TcpListener { address: "127.0.0.1".into(), port: 8081, pid: 2001 },
+            TcpListener { address: "0.0.0.0".into(), port: 9000, pid: 4120 },
+        ];
+        let items = inspect(&s, &listeners, &managed, &own);
+        let api = items.iter().find(|i| i.id == "api").unwrap();
+        assert!(!api.in_use, "派生 java 的监听同样排除，不报外部占用");
+        assert!(api.pid.is_none());
+    }
+
+    #[test]
+    fn inspect_single_checks_candidate_port_and_excludes_own_tree() {
+        let y = "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8081\n";
+        let s = spec(y);
+        let mut managed = std::collections::HashSet::new();
+        managed.insert(2000u32);
+        managed.insert(2001u32);
+        let mut own = std::collections::HashMap::new();
+        own.insert("api".to_string(), OwnRuntime { pids: vec![2000, 2001], running: true });
+        let listeners = vec![
+            TcpListener { address: "127.0.0.1".into(), port: 8081, pid: 2001 },
+            TcpListener { address: "0.0.0.0".into(), port: 9000, pid: 4120 },
+        ];
+        // 候选端口 = 自身当前监听端口（java 持有）→ 豁免，不算占用
+        let own_port = inspect_single(&s, "api", 8081, &listeners, &managed, &own).unwrap();
+        assert!(!own_port.in_use && own_port.pid.is_none());
+        // 候选端口 9000 被外部进程持有 → 占用、非托管
+        let external = inspect_single(&s, "api", 9000, &listeners, &managed, &own).unwrap();
+        assert!(external.in_use && !external.managed && external.pid == Some(4120));
+    }
+
+    #[test]
+    fn inspect_excludes_external_adopted_instance() {
+        // 打开时按端口识别的外部实例（PID 未知、running=true）：
+        // 该端口上的监听就是自己 → 不算占用
+        let y = "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8081\n";
+        let s = spec(y);
+        let mut own = std::collections::HashMap::new();
+        own.insert("api".to_string(), OwnRuntime { pids: vec![], running: true });
+        let items = inspect(&s, &parse_netstat_listeners(NETSTAT), &std::collections::HashSet::new(), &own);
+        let api = items.iter().find(|i| i.id == "api").unwrap();
+        assert!(!api.in_use, "外部接管实例的自身监听同样排除");
+    }
+
+    #[test]
+    fn inspect_reports_other_managed_holder() {
+        // 其他服务的托管进程占用了本服务端口 → 仍算占用，并标记 managed
+        let y = "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 9000\n";
+        let s = spec(y);
+        let mut managed = std::collections::HashSet::new();
+        managed.insert(1234u32);
+        let mut own = std::collections::HashMap::new();
+        own.insert("api".to_string(), OwnRuntime { pids: vec![7], running: true });
+        let listeners = vec![TcpListener { address: "0.0.0.0".into(), port: 9000, pid: 1234 }];
+        let items = inspect(&s, &listeners, &managed, &own);
+        let api = items.iter().find(|i| i.id == "api").unwrap();
+        assert!(api.in_use && api.managed && api.pid == Some(1234));
     }
 
     #[test]
