@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Boxes,
   Container,
@@ -31,6 +32,7 @@ import type {
   OpState,
 } from "../ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
+import i18n from "@/i18n";
 
 /* ---------------- helpers ---------------- */
 
@@ -43,9 +45,9 @@ function fmtSize(bytes: number): string {
 
 function fmtAge(ms: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
-  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
-  return `${Math.floor(s / 86400)} 天前`;
+  if (s < 3600) return i18n.t("pages.docker.ageMinutes", { n: Math.floor(s / 60) });
+  if (s < 86400) return i18n.t("pages.docker.ageHours", { n: Math.floor(s / 3600) });
+  return i18n.t("pages.docker.ageDays", { n: Math.floor(s / 86400) });
 }
 
 function shortId(id: string): string {
@@ -90,12 +92,13 @@ function healthChip(health: string | null | undefined) {
   );
 }
 
-const OP_STATE_META: Record<OpState, { label: string; cls: string }> = {
-  queued: { label: "排队中", cls: "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]" },
-  running: { label: "构建中", cls: "bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)]" },
-  succeeded: { label: "成功", cls: "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]" },
-  failed: { label: "失败", cls: "bg-[var(--st-danger-tint,#fdecec)] text-[var(--st-danger,#dc2626)]" },
-  cancelled: { label: "已取消", cls: "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]" },
+/** operation 状态 chip 文案走 `opStates.*`；配色本地保留。 */
+const OP_STATE_META: Record<OpState, { cls: string }> = {
+  queued: { cls: "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]" },
+  running: { cls: "bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)]" },
+  succeeded: { cls: "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]" },
+  failed: { cls: "bg-[var(--st-danger-tint,#fdecec)] text-[var(--st-danger,#dc2626)]" },
+  cancelled: { cls: "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]" },
 };
 
 function SectionHead({
@@ -115,6 +118,7 @@ function SectionHead({
   disabled?: boolean;
   disabledReason?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-2">
       <span className="flex items-center gap-1.5 text-[0.95rem] font-semibold text-[var(--t1,#222326)]">
@@ -134,7 +138,7 @@ function SectionHead({
           className="ml-auto"
           disabled={disabled || refreshing}
           onClick={onRefresh}
-          aria-label={`刷新${title}`}
+          aria-label={t("pages.docker.refreshAria", { title })}
         >
           {refreshing ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
         </Button>
@@ -161,6 +165,7 @@ export function DockerPage() {
   const ws = useWorkspace();
   const ops = useOperations();
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const [probe, setProbe] = useState<DockerProbe | null>(null);
   const [probeLoading, setProbeLoading] = useState(true);
@@ -248,7 +253,7 @@ export function DockerPage() {
     try {
       await ws.actions.scanDraft(workspaceId);
       await ws.actions.refreshSpec();
-      toast("已重新扫描：请在扫描结果中确认 compose 服务导入", "ok");
+      toast(t("pages.docker.rescanImported"), "ok");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -259,7 +264,7 @@ export function DockerPage() {
     try {
       const out = await apiDockerBuild(workspaceId, name);
       setBuildOps((prev) => ({ ...prev, [name]: out.operation_id }));
-      toast(`已开始构建镜像 ${name}`, "info");
+      toast(t("pages.docker.buildStarted", { name }), "info");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -270,7 +275,7 @@ export function DockerPage() {
     if (!workspaceId || !opId) return;
     try {
       await apiDockerBuildCancel(workspaceId, opId);
-      toast("已发送取消请求（已提交的层缓存保留）", "info");
+      toast(t("pages.docker.cancelSent"), "info");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -279,14 +284,14 @@ export function DockerPage() {
   const builds = dockerSpec?.builds ?? [];
   const offlineReason = !probe
     ? probeLoading
-      ? "正在探测 Docker 引擎…"
-      : "Docker 引擎状态未知"
+      ? t("pages.docker.probingEngine")
+      : t("pages.docker.engineUnknown")
     : !probe.found
-      ? "未检测到 Docker"
+      ? t("pages.docker.notFound")
       : !probe.running
-        ? "Docker 引擎未运行"
+        ? t("pages.docker.engineDown")
         : probe.compose_version == null
-          ? "docker compose 插件不可用"
+          ? t("pages.docker.composeMissing")
           : null;
 
   return (
@@ -308,18 +313,18 @@ export function DockerPage() {
             <div className="min-w-0 flex-1">
               {probeLoading && !probe ? (
                 <div className="flex items-center gap-2 text-[0.85rem] text-[var(--t2,#62666d)]">
-                  <Loader2 className="size-3.5 animate-spin" /> 正在探测 Docker 引擎…
+                  <Loader2 className="size-3.5 animate-spin" /> {t("pages.docker.probingEngine")}
                 </div>
               ) : probeError ? (
                 <>
-                  <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">Docker 引擎状态未知</div>
+                  <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{t("pages.docker.engineUnknown")}</div>
                   <p className="mt-0.5 text-[0.78rem] text-[var(--st-danger,#dc2626)]">{probeError}</p>
                 </>
               ) : probe && !probe.found ? (
                 <>
-                  <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">未检测到 Docker</div>
+                  <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{t("pages.docker.notFound")}</div>
                   <p className="mt-0.5 max-w-lg text-[0.78rem] leading-relaxed text-[var(--t2,#62666d)]">
-                    PATH 中没有 docker 可执行文件。请安装 Docker Desktop 后重试；SuperTask 不提供代装（工具链安装仅覆盖 JDK / Maven / Node）。
+                    {t("pages.docker.notFoundDesc")}
                   </p>
                   <a
                     href="https://www.docker.com/products/docker-desktop/"
@@ -327,29 +332,29 @@ export function DockerPage() {
                     rel="noreferrer"
                     className="mt-1 inline-flex items-center gap-1 text-[0.78rem] font-medium text-[var(--st-accent,#5e6ad2)] underline-offset-4 hover:underline"
                   >
-                    打开 Docker Desktop 下载页 <Download className="size-3.5" />
+                    {t("pages.docker.downloadLink")} <Download className="size-3.5" />
                   </a>
                 </>
               ) : probe && !probe.running ? (
                 <>
-                  <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">Docker 引擎未运行</div>
+                  <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{t("pages.docker.engineDown")}</div>
                   <p className="mt-0.5 text-[0.78rem] text-[var(--t2,#62666d)]">
-                    已检测到 docker CLI{probe.version ? `（${probe.version}）` : ""}，但 daemon 不可达。请启动 Docker Desktop 后重试。
+                    {t("pages.docker.engineDownDesc", { version: probe.version ?? "" })}
                   </p>
                 </>
               ) : probe ? (
                 <>
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">Docker 引擎在线</span>
+                    <span className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{t("pages.docker.engineOnline")}</span>
                     <span className="inline-flex items-center gap-1 rounded-full bg-[var(--st-ok-tint,#e9f7ed)] px-2 py-0.5 text-[11px] font-medium text-[var(--st-ok-deep,#1e7e35)]">
-                      <span className="size-1.5 rounded-full bg-[var(--st-ok,#27a644)]" /> 运行中
+                      <span className="size-1.5 rounded-full bg-[var(--st-ok,#27a644)]" /> {t("states.running")}
                     </span>
                     {probe.version ? <Badge variant="outline" className="font-mono text-[10px]">docker {probe.version}</Badge> : null}
                     {probe.compose_version ? (
                       <Badge variant="outline" className="font-mono text-[10px]">compose {probe.compose_version}</Badge>
                     ) : (
                       <span className="rounded-full bg-[var(--st-warn-tint,#fff8e1)] px-2 py-0.5 text-[11px] font-medium text-[var(--st-warn,#9a6700)]">
-                        compose 插件不可用
+                        {t("pages.docker.composeMissing")}
                       </span>
                     )}
                   </div>
@@ -364,7 +369,7 @@ export function DockerPage() {
               onClick={() => void loadProbe(true)}
             >
               {probeLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-              重试探测
+              {t("pages.docker.retryProbe")}
             </Button>
           </div>
         </Card>
@@ -373,21 +378,21 @@ export function DockerPage() {
         <Card className="p-4">
           <SectionHead
             icon={<Boxes className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
-            title="工作区 compose"
+            title={t("pages.docker.wsCompose")}
             count={composeServices.length}
           />
           {!workspaceId ? (
             <div className="mt-3">
-              <EmptyNote>未打开工作区：先在顶部选择或扫描一个工作区。</EmptyNote>
+              <EmptyNote>{t("pages.docker.noWorkspace")}</EmptyNote>
             </div>
           ) : !composeFile ? (
             <div className="mt-3">
-              <EmptyNote>未配置 docker.compose_file；可将存量 compose 项目走扫描向导导入。</EmptyNote>
+              <EmptyNote>{t("pages.docker.noComposeFile")}</EmptyNote>
             </div>
           ) : (
             <>
               <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.78rem]">
-                <span className="text-[var(--t3,#8a8f98)]">compose 文件</span>
+                <span className="text-[var(--t3,#8a8f98)]">{t("pages.docker.composeFile")}</span>
                 <span className="font-mono text-[var(--t1,#222326)]" title={composePath ?? composeFile}>
                   {composeFile}
                 </span>
@@ -403,23 +408,23 @@ export function DockerPage() {
                   size="sm"
                   className="ml-auto gap-1"
                   disabled={!composeReady}
-                  title={composeReady ? "扫描工作区并生成 compose 服务草稿（与顶部「扫描」同一入口）" : offlineReason ?? undefined}
+                  title={composeReady ? t("pages.docker.importTitle") : offlineReason ?? undefined}
                   onClick={() => void importFromCompose()}
                 >
-                  <Download className="size-3.5" /> 从 compose 导入
+                  <Download className="size-3.5" /> {t("pages.docker.importFromCompose")}
                 </Button>
               </div>
               {composeServices.length === 0 ? (
                 <div className="mt-3">
-                  <EmptyNote>compose 文件已配置，但 supertask.yaml 还没有 kind: compose 服务。</EmptyNote>
+                  <EmptyNote>{t("pages.docker.noComposeServices")}</EmptyNote>
                 </div>
               ) : (
                 <div className="mt-3 overflow-x-auto">
                   <div className="min-w-[26rem]">
                     <div className="flex items-center gap-3 border-b border-[var(--line,#e6e6e6)] pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-                      <span className="w-[10rem]">服务（YAML id）</span>
-                      <span className="w-[8rem]">compose 服务</span>
-                      <span className="w-[6rem]">主机端口</span>
+                      <span className="w-[10rem]">{t("pages.docker.colServiceYaml")}</span>
+                      <span className="w-[8rem]">{t("pages.docker.colComposeService")}</span>
+                      <span className="w-[6rem]">{t("pages.docker.colHostPort")}</span>
                       <span>build</span>
                     </div>
                     {composeServices.map((s) => (
@@ -452,7 +457,7 @@ export function DockerPage() {
         <Card className="p-4">
           <SectionHead
             icon={<Container className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
-            title="容器"
+            title={t("pages.docker.containers")}
             count={containers?.length}
             onRefresh={() => void loadContainers()}
             refreshing={psLoading}
@@ -464,20 +469,20 @@ export function DockerPage() {
               <EmptyNote>{offlineReason}</EmptyNote>
             ) : psLoading && containers == null ? (
               <div className="flex items-center gap-2 p-3 text-[0.8rem] text-[var(--t2,#62666d)]">
-                <Loader2 className="size-3.5 animate-spin" /> 正在查询 docker compose ps…
+                <Loader2 className="size-3.5 animate-spin" /> {t("pages.docker.queryingPs")}
               </div>
             ) : containers && containers.length === 0 ? (
-              <EmptyNote>当前 compose project 没有容器（尚未启动或已清理）。</EmptyNote>
+              <EmptyNote>{t("pages.docker.noContainers")}</EmptyNote>
             ) : containers ? (
               <div className="overflow-x-auto">
                 <div className="min-w-[40rem]">
                   <div className="flex items-center gap-3 border-b border-[var(--line,#e6e6e6)] pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-                    <span className="w-[7rem]">服务</span>
-                    <span className="w-[8rem]">容器 ID</span>
-                    <span className="min-w-[10rem] flex-1">镜像</span>
-                    <span className="w-[5.5rem]">状态</span>
-                    <span className="w-[5.5rem]">健康</span>
-                    <span className="w-[7rem]">端口</span>
+                    <span className="w-[7rem]">{t("pages.docker.colService")}</span>
+                    <span className="w-[8rem]">{t("pages.docker.colContainerId")}</span>
+                    <span className="min-w-[10rem] flex-1">{t("pages.docker.colImage")}</span>
+                    <span className="w-[5.5rem]">{t("pages.docker.colState")}</span>
+                    <span className="w-[5.5rem]">{t("pages.docker.colHealth")}</span>
+                    <span className="w-[7rem]">{t("pages.docker.colPorts")}</span>
                   </div>
                   {containers.map((c) => (
                     <div
@@ -512,7 +517,7 @@ export function DockerPage() {
         <Card className="p-4">
           <SectionHead
             icon={<ImageIcon className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
-            title="镜像"
+            title={t("pages.docker.images")}
             count={images?.length}
             onRefresh={() => void loadImages()}
             refreshing={imagesLoading}
@@ -524,18 +529,18 @@ export function DockerPage() {
               <EmptyNote>{offlineReason}</EmptyNote>
             ) : imagesLoading && images == null ? (
               <div className="flex items-center gap-2 p-3 text-[0.8rem] text-[var(--t2,#62666d)]">
-                <Loader2 className="size-3.5 animate-spin" /> 正在查询本机镜像…
+                <Loader2 className="size-3.5 animate-spin" /> {t("pages.docker.queryingImages")}
               </div>
             ) : images && images.length === 0 ? (
-              <EmptyNote>本机没有镜像。可在下方触发构建，或在 compose 首次 up 时自动拉取。</EmptyNote>
+              <EmptyNote>{t("pages.docker.noImages")}</EmptyNote>
             ) : images ? (
               <div className="overflow-x-auto">
                 <div className="min-w-[34rem]">
                   <div className="flex items-center gap-3 border-b border-[var(--line,#e6e6e6)] pb-1.5 text-[10px] font-semibold tracking-wider text-[var(--t3,#8a8f98)]">
-                    <span className="min-w-[12rem] flex-1">仓库:标签</span>
-                    <span className="w-[10rem]">镜像 ID</span>
-                    <span className="w-[6rem]">大小</span>
-                    <span className="w-[7rem]">创建时间</span>
+                    <span className="min-w-[12rem] flex-1">{t("pages.docker.colRepoTag")}</span>
+                    <span className="w-[10rem]">{t("pages.docker.colImageId")}</span>
+                    <span className="w-[6rem]">{t("pages.docker.colSize")}</span>
+                    <span className="w-[7rem]">{t("pages.docker.colCreated")}</span>
                   </div>
                   {images.map((img) => (
                     <div
@@ -568,7 +573,7 @@ export function DockerPage() {
         <Card className="p-4">
           <SectionHead
             icon={<Hammer className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
-            title="镜像构建"
+            title={t("pages.docker.imageBuild")}
             count={builds.length}
             disabled={!composeReady}
             disabledReason={offlineReason ?? undefined}
@@ -578,7 +583,7 @@ export function DockerPage() {
               <EmptyNote>{offlineReason}</EmptyNote>
             ) : builds.length === 0 ? (
               <EmptyNote>
-                supertask.yaml 未配置 docker.builds。compose 服务内有 build: 段的，可在运行页该服务处触发构建。
+                {t("pages.docker.noBuilds")}
               </EmptyNote>
             ) : (
               <div className="flex flex-col">
@@ -610,12 +615,12 @@ export function DockerPage() {
                               title={op.message ?? undefined}
                             >
                               {opActive ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
-                              {OP_STATE_META[op.state].label}
+                              {t(`opStates.${op.state}`)}
                             </span>
                           ) : null}
                           {opActive ? (
                             <Button variant="destructive" size="sm" className="gap-1" onClick={() => void cancelBuild(b.name)}>
-                              <Square className="size-3.5" /> 取消构建
+                              <Square className="size-3.5" /> {t("pages.docker.cancelBuild")}
                             </Button>
                           ) : (
                             <Button
@@ -625,7 +630,7 @@ export function DockerPage() {
                               disabled={!workspaceId}
                               onClick={() => void triggerBuild(b.name)}
                             >
-                              <Hammer className="size-3.5" /> 构建镜像
+                              <Hammer className="size-3.5" /> {t("pages.docker.buildImage")}
                             </Button>
                           )}
                         </div>
@@ -633,7 +638,7 @@ export function DockerPage() {
                       {op?.state === "failed" ? (
                         <p className="break-all text-[0.72rem] text-[var(--st-danger,#dc2626)]" title={op.message ?? undefined}>
                           {op.error_code ? `${op.error_code}：` : ""}
-                          {op.message ?? "构建失败"}
+                          {op.message ?? t("pages.docker.buildFailed")}
                         </p>
                       ) : op?.state === "succeeded" && op.message ? (
                         <p className="break-all text-[0.72rem] text-[var(--t3,#8a8f98)]">{op.message}</p>

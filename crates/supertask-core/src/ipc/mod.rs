@@ -71,6 +71,9 @@ pub mod cmd {
     pub const DOCKER_PS: &str = "docker.ps";
     pub const DOCKER_IMAGES: &str = "docker.images";
     pub const DOCKER_BUILD: &str = "docker.build";
+    // ---- 1.4 (types only; handlers in later phases) ----
+    pub const IMPORT_TASKFILE_PREVIEW: &str = "import.taskfilePreview";
+    pub const IMPORT_TASKFILE_APPLY: &str = "import.taskfileApply";
 }
 
 pub mod event {

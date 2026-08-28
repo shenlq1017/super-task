@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, Settings2, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +33,7 @@ type EnvVariablesEditorProps = {
   /** 提供时在底部显示保存按钮（运行页环境 Tab） */
   onSave?: () => void | Promise<void>;
   saveDisabled?: boolean;
+  /** 保存按钮文案；缺省用 `pages.env.saveEnvVars` 的本地化文案 */
   saveLabel?: string;
   /** 隐藏区块标题（嵌入配置页卡片时） */
   hideTitle?: boolean;
@@ -43,11 +45,12 @@ export function EnvVariablesEditor({
   onChange,
   onSave,
   saveDisabled,
-  saveLabel = "保存环境变量",
+  saveLabel,
   hideTitle,
   className,
 }: EnvVariablesEditorProps) {
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [rows, setRows] = useState<EnvRow[]>(() => envRowsFromRecord(value));
   const [importText, setImportText] = useState("");
   const [importFormat, setImportFormat] = useState<EnvImportFormat>("auto");
@@ -78,7 +81,7 @@ export function EnvVariablesEditor({
     const parsed = parseEnvImport(importText, importFormat);
     const keys = Object.keys(parsed);
     if (!keys.length) {
-      toast("未能从文本中解析出环境变量", "warn");
+      toast(t("operations.envParseEmpty"), "warn");
       return;
     }
     const map = new Map(rows.map((r) => [r.key.trim(), r]));
@@ -88,7 +91,7 @@ export function EnvVariablesEditor({
     emit([...map.values()]);
     setImportText("");
     setShowImport(false);
-    toast(`已导入 ${keys.length} 个变量${onSave ? "（保存后生效）" : ""}`, "ok");
+    toast(onSave ? t("operations.importEnvOkWithSave", { n: keys.length }) : t("operations.importEnvOk", { n: keys.length }), "ok");
   };
 
   return (
@@ -96,7 +99,7 @@ export function EnvVariablesEditor({
       <div className="flex flex-wrap items-center gap-2">
         {!hideTitle ? (
           <div className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-            <Settings2 className="size-3.5" /> 环境变量
+            <Settings2 className="size-3.5" /> {t("env.title")}
             <span className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[10px] normal-case">{rows.length}</span>
           </div>
         ) : null}
@@ -106,14 +109,14 @@ export function EnvVariablesEditor({
           className={cn("gap-1", hideTitle ? "" : "ml-auto")}
           onClick={() => setShowImport((v) => !v)}
         >
-          <Upload className="size-3.5" /> 快速导入
+          <Upload className="size-3.5" /> {t("env.quickImport")}
         </Button>
       </div>
 
       {showImport ? (
         <div className="flex flex-col gap-2 rounded-lg border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] p-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[0.72rem] text-[var(--t2,#62666d)]">格式</span>
+            <span className="text-[0.72rem] text-[var(--t2,#62666d)]">{t("env.format")}</span>
             {(["auto", "env", "yaml", "properties", "json"] as const).map((fmt) => (
               <button
                 key={fmt}
@@ -133,22 +136,22 @@ export function EnvVariablesEditor({
           <textarea
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
-            placeholder={"支持 .env / YAML / .properties / JSON 等格式粘贴导入\n例：SPRING_PROFILES_ACTIVE=dev"}
+            placeholder={t("env.importPlaceholder")}
             className="min-h-[6.5rem] w-full resize-y rounded-md border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-3 py-2 font-mono text-[12px] text-[var(--t1,#222326)] outline-none focus:border-[var(--st-accent,#5e6ad2)]"
           />
           <div className="flex gap-2">
             <Button size="sm" variant="success" onClick={importEnv} disabled={!importText.trim()}>
-              解析并合并
+              {t("env.parseAndMerge")}
             </Button>
             <Button size="sm" variant="outline" onClick={() => setShowImport(false)}>
-              收起
+              {t("common.collapse")}
             </Button>
           </div>
         </div>
       ) : null}
 
       {rows.length === 0 ? (
-        <div className="text-sm text-[var(--t3,#8a8f98)]">无环境变量</div>
+        <div className="text-sm text-[var(--t3,#8a8f98)]">{t("env.noVars")}</div>
       ) : (
         <div className="flex flex-col gap-1.5">
           {rows.map((row) => (
@@ -158,20 +161,20 @@ export function EnvVariablesEditor({
                 onChange={(e) => updateRow(row.id, { key: e.target.value })}
                 placeholder="KEY"
                 className="font-mono text-[12px]"
-                aria-label="环境变量名"
+                aria-label={t("env.varNameAria")}
               />
               <Input
                 value={row.value}
                 onChange={(e) => updateRow(row.id, { value: e.target.value })}
-                placeholder="值"
+                placeholder={t("env.valuePlaceholder")}
                 className="font-mono text-[12px]"
-                aria-label="环境变量值"
+                aria-label={t("env.varValueAria")}
               />
               <button
                 type="button"
                 onClick={() => removeRow(row.id)}
                 className="grid size-8 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)]"
-                title="删除变量"
+                title={t("env.deleteVar")}
               >
                 <Trash2 className="size-3.5" />
               </button>
@@ -182,11 +185,11 @@ export function EnvVariablesEditor({
 
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="outline" className="gap-1" onClick={addRow}>
-          <Plus className="size-3.5" /> 添加变量
+          <Plus className="size-3.5" /> {t("env.addVar")}
         </Button>
         {onSave ? (
           <Button size="sm" variant="success" onClick={() => void onSave()} disabled={saveDisabled}>
-            {saveLabel}
+            {saveLabel ?? t("env.saveEnvVars")}
           </Button>
         ) : null}
       </div>

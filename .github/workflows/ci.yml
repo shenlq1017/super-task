@@ -1,0 +1,40 @@
+# SuperTask CI — 三平台合并门槛（1.4 规格 §12 可靠性）
+# cargo test -p supertask-core 全量 + 壳 cargo check + 前端 tsc/vite build。
+# Unix 侧跑 proc 平台层契约测试（进程组终止、端口表解析）——Windows 本机已覆盖 Windows 路径。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: core tests
+        run: cargo test -p supertask-core
+      - name: tauri shell check
+        run: cargo check -p supertask
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

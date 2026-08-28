@@ -105,6 +105,9 @@ pub struct ServiceSpec {
     pub launch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
+    /// 1.4 §5.1：`maven | gradle`；缺省按构建文件探测（并存 → BUILD_TOOL_AMBIGUOUS）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_tool: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jvm_args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

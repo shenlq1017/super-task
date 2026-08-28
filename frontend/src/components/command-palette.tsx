@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/runtime-provider";
@@ -9,7 +10,7 @@ import { useOpenWorkspace } from "@/lib/use-open-workspace";
 import { isTauri } from "@/ipc/invoke";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Feature } from "@/ipc/protocol";
-import { navLabel } from "@/features/registry";
+import { navTranslationKey } from "@/features/registry";
 
 type Cmd = { id: string; title: string; hint?: string; run: () => void };
 
@@ -24,6 +25,7 @@ export function CommandPalette({
 }) {
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const runtime = useRuntime();
@@ -42,43 +44,46 @@ export function CommandPalette({
   const commands = useMemo<Cmd[]>(() => {
     const nav: Cmd[] = features
       .filter((f) => f.status !== "soon")
-      .map((f) => ({
-        id: `nav:${f.id}`,
-        title: `前往 ${navLabel(f.id)}`,
-        hint: f.path,
-        run: () => navigate(f.path),
-      }));
-    nav.push({ id: "nav:welcome", title: "前往 欢迎 / 打开工作区", hint: "/welcome", run: () => navigate("/welcome") });
+      .map((f) => {
+        const key = navTranslationKey(f.id);
+        return {
+          id: `nav:${f.id}`,
+          title: t("palette.goTo", { name: key ? t(key) : f.id }),
+          hint: f.path,
+          run: () => navigate(f.path),
+        };
+      });
+    nav.push({ id: "nav:welcome", title: t("palette.goToWelcome"), hint: "/welcome", run: () => navigate("/welcome") });
 
     const actions: Cmd[] = [
       {
         id: "run:all",
-        title: "启动全部服务",
+        title: t("palette.startAll"),
         hint: "runtime.startAll",
-        run: () => void runtime.actions.startAll().then(() => toast("已发起启动全部", "ok")),
+        run: () => void runtime.actions.startAll().then(() => toast(t("operations.startedAll"), "ok")),
       },
       {
         id: "stop:all",
-        title: "停止全部服务",
+        title: t("palette.stopAll"),
         hint: "runtime.stopAll",
         run: () => {
           const n = Object.values(runtime.state.services).filter((s) => s.state === "running").length;
           if (n === 0) {
-            toast("没有运行中的服务", "info");
+            toast(t("common.noRunningServices"), "info");
             return;
           }
           // 面板即将关闭无法挂受控弹框：用原生确认（与主按钮同语义）
-          if (!window.confirm(`停止全部 ${n} 个运行中的服务？各服务的整棵进程树将被结束。`)) return;
-          void runtime.actions.stopAll().then(() => toast("已停止全部", "ok"));
+          if (!window.confirm(t("operations.confirmStopAll", { n }))) return;
+          void runtime.actions.stopAll().then(() => toast(t("operations.stoppedAll"), "ok"));
         },
       },
       {
         id: "ws:switch",
-        title: "切换工作区",
-        hint: "打开目录选择器",
+        title: t("palette.switchWorkspace"),
+        hint: t("palette.openDirPicker"),
         run: async () => {
           if (!isTauri()) {
-            const p = window.prompt("输入工作区目录路径");
+            const p = window.prompt(t("common.inputWorkspacePath"));
             if (p) await openWs(p);
             return;
           }
@@ -88,19 +93,19 @@ export function CommandPalette({
       },
       {
         id: "ws:close",
-        title: "关闭当前工作区",
+        title: t("palette.closeWorkspace"),
         hint: "workspace.close",
         run: () => void ws.actions.close().then(() => navigate("/welcome")),
       },
       {
         id: "ws:rescan",
-        title: "重新扫描工作区",
+        title: t("palette.rescanWorkspace"),
         hint: "workspace.scanDraft",
         run: async () => {
-          if (!ws.state.workspaceId) return toast("没有已打开的工作区", "warn");
+          if (!ws.state.workspaceId) return toast(t("palette.noOpenWorkspace"), "warn");
           try {
             await ws.actions.scanDraft(ws.state.workspaceId);
-            toast("已重新扫描", "ok");
+            toast(t("common.rescannedShort"), "ok");
           } catch (e) {
             toast(e instanceof Error ? e.message : String(e), "err");
           }
@@ -108,7 +113,7 @@ export function CommandPalette({
       },
     ];
     return [...nav, ...actions];
-  }, [features, navigate, runtime, ws, openWs, toast]);
+  }, [features, navigate, runtime, ws, openWs, toast, t]);
 
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
@@ -155,7 +160,7 @@ export function CommandPalette({
                 onClose();
               }
             }}
-            placeholder="搜索命令或页面…"
+            placeholder={t("palette.searchPlaceholder")}
             className="flex-1 border-0 bg-transparent text-[0.92rem] text-[var(--t1,#222326)] outline-none placeholder:text-[var(--t3,#8a8f98)]"
           />
           <kbd className="rounded border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-1.5 py-0.5 font-mono text-[0.58rem] text-[var(--t3,#8a8f98)]">
@@ -164,7 +169,7 @@ export function CommandPalette({
         </div>
         <div className="max-h-80 overflow-y-auto p-1.5">
           {filtered.length === 0 ? (
-            <div className="px-3 py-6 text-center text-[0.78rem] text-[var(--t3,#8a8f98)]">无匹配命令</div>
+            <div className="px-3 py-6 text-center text-[0.78rem] text-[var(--t3,#8a8f98)]">{t("common.noMatch")}</div>
           ) : (
             filtered.map((c, i) => (
               <button

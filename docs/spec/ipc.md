@@ -111,7 +111,7 @@
 |------|------|------|------|
 | `session.hello` | client, protocol | 见上 | 握手 |
 | `app.load` | — | prefs + recents + probe | 启动 |
-| `app.savePrefs` | `{ theme, restoreLast }` | `{ ok: true }` | 只写 app data，不写项目 |
+| `app.savePrefs` | `{ theme, restoreLast, locale }` | `{ ok: true }` | 只写 app data，不写项目；`locale` 1.4 新增 |
 
 ### 4.2 工作区
 
@@ -171,7 +171,7 @@
 
 | 命令 | 入参 | 出参 |
 |------|------|------|
-| `toolchain.probe` | — | `{ java…yarn }` 每项 `{ found, version, path? }` + `managers: { mise, winget }`（1.2） |
+| `toolchain.probe` | — | `{ java…yarn }` 每项 `{ found, version, path? }` + `gradle: { found, version, path }`（1.4 §9：仅信息展示，不提供安装；version 探测 `gradle --version`）+ `managers: { mise, winget }`（1.2） |
 | `toolchain.install` | `{ tool, version?, manager?, persist?, base_hash? }` | `{ operation_id }`（1.2 起 live，hub 长操作 `toolchain.install`） |
 | `toolchain.upgrade` | 同上 | `{ operation_id }`（1.2 起 live） |
 
@@ -307,6 +307,11 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
 | `YAML_DUP_FILE` | yaml+yml |
 | `YAML_TOO_LARGE` | >1MiB |
 | `YAML_CONFLICT` | hash 不匹配 |
+| `PLATFORM_UNSUPPORTED`（1.4） | 能力在当前平台不可用（如 Linux 更新安装） |
+| `BUILD_TOOL_AMBIGUOUS`（1.4） | module 同时存在 Maven 与 Gradle 构建文件 |
+| `GRADLE_WRAPPER_MISSING`（1.4） | 无 gradle wrapper 且 PATH 无 gradle |
+| `TASKFILE_NOT_FOUND`（1.4） | 工作区无 Taskfile |
+| `TASKFILE_INVALID`（1.4） | Taskfile 版本/语法不支持 |
 | `SPEC_INVALID` | 校验失败 |
 | `SPEC_NEWER` | version>1 警告（若当错误则拒绝打开） |
 | `KIND_UNSUPPORTED` | kind 本版不能启动 |
@@ -514,10 +519,10 @@ workspace.scanApply
 `app.load` 的 `prefs` 扩展为：
 
 ```json
-{ "theme": "light", "restoreLast": true, "closeToTray": true, "startOnLogin": false, "updateCheck": true }
+{ "theme": "light", "restoreLast": true, "closeToTray": true, "startOnLogin": false, "updateCheck": true, "locale": "auto" }
 ```
 
-`app.savePrefs` 接受同样形状（全部可选，只写传入键）。存储位置：`%APPDATA%/SuperTask/app.json`（临时文件 + 替换写入）。1.0 的 `st:lastWorkspace` / `st:recents` localStorage 通过一次性迁移命令并入：
+`app.savePrefs` 接受同样形状（全部可选，只写传入键）。1.4 新增 `locale`（app data v3）：`auto | zh-CN | zh-TW | en-US | ja-JP`，默认 `auto`（跟随系统，检测规则见 1.4 规格 §6.1）。存储位置：`%APPDATA%/SuperTask/app.json`（临时文件 + 替换写入）。1.0 的 `st:lastWorkspace` / `st:recents` localStorage 通过一次性迁移命令并入：
 
 ```text
 app.importRecents
@@ -538,9 +543,39 @@ app.update.install    input: { version }       output: { operation_id }
 - 发现更新只提示；安装必须用户确认。
 - 服务处于 `starting/running/unhealthy/stopping`、脚本运行中、或 Git/模板/扫描 operation 进行中 → 同步 `UPDATE_BLOCKED_RUNNING`。
 - 更新包必须通过签名校验，签名失败 `UPDATE_SIGNATURE` 拒绝安装；下载/安装失败 `UPDATE_FAILED`，当前版本保持可用。
+- 1.4：Linux `app.update.check` 可用；`app.update.install` 同步返回 `PLATFORM_UNSUPPORTED`（附手动替换 AppImage 指引）。
 
 ### 10.7 退出与托盘（壳行为，非 Command）
 
 - 关闭主窗口默认隐藏到托盘（`closeToTray` 可改）。
 - 托盘菜单：显示 SuperTask / 打开当前工作区 / 启动全部 / 停止全部 / 退出。
 - 退出顺序：标记退出 → `workspace.close` 等待 stopped + Job Object 释放 → 关托盘和窗口；Engine 失败时保留错误，不假报成功。
+
+### 10.8 Taskfile 导入（1.4，feature spec §7）
+
+只读工作区根的 `Taskfile.yml` / `Taskfile.yaml`（不递归、不跟 includes），仅支持 Taskfile **v3**；一次性迁移，之后不监听 Taskfile 变化、不双向同步。预览是纯内存计算，无落盘；Apply 走 `yaml.saveForm` 机制，只增改所选 `scripts.*`，其余字段不动。
+
+```text
+import.taskfilePreview
+  input:  { workspace_id }
+  output: { tasks: TaskfileImportItem[], warnings: string[] }
+
+import.taskfileApply
+  input:  { workspace_id, selected: string[] , base_hash }
+  output: { spec, hash, warnings: string[] }
+
+TaskfileImportItem = {
+  task: string,           # 原名
+  script_id: string,      # 目标 id
+  cmds_count: number,
+  selected: boolean,      # 默认动作
+  warnings: string[],     # 该项的忽略/风险说明
+  internal: boolean,      # UI 扩展：Taskfile internal 任务，预览标灰不可选
+  id_conflict: boolean,   # UI 扩展：目标已存在同名 scripts.*，默认 keep
+}
+```
+
+映射规则（§7.1）：task 名 → script id（按 id 规则合法化；导入内冲突加 `-task` 后缀并提示）；`desc` → `desc`；`cmds`（字符串或 `cmd:`/`silent:` 映射）→ `cmds`（`silent` 丢弃）；`env` → `env`；`dir` → `cwd`（沙箱校验，逃逸该项警告不导入）；`internal: true` 跳过（预览标灰）；`deps`/`sources`/`generates`/`method`/`status`/`platforms` 忽略并警告；task 级非默认 shell 跳过；cmds 含 `{{…}}` / `$VAR` 插值默认不勾选（警告列出变量，可强制导入原文）；`includes`、动态 task、`loop` 跳过。全局 `env` 合并进每个 task 的 `env`（task 覆盖全局）；全局 `vars` 不解析。
+
+错误：工作区无 Taskfile → `TASKFILE_NOT_FOUND`；版本/语法错误 → `TASKFILE_INVALID`（details 含行号时带上）；`base_hash` 冲突 → `YAML_CONFLICT`。`selected` 不在预览内 → `NOT_FOUND`。解析是纯 YAML 读取 + 文本级检查，不执行任何命令。
+

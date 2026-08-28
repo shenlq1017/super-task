@@ -1,4 +1,5 @@
 import { createContext, use, useEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "@/components/ui/toast";
 import { isTauri } from "../ipc/invoke";
 import {
@@ -60,6 +61,7 @@ async function listenRuntime(cb: (s: RuntimeSnapshot) => void): Promise<() => vo
 
 export function RuntimeProvider({ children }: { children: ReactNode }) {
   const { state: ws } = useWorkspace();
+  const { t } = useTranslation();
   const wsId = ws.workspaceId;
   const [services, setServices] = useState<Record<string, ServiceRuntimeView>>({});
   const [script, setScript] = useState<ScriptRuntimeView | null>(null);
@@ -80,7 +82,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         before &&
         before.state !== "exited"
       ) {
-        toast(`服务 ${s.id} 异常退出（退出码 ${s.last_exit?.code ?? "?"}），可到日志页查看`, "err");
+        toast(t("operations.serviceCrash", { id: s.id, code: s.last_exit?.code ?? "?" }), "err");
       }
     }
     prevRef.current = snap.services;

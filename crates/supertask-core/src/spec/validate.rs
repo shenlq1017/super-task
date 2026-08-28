@@ -47,6 +47,15 @@ pub fn validate(file: &SuperTaskFile) -> Result<Vec<ParseWarning>> {
                         format!("{id}: spring-boot 需要 module"),
                     ));
                 }
+                // 1.4 §5.1：显式 build_tool 只允许 maven | gradle；缺省走文件探测
+                if let Some(bt) = &svc.build_tool {
+                    if bt != "maven" && bt != "gradle" {
+                        return Err(Error::new(
+                            ErrorCode::SpecInvalid,
+                            format!("{id}: build_tool '{bt}' 非法（只允许 maven | gradle）"),
+                        ));
+                    }
+                }
                 if let Some(launch) = &svc.launch {
                     if launch != "run" && launch != "jar" {
                         return Err(Error::new(
@@ -547,6 +556,22 @@ mod tests {
         let y = svc_yaml("toolchain:\n  java: \"foo bar\"\n");
         let e = parse_yaml(&y).unwrap_err();
         assert_eq!(e.code(), ErrorCode::ToolchainVersionInvalid);
+    }
+
+    #[test]
+    fn build_tool_only_maven_or_gradle() {
+        // 1.4 §5.1：显式 build_tool 只允许 maven | gradle，非法值 SPEC_INVALID
+        let ok = svc_yaml("    build_tool: gradle\n");
+        let (f, _) = parse_yaml(&ok).unwrap();
+        assert_eq!(f.services["api"].build_tool.as_deref(), Some("gradle"));
+        let ok2 = svc_yaml("    build_tool: maven\n");
+        let (f2, _) = parse_yaml(&ok2).unwrap();
+        assert_eq!(f2.services["api"].build_tool.as_deref(), Some("maven"));
+        let bad = svc_yaml("    build_tool: bazel\n");
+        assert_eq!(parse_yaml(&bad).unwrap_err().code(), ErrorCode::SpecInvalid);
+        // round-trip 保留
+        let text = crate::spec::to_yaml(&parse_yaml(&ok).unwrap().0).unwrap();
+        assert!(text.contains("build_tool: gradle"));
     }
 
     // ---- 1.3：kind: compose 与 docker 段 ----

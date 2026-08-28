@@ -17,7 +17,7 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::graph::start_order;
 use crate::health;
 use crate::ipc::{LogSource, LogSourceKind, LogStream, DEFAULT_RING_LINES};
-use crate::launcher::{log_file_rel, plan_service, CommandSpec};
+use crate::launcher::{log_file_rel, CommandSpec};
 use crate::log::{LogBatcher, LogFile, LogHub, LogLine};
 use crate::probe;
 use crate::runtime::{apply, RtEvent, RtState};
@@ -152,7 +152,7 @@ struct Slot {
     port: Option<u16>,
     kind: String,
     /// Arc：健康线程需要跨锁读取 Job 的进程树做端点发现
-    job: Option<Arc<crate::job::Job>>,
+    job: Option<Arc<dyn crate::proc::ProcessTree>>,
     stop_requested: bool,
     started: Option<Instant>,
     started_at_ms: Option<u64>,
@@ -175,7 +175,7 @@ struct ScriptSlot {
     id: String,
     state: ScriptState,
     pid: Option<u32>,
-    job: Option<crate::job::Job>,
+    job: Option<Arc<dyn crate::proc::ProcessTree>>,
     cancel: Arc<AtomicBool>,
     last_exit: Option<ExitView>,
     last_error: Option<String>,
@@ -206,7 +206,7 @@ struct Inner {
 /// Job 句柄被 hold 住 → kill-on-close 不触发，进程继续跑；
 /// 同一应用会话内重新打开同根工作区时按 service_id 精确接管。
 struct DetachedSlot {
-    job: Arc<crate::job::Job>,
+    job: Arc<dyn crate::proc::ProcessTree>,
     pid: Option<u32>,
     started_at_ms: Option<u64>,
 }
@@ -361,6 +361,9 @@ impl Engine {
         // 1.3 §2.4/§4.3：compose 引用打开时校验（service 存在 / 端口一致）。
         // Docker 不可用或解析失败 → 静默跳过，启动时再给出真实错误。
         warnings.extend(self.compose_open_warnings(&file, &root));
+        // 1.4 §5.1：build_tool 缺省时按构建文件探测——并存 BUILD_TOOL_AMBIGUOUS、
+        // 都没有 MISSING_TOOL；只警告不阻塞打开，启动时才是硬错误。
+        warnings.extend(self.build_tool_open_warnings(&file, &root));
         {
             let mut g = self.inner.lock().expect("engine lock");
             if !g.workspace_id.is_empty() {
@@ -471,6 +474,32 @@ impl Engine {
                         }
                     }
                 }
+            }
+        }
+        out
+    }
+
+    /// 1.4 §5.1：打开时对 `kind: spring-boot` 服务做构建工具探测（显式
+    /// build_tool 跳过）。探测失败的 code 直接作为 warning code 透出。
+    /// 测试 spawner 无真实工程文件，跳过。
+    fn build_tool_open_warnings(&self, file: &SuperTaskFile, root: &Path) -> Vec<ParseWarning> {
+        let mut out = Vec::new();
+        if !matches!(self.spawner, SpawnerKind::Real) {
+            return out;
+        }
+        for (id, svc) in &file.services {
+            if svc.kind != "spring-boot" || svc.build_tool.is_some() {
+                continue;
+            }
+            let module = svc.module.as_deref().unwrap_or(".");
+            let Ok(dir) = sandbox::confine(root, module) else {
+                continue;
+            };
+            if let Err(e) = crate::launcher::detect_build_tool(&dir) {
+                out.push(ParseWarning {
+                    code: e.code(),
+                    message: format!("{id}: {}", e.message()),
+                });
             }
         }
         out
@@ -852,7 +881,7 @@ impl Engine {
             )
             .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法创建脚本日志: {e}")))?;
             g.script_file = Some(lf);
-            let job = crate::job::Job::create()?;
+            let job = crate::proc::create_tree()?;
             g.script = Some(ScriptSlot {
                 id: id.to_string(),
                 state: ScriptState::Running,
@@ -942,7 +971,7 @@ impl Engine {
 
     #[allow(clippy::too_many_arguments)]
     fn spawn_service(&self, id: &str) -> Result<()> {
-        let (run_spec, build_spec, root, health_spec, health_none, port, kind, pkg, svc_grace, is_jar) = {
+        let (run_spec, build_spec, root, health_spec, health_none, port, kind, pkg, svc_grace, is_jar, bt, module) = {
             let g = self.inner.lock().expect("engine lock");
             let slot = g
                 .slots
@@ -969,12 +998,25 @@ impl Engine {
             let is_jar = eff_svc.kind == "spring-boot" && eff_svc.launch.as_deref() == Some("jar");
             // §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入
             let env = build_service_env(&eff_spec, id, &g.root)?;
+            // 1.4 §5.1：build_tool 解析（显式优先，缺省按构建文件探测）。
+            // 测试 spawner 无真实 fs 上下文：只认显式字段，缺省按 maven。
+            let real = matches!(self.spawner, SpawnerKind::Real);
+            let plan_root = real.then_some(g.root.as_path());
+            let bt = if eff_svc.kind == "spring-boot" {
+                if real {
+                    crate::launcher::resolve_build_tool(&g.root, &eff_svc)?
+                } else {
+                    crate::launcher::explicit_build_tool(&eff_svc).unwrap_or(crate::launcher::BuildTool::Maven)
+                }
+            } else {
+                crate::launcher::BuildTool::Maven
+            };
             let (planned, build_spec) = if is_jar {
-                let build = crate::launcher::plan_jar_build(&eff_svc, env.clone())?;
+                let build = crate::launcher::plan_jar_build_in(&eff_svc, env.clone(), plan_root)?;
                 let run = crate::launcher::plan_jar_run(&eff_svc, env);
                 (run, Some(build))
             } else {
-                let mut planned = plan_service(&eff_spec, id)?;
+                let mut planned = crate::launcher::plan_service_in(&eff_spec, id, plan_root)?;
                 planned.env = env;
                 (planned, None)
             };
@@ -988,6 +1030,7 @@ impl Engine {
                 crate::spec::PackageManager::Pnpm => "pnpm",
                 crate::spec::PackageManager::Yarn => "yarn",
             });
+            let module = eff_svc.module.clone().unwrap_or_else(|| ".".into());
             (
                 planned,
                 build_spec,
@@ -999,6 +1042,8 @@ impl Engine {
                 pkg,
                 eff_svc.grace_secs.unwrap_or(0) as u64,
                 is_jar,
+                bt,
+                module,
             )
         };
 
@@ -1023,6 +1068,7 @@ impl Engine {
                         kind,
                         pkg,
                         svc_grace,
+                        bt,
                         spawner,
                     );
                     if let Err(e) = r {
@@ -1033,7 +1079,27 @@ impl Engine {
         }
 
         if matches!(self.spawner, SpawnerKind::Real) {
-            probe::require_tools_for_kind(&kind, pkg)?;
+            probe::require_tools_for_kind(&kind, pkg, Some(bt.as_str()))?;
+        }
+        // 1.4 §5.1：gradle 服务 wrapper 优先（root/module gradlew[.bat] → PATH gradle），
+        // 都无 → GRADLE_WRAPPER_MISSING；测试 spawner 跳过 fs 解析。
+        let mut run_spec = run_spec;
+        if bt == crate::launcher::BuildTool::Gradle && matches!(self.spawner, SpawnerKind::Real) {
+            let (program, args, warns) =
+                crate::launcher::resolve_gradle_launcher(&root, &module, &run_spec.program, &run_spec.args)?;
+            for w in warns {
+                push_line(
+                    &self.inner,
+                    LogSource {
+                        kind: LogSourceKind::Service,
+                        id: id.to_string(),
+                    },
+                    LogStream::System,
+                    w,
+                );
+            }
+            run_spec.program = program;
+            run_spec.args = args;
         }
         let cwd = resolve_cwd(&root, &run_spec.cwd_rel)?;
         spawn_core(
@@ -1047,6 +1113,7 @@ impl Engine {
             kind,
             pkg,
             svc_grace,
+            Some(bt.as_str()),
             self.spawner,
         )
     }
@@ -1301,7 +1368,7 @@ impl Engine {
 
     /// 1.2 §11 runtime.build：预构建 launch: jar 的 artifact（不启动）。
     pub fn build_jar(&self, id: &str) -> Result<PathBuf> {
-        let (build_spec, root) = {
+        let (build_spec, root, bt) = {
             let g = self.inner.lock().expect("engine lock");
             require_ws(&g)?;
             let slot = g
@@ -1325,10 +1392,15 @@ impl Engine {
                     format!("{id} 不是 launch: jar 的 spring-boot 服务"),
                 ));
             }
+            let bt = crate::launcher::resolve_build_tool(&g.root, &eff_svc)?;
             let env = build_service_env(&eff_spec, id, &g.root)?;
-            (crate::launcher::plan_jar_build(&eff_svc, env)?, g.root.clone())
+            (
+                crate::launcher::plan_jar_build_in(&eff_svc, env, Some(&g.root))?,
+                g.root.clone(),
+                bt,
+            )
         };
-        jar_build_phase(Arc::clone(&self.inner), id, build_spec, &root)
+        jar_build_phase(Arc::clone(&self.inner), id, build_spec, &root, bt)
     }
 
     // -------------------------------------------------------------------
@@ -1952,7 +2024,7 @@ fn kill_foreign_by_pid(pid: u32) -> Result<()> {
     crate::discover::taskkill_tree(pid)
 }
 
-fn spawn_real(planned: &CommandSpec, cwd: &Path) -> Result<(Child, crate::job::Job)> {
+fn spawn_real(planned: &CommandSpec, cwd: &Path) -> Result<(Child, Arc<dyn crate::proc::ProcessTree>)> {
     let program = probe::resolve_program(&planned.program)?;
     let mut cmd = Command::new(&program);
     cmd.args(&planned.args)
@@ -1960,30 +2032,41 @@ fn spawn_real(planned: &CommandSpec, cwd: &Path) -> Result<(Child, crate::job::J
         .envs(planned.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let job = crate::job::Job::create()?;
-    let child = crate::job::spawn_in_job(&mut cmd, &job)?;
+    let job = crate::proc::create_tree()?;
+    let child = job.spawn(&mut cmd)?;
     Ok((child, job))
 }
 
 #[cfg(test)]
-fn spawn_ping() -> Result<(Child, crate::job::Job)> {
+fn spawn_ping() -> Result<(Child, Arc<dyn crate::proc::ProcessTree>)> {
     let mut cmd = Command::new("ping");
     cmd.args(["-t", "127.0.0.1"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let job = crate::job::Job::create()?;
-    let child = crate::job::spawn_in_job(&mut cmd, &job)?;
+    let job = crate::proc::create_tree()?;
+    let child = job.spawn(&mut cmd)?;
     Ok((child, job))
 }
 
-#[cfg(test)]
-fn spawn_fail() -> Result<(Child, crate::job::Job)> {
+#[cfg(all(test, windows))]
+fn spawn_fail() -> Result<(Child, Arc<dyn crate::proc::ProcessTree>)> {
     let mut cmd = Command::new("cmd");
     cmd.args(["/C", "exit 1"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let job = crate::job::Job::create()?;
-    let child = crate::job::spawn_in_job(&mut cmd, &job)?;
+    let job = crate::proc::create_tree()?;
+    let child = job.spawn(&mut cmd)?;
+    Ok((child, job))
+}
+
+#[cfg(all(test, not(windows)))]
+fn spawn_fail() -> Result<(Child, Arc<dyn crate::proc::ProcessTree>)> {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "exit 1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let job = crate::proc::create_tree()?;
+    let child = job.spawn(&mut cmd)?;
     Ok((child, job))
 }
 
@@ -2076,6 +2159,27 @@ fn push_line(inner: &Mutex<Inner>, source: LogSource, stream: LogStream, text: S
     }
 }
 
+/// 脚本 cmds 执行 shell（1.4 §4.2）。返回 (程序, 前置参数, 可选警告文案)。
+#[cfg(windows)]
+fn script_shell() -> (String, Vec<String>, Option<String>) {
+    ("cmd".into(), vec!["/C".into()], None)
+}
+
+#[cfg(not(windows))]
+fn script_shell() -> (String, Vec<String>, Option<String>) {
+    if crate::probe::find_on_path("bash").is_some() {
+        ("bash".into(), vec!["-c".into()], None)
+    } else {
+        (
+            "sh".into(),
+            vec!["-c".into()],
+            Some(
+                "PATH 中没有 bash，脚本回落 sh -c 执行：bash 特有语法可能不兼容".into(),
+            ),
+        )
+    }
+}
+
 fn run_script_cmds(
     inner: Arc<Mutex<Inner>>,
     id: String,
@@ -2091,6 +2195,12 @@ fn run_script_cmds(
         kind: LogSourceKind::Script,
         id: id.clone(),
     };
+    // 脚本 shell（1.4 §4.2）：Windows cmd.exe /C（不变）；Unix bash -c，
+    // PATH 无 bash 回落 sh -c 并在日志头警告一次语法风险。
+    let (shell_program, shell_args, shell_warning) = script_shell();
+    if let Some(warn) = shell_warning {
+        push_line(&inner, src.clone(), LogStream::System, warn);
+    }
     'cmds: for (i, line) in cmds.iter().enumerate() {
         {
             let g = inner.lock().expect("engine lock");
@@ -2115,8 +2225,9 @@ fn run_script_cmds(
             LogStream::System,
             format!("[{}/{}] {line}", i + 1, cmds.len()),
         );
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", line])
+        let mut cmd = Command::new(&shell_program);
+        cmd.args(shell_args.iter().map(String::as_str))
+            .arg(line)
             .current_dir(&cwd)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdout(Stdio::piped())
@@ -2125,7 +2236,7 @@ fn run_script_cmds(
             let g = inner.lock().expect("engine lock");
             let Some(slot) = g.script.as_ref() else { break };
             let Some(job) = slot.job.as_ref() else { break };
-            crate::job::spawn_in_job(&mut cmd, job)
+            job.spawn(&mut cmd)
         };
         let mut child = match spawned {
             Ok(c) => c,
@@ -2280,10 +2391,11 @@ fn spawn_core(
     kind: String,
     pkg: Option<&str>,
     svc_grace: u64,
+    build_tool: Option<&str>,
     spawner: SpawnerKind,
 ) -> Result<()> {
     if matches!(spawner, SpawnerKind::Real) {
-        probe::require_tools_for_kind(&kind, pkg)?;
+        probe::require_tools_for_kind(&kind, pkg, build_tool)?;
     }
     if !cwd.is_dir() {
         return Err(Error::new(
@@ -2311,7 +2423,7 @@ fn spawn_core(
         slot.grace = Duration::from_secs(svc_grace);
         slot.cancel = Arc::new(AtomicBool::new(false));
         slot.stop_requested = false;
-        slot.job = Some(Arc::new(job));
+        slot.job = Some(job);
         // SuperTask 已挂上 Job → 本会话托管；修复「load 时端口占用标成外部，stop 后再 start 仍 managed=false」
         slot.managed = true;
         slot.pid = Some(pid);
@@ -2365,7 +2477,8 @@ fn spawn_core(
     Ok(())
 }
 
-/// 1.2 §11 launch: jar 编排：构建（若无 artifact）→ java -jar。
+/// 1.2 §11 launch: jar 编排：构建（若无 artifact）→ java -jar。1.4 §5.3：gradle 走
+/// bootJar，artifact 识别在 module/build/libs。
 #[allow(clippy::too_many_arguments)]
 fn jar_flow(
     inner: Arc<Mutex<Inner>>,
@@ -2379,6 +2492,7 @@ fn jar_flow(
     kind: String,
     pkg: Option<&str>,
     grace: u64,
+    bt: crate::launcher::BuildTool,
     spawner: SpawnerKind,
 ) -> Result<()> {
     let artifact = {
@@ -2390,7 +2504,7 @@ fn jar_flow(
             .and_then(|s| s.artifact.clone());
         match have {
             Some(a) => a,
-            None => jar_build_phase(inner.clone(), id, build_spec, &root)?,
+            None => jar_build_phase(inner.clone(), id, build_spec, &root, bt)?,
         }
     };
     // args 形如 ["-jar", ...extra_args]；artifact 插在 "-jar" 之后
@@ -2409,6 +2523,7 @@ fn jar_flow(
         kind,
         pkg,
         grace,
+        Some(bt.as_str()),
         spawner,
     )
 }
@@ -2429,11 +2544,13 @@ fn jar_flow_fail(inner: &Arc<Mutex<Inner>>, id: &str, e: crate::error::Error) {
 }
 
 /// package 阶段：Building 状态 + 输出进服务日志；成功解析 artifact。
+/// 1.4 §5.3：gradle 服务走 bootJar（wrapper 优先），building 阶段标注构建工具。
 fn jar_build_phase(
     inner: Arc<Mutex<Inner>>,
     id: &str,
-    build_spec: CommandSpec,
+    mut build_spec: CommandSpec,
     root: &Path,
+    bt: crate::launcher::BuildTool,
 ) -> Result<PathBuf> {
     let (module, cancel) = {
         let g = inner.lock().expect("engine lock");
@@ -2457,9 +2574,30 @@ fn jar_build_phase(
         slot.exit_reason = None;
         emit_runtime(&g);
     }
+    let src = LogSource {
+        kind: LogSourceKind::Service,
+        id: id.to_string(),
+    };
+    let is_gradle = bt == crate::launcher::BuildTool::Gradle;
+    let stage_label = if is_gradle { "gradle bootJar" } else { "mvn package" };
+    if is_gradle {
+        // §5.1 wrapper 优先；都无 → GRADLE_WRAPPER_MISSING（building 失败收场）
+        let (program, args, warns) =
+            crate::launcher::resolve_gradle_launcher(root, &module, &build_spec.program, &build_spec.args)?;
+        for w in warns {
+            push_line(&inner, src.clone(), LogStream::System, w);
+        }
+        build_spec.program = program;
+        build_spec.args = args;
+    }
+    push_line(
+        &inner,
+        src.clone(),
+        LogStream::System,
+        format!("开始构建（{stage_label}）"),
+    );
     let cwd = resolve_cwd(root, &build_spec.cwd_rel)?;
     let (mut child, job) = spawn_real(&build_spec, &cwd)?;
-    let job = Arc::new(job);
     {
         let mut g = inner.lock().expect("engine lock");
         if let Some(slot) = g.slots.get_mut(id) {
@@ -2468,10 +2606,6 @@ fn jar_build_phase(
         }
         emit_runtime(&g);
     }
-    let src = LogSource {
-        kind: LogSourceKind::Service,
-        id: id.to_string(),
-    };
     if let Some(out) = child.stdout.take() {
         spawn_pump(
             Arc::clone(&inner),
@@ -2517,8 +2651,11 @@ fn jar_build_phase(
                 if started.elapsed() > Duration::from_secs(20 * 60) {
                     let _ = job.terminate();
                     let _ = child.wait();
-                    jar_build_fail(&inner, id, Some("package 超时（20 分钟）".to_string()));
-                    return Err(Error::new(ErrorCode::BuildFailed, "package 超时（20 分钟）"));
+                    jar_build_fail(&inner, id, Some(format!("{stage_label} 超时（20 分钟）")));
+                    return Err(Error::new(
+                        ErrorCode::BuildFailed,
+                        format!("{stage_label} 超时（20 分钟）"),
+                    ));
                 }
                 thread::sleep(Duration::from_millis(60));
             }
@@ -2526,13 +2663,17 @@ fn jar_build_phase(
     };
     let code = status.code().unwrap_or(-1);
     if code != 0 {
-        jar_build_fail(&inner, id, Some(format!("mvn package 退出码 {code}")));
+        jar_build_fail(&inner, id, Some(format!("{stage_label} 退出码 {code}")));
         return Err(Error::new(
             ErrorCode::BuildFailed,
-            format!("mvn package 退出码 {code}：已保留 package 日志，服务未启动"),
+            format!("{stage_label} 退出码 {code}：已保留构建日志，服务未启动"),
         ));
     }
-    let artifact = select_jar_artifact(root, &module)?;
+    let artifact = if is_gradle {
+        select_gradle_artifact(root, &module)?
+    } else {
+        select_jar_artifact(root, &module)?
+    };
     {
         let mut g = inner.lock().expect("engine lock");
         if let Some(slot) = g.slots.get_mut(id) {
@@ -2553,10 +2694,12 @@ fn jar_build_fail(inner: &Arc<Mutex<Inner>>, id: &str, detail: Option<String>) {
             if let Ok(s) = apply(slot.state, RtEvent::BuildFinished { ok: false }) {
                 slot.state = s;
             }
-            slot.last_error = Some(
-                detail
-                    .unwrap_or_else(|| "BUILD_FAILED: package 失败，服务未启动".to_string()),
-            );
+            slot.last_error = Some(match detail {
+                // 1.4：非零退出/超时都带 BUILD_FAILED 标记（§9 错误码语义）
+                Some(d) if d.starts_with("BUILD_FAILED") => d,
+                Some(d) => format!("BUILD_FAILED: {d}"),
+                None => "BUILD_FAILED: 构建失败，服务未启动".to_string(),
+            });
         }
         slot.pid = None;
         slot.job = None;
@@ -2635,6 +2778,59 @@ fn select_jar_artifact(root: &Path, module: &str) -> Result<PathBuf> {
         ErrorCode::JarAmbiguous,
         format!("多个候选 jar 且 pom 未提供 artifactId: {}", names.join(", ")),
     ))
+}
+
+/// 1.4 §5.3 gradle artifact 选择：`module/build/libs` 内排除 *-plain / -sources /
+/// -javadoc 与非 jar；唯一候选直接用；零候选 ARTIFACT_MISSING、多候选
+/// JAR_AMBIGUOUS（不按修改时间猜）；路径逃逸复用 1.2 沙箱（PATH_ESCAPE）。
+fn select_gradle_artifact(root: &Path, module: &str) -> Result<PathBuf> {
+    let module_dir = sandbox::confine(root, module)?;
+    let libs = module_dir.join("build").join("libs");
+    if !libs.is_dir() {
+        return Err(Error::new(
+            ErrorCode::ArtifactMissing,
+            format!("build/libs 目录不存在: {}", libs.display()),
+        ));
+    }
+    let mut jars: Vec<PathBuf> = Vec::new();
+    let entries = fs::read_dir(&libs)
+        .map_err(|e| Error::new(ErrorCode::ArtifactMissing, format!("无法读取 build/libs: {e}")))?;
+    for e in entries {
+        let p = e
+            .map_err(|e| Error::new(ErrorCode::ArtifactMissing, format!("读取 build/libs 失败: {e}")))?
+            .path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.ends_with(".jar") {
+            continue;
+        }
+        if name.ends_with("-plain.jar")
+            || name.ends_with("-sources.jar")
+            || name.ends_with("-javadoc.jar")
+        {
+            continue;
+        }
+        jars.push(p);
+    }
+    if jars.len() == 1 {
+        return Ok(jars.pop().expect("len==1"));
+    }
+    let names_of = |list: &[PathBuf]| -> Vec<String> {
+        list.iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    };
+    if jars.is_empty() {
+        return Err(Error::new(
+            ErrorCode::ArtifactMissing,
+            "build/libs 中没有可执行 jar（已排除 *-plain.jar / *-sources.jar / *-javadoc.jar）",
+        ));
+    }
+    let names = names_of(&jars);
+    Err(Error::new(
+        ErrorCode::JarAmbiguous,
+        format!("多个候选 jar，无法确定: {}", names.join(", ")),
+    )
+    .details(serde_yaml::to_value(&names).unwrap_or(serde_yaml::Value::Null)))
 }
 
 /// pom.xml 的项目 artifactId（跳过 <parent> 块里的同名标签）。
@@ -4055,5 +4251,95 @@ services:
         assert_ne!(eng.state_of("api"), Some(RtState::Running));
         eng.close().unwrap();
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- 1.4 §5 Gradle 多模块 ----
+
+    /// §5.3 gradle artifact：module/build/libs，排除 *-plain/-sources/-javadoc；
+    /// 唯一直接用，零 ARTIFACT_MISSING，多 JAR_AMBIGUOUS，路径逃逸 PATH_ESCAPE。
+    #[test]
+    fn select_gradle_artifact_rules() {
+        let root = std::env::temp_dir().join(format!("st-eng-gradlejar-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let libs = root.join("mod/build/libs");
+        fs::create_dir_all(&libs).unwrap();
+
+        let only = libs.join("demo-api-1.0.0.jar");
+        fs::write(&only, b"jar").unwrap();
+        assert_eq!(select_gradle_artifact(&root, "mod").unwrap(), only);
+
+        // 排除规则：plain / sources / javadoc / 非 jar 不参与
+        fs::write(libs.join("demo-api-1.0.0-plain.jar"), b"x").unwrap();
+        fs::write(libs.join("demo-api-1.0.0-sources.jar"), b"x").unwrap();
+        fs::write(libs.join("demo-api-1.0.0-javadoc.jar"), b"x").unwrap();
+        fs::write(libs.join("README.txt"), b"x").unwrap();
+        assert_eq!(select_gradle_artifact(&root, "mod").unwrap(), only);
+
+        // 只剩排除项 → 零候选
+        fs::remove_file(&only).unwrap();
+        assert_eq!(
+            select_gradle_artifact(&root, "mod").unwrap_err().code(),
+            ErrorCode::ArtifactMissing
+        );
+
+        // 多候选 → JAR_AMBIGUOUS（不按时间猜）
+        fs::write(libs.join("demo-api-1.0.0.jar"), b"jar").unwrap();
+        fs::write(libs.join("demo-web-2.0.0.jar"), b"jar").unwrap();
+        assert_eq!(
+            select_gradle_artifact(&root, "mod").unwrap_err().code(),
+            ErrorCode::JarAmbiguous
+        );
+
+        // libs 目录不存在 → ARTIFACT_MISSING
+        assert_eq!(
+            select_gradle_artifact(&root, "nope").unwrap_err().code(),
+            ErrorCode::ArtifactMissing
+        );
+
+        // 路径逃逸 → PATH_ESCAPE（复用 1.2 沙箱规则）
+        assert_eq!(
+            select_gradle_artifact(&root, "../esc").unwrap_err().code(),
+            ErrorCode::PathEscape
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// §5.1 打开时探测警告：并存 → BUILD_TOOL_AMBIGUOUS；显式 build_tool 跳过。
+    #[test]
+    fn open_warns_build_tool_ambiguous() {
+        let root = write_ws_yaml(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: mod\n    port: 8080\n",
+        );
+        fs::create_dir_all(root.join("mod")).unwrap();
+        fs::write(root.join("mod/pom.xml"), "<project/>").unwrap();
+        fs::write(root.join("mod/build.gradle"), "").unwrap();
+        let eng = Engine::new();
+        let (warnings, _) = eng.open(&root).unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.code == ErrorCode::BuildToolAmbiguous),
+            "{warnings:?}"
+        );
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+
+        // 显式 build_tool 跳过探测：不产生警告
+        let root2 = write_ws_yaml(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: mod\n    build_tool: gradle\n    port: 8080\n",
+        );
+        fs::create_dir_all(root2.join("mod")).unwrap();
+        fs::write(root2.join("mod/pom.xml"), "<project/>").unwrap();
+        fs::write(root2.join("mod/build.gradle"), "").unwrap();
+        let eng2 = Engine::new();
+        let (warnings2, _) = eng2.open(&root2).unwrap();
+        assert!(
+            !warnings2
+                .iter()
+                .any(|w| w.code == ErrorCode::BuildToolAmbiguous),
+            "{warnings2:?}"
+        );
+        eng2.close().unwrap();
+        let _ = fs::remove_dir_all(&root2);
     }
 }

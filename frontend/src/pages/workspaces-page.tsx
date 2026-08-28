@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import {
   ExternalLink,
   FolderOpen,
@@ -24,11 +25,12 @@ export function WorkspacesPage() {
   const ws = useWorkspace();
   const openWs = useOpenWorkspace();
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
 
   const pickDirectory = async () => {
     if (!isTauri()) {
-      const p = window.prompt("输入工作区目录路径");
+      const p = window.prompt(t("common.inputWorkspacePath"));
       if (p) await openWs(p);
       return;
     }
@@ -48,7 +50,7 @@ export function WorkspacesPage() {
 
   const closeCurrent = async () => {
     // 关闭会停掉引擎侧工作区（并停止其服务进程树），加一道确认
-    if (!window.confirm(`关闭工作区「${wsName(ws.state.workspaceId ?? "")}」？运行中的服务将被停止。`)) return;
+    if (!window.confirm(t("pages.workspaces.confirmClose", { name: wsName(ws.state.workspaceId ?? "") }))) return;
     setBusy(true);
     try {
       await ws.actions.close();
@@ -59,7 +61,7 @@ export function WorkspacesPage() {
   };
 
   const removeRecent = (path: string) => {
-    if (!window.confirm(`从最近列表移除「${wsName(path)}」？（不影响磁盘上的文件）`)) return;
+    if (!window.confirm(t("pages.workspaces.confirmRemoveRecent", { name: wsName(path) }))) return;
     ws.actions.removeRecent(path);
   };
 
@@ -75,10 +77,10 @@ export function WorkspacesPage() {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-auto p-8">
         <FolderOpen className="size-10 text-[var(--line-strong,#d0d6e0)]" />
-        <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">没有打开的工作区</div>
-        <div className="text-[0.8rem] text-[var(--t3,#8a8f98)]">选择一个项目目录即可开始，没有 supertask.yaml 时会自动扫描生成草稿。</div>
+        <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{t("pages.workspaces.emptyTitle")}</div>
+        <div className="text-[0.8rem] text-[var(--t3,#8a8f98)]">{t("pages.workspaces.emptyDesc")}</div>
         <Button onClick={() => void pickDirectory()} disabled={busy} className="mt-1 gap-1.5">
-          <FolderSearch /> 选择目录…
+          <FolderSearch /> {t("pages.workspaces.pickDir")}
         </Button>
       </div>
     );
@@ -91,20 +93,20 @@ export function WorkspacesPage() {
           {/* 标题行 */}
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1,#222326)]">工作区</h2>
+              <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1,#222326)]">{t("workspace.title")}</h2>
               <p className="mt-0.5 text-[0.78rem] text-[var(--t3,#8a8f98)]">
-                同时只打开一个工作区；切换时已启动的服务转入后台继续运行，切回时自动接管。
+                {t("pages.workspaces.headerDesc")}
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={() => void pickDirectory()} disabled={busy} className="gap-1">
-              <FolderSearch /> 打开其他目录…
+              <FolderSearch /> {t("workspace.openOther")}
             </Button>
           </div>
 
           {/* 当前工作区 */}
           {current ? (
             <div>
-              <div className="mb-2 text-[0.68rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">当前</div>
+              <div className="mb-2 text-[0.68rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">{t("pages.workspaces.currentLabel")}</div>
               <Card
                 className={cn(
                   "border-[rgb(94_106_210_/_0.45)] bg-[var(--st-accent-tint,#eef0fb)] p-4",
@@ -119,7 +121,7 @@ export function WorkspacesPage() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="truncate text-[0.92rem] font-semibold text-[var(--t1,#222326)]">{wsName(current)}</span>
-                        <Badge variant="soon" className="shrink-0">当前</Badge>
+                        <Badge variant="soon" className="shrink-0">{t("pages.workspaces.currentBadge")}</Badge>
                       </div>
                       <div className="truncate font-mono text-[0.64rem] text-[var(--t3,#8a8f98)]" title={current}>
                         {current}
@@ -127,14 +129,14 @@ export function WorkspacesPage() {
                       {spec?.name || serviceCount > 0 || scriptCount > 0 ? (
                         <div className="mt-1 flex items-center gap-1.5 text-[0.72rem] text-[var(--t2,#62666d)]">
                           <Layers className="size-3 shrink-0" />
-                          {[spec?.name, `${serviceCount} 个服务`, `${scriptCount} 个脚本`].filter(Boolean).join(" · ")}
+                          {[spec?.name, t("pages.workspaces.serviceCount", { n: serviceCount }), t("pages.workspaces.scriptCount", { n: scriptCount })].filter(Boolean).join(" · ")}
                         </div>
                       ) : null}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <Button variant="outline" size="sm" className="gap-1 bg-transparent" onClick={() => ws.actions.openExplorer()} disabled={busy}>
-                      <ExternalLink /> 资源管理器
+                      <ExternalLink /> {t("pages.workspaces.explorer")}
                     </Button>
                     <Button
                       variant="outline"
@@ -143,7 +145,7 @@ export function WorkspacesPage() {
                       onClick={() => void closeCurrent()}
                       disabled={busy}
                     >
-                      <X /> 关闭工作区
+                      <X /> {t("pages.workspaces.closeWorkspace")}
                     </Button>
                   </div>
                 </div>
@@ -154,7 +156,7 @@ export function WorkspacesPage() {
           {/* 最近列表 */}
           {others.length > 0 ? (
             <div>
-              <div className="mb-2 text-[0.68rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">最近使用</div>
+              <div className="mb-2 text-[0.68rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">{t("pages.workspaces.recentUsed")}</div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {others.map((path) => (
                   <Card
@@ -163,7 +165,7 @@ export function WorkspacesPage() {
                     tabIndex={0}
                     onClick={() => void switchTo(path)}
                     onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && void switchTo(path)}
-                    title={`切换到 ${path}`}
+                    title={t("pages.workspaces.switchTo", { path })}
                     className={cn(
                       "group relative cursor-pointer p-3.5 transition-all duration-150 hover:-translate-y-px hover:border-[var(--st-accent,#5e6ad2)] hover:shadow-[var(--shadow-2,0_6px_20px_rgb(16_24_40_/_0.09))] focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]",
                       busy && "pointer-events-none opacity-60",
@@ -171,8 +173,8 @@ export function WorkspacesPage() {
                   >
                     <button
                       type="button"
-                      aria-label={`移除 ${wsName(path)}`}
-                      title="从最近移除"
+                      aria-label={t("pages.workspaces.removeAria", { name: wsName(path) })}
+                      title={t("pages.workspaces.removeRecentTitle")}
                       onClick={(e) => {
                         e.stopPropagation();
                         removeRecent(path);
@@ -201,7 +203,7 @@ export function WorkspacesPage() {
                         }}
                         disabled={busy}
                       >
-                        切换
+                        {t("pages.workspaces.switch")}
                       </Button>
                     </div>
                   </Card>

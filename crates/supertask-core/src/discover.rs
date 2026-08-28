@@ -116,8 +116,14 @@ pub fn port_to_pid(port: u16) -> Option<u32> {
 ///
 /// 护栏：拒绝系统保留 pid（≤4）与 SuperTask 自身；且只允许当前仍持有
 /// LISTEN 端口的 pid——把该 IPC 面限制在发现结果内，而非任意进程终止原语。
+/// 系统保留 pid 上限（Windows: Idle 0 / System 4；Unix: init 1）。Windows 口径不变。
+#[cfg(windows)]
+const MIN_SYSTEM_PID: u32 = 4;
+#[cfg(not(windows))]
+const MIN_SYSTEM_PID: u32 = 1;
+
 pub fn kill_tree(pid: u32) -> Result<()> {
-    if pid <= 4 {
+    if pid <= MIN_SYSTEM_PID {
         return Err(Error::new(
             ErrorCode::JobKill,
             format!("pid {pid} 是系统保留进程，禁止终止"),
@@ -139,7 +145,8 @@ pub fn kill_tree(pid: u32) -> Result<()> {
 }
 
 /// `taskkill /PID <pid> /T /F`（等效杀整棵树）。
-/// engine 的外部服务停止与发现页「终止」共用；非 Windows 无 taskkill，no-op。
+/// engine 的外部服务停止与发现页「终止」共用；Unix 侧 SIGTERM → 5s 宽限 → SIGKILL
+/// （外部进程无引擎进程组，按单 pid 尽力终止，规格 §4.4）。
 pub fn taskkill_tree(pid: u32) -> Result<()> {
     #[cfg(windows)]
     {
@@ -158,7 +165,23 @@ pub fn taskkill_tree(pid: u32) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        let _ = pid;
+        use std::time::{Duration, Instant};
+        let raw = pid as i32;
+        let signal = |sig: nix::sys::signal::Signal| {
+            let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), sig);
+        };
+        signal(nix::sys::signal::Signal::SIGTERM);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            // kill(pid, 0) 仅探活；ESRCH = 已退出
+            if nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), nix::sys::signal::Signal::SIGCONT)
+                .is_err()
+            {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        signal(nix::sys::signal::Signal::SIGKILL);
     }
     Ok(())
 }
@@ -450,28 +473,180 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
 
     use super::ListenEndpoint;
 
     type EndpointMap = HashMap<u32, Vec<ListenEndpoint>>;
 
+    /// CPU 采样缓存：pid → (上次累计 CPU（ticks，Linux）/首次标记，上次采样时刻)。
+    fn cpu_cache() -> &'static Mutex<HashMap<u32, (u64, Instant)>> {
+        static CACHE: OnceLock<Mutex<HashMap<u32, (u64, Instant)>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// 进程消失后清掉缓存条目，避免长期运行时缓慢累积。
+    pub fn prune_cpu_cache(keep: Vec<u32>) {
+        if let Ok(mut cache) = cpu_cache().lock() {
+            cache.retain(|pid, _| keep.contains(pid));
+        }
+    }
+
+    /// pid → LISTEN 本地端点列表。复用 ports 的监听表读取（Linux /proc、macOS lsof），
+    /// 地址串回解为 IpAddr；通配符归一化为回环（与 Windows 口径一致）。
     pub fn listen_endpoints_by_pid() -> std::io::Result<EndpointMap> {
-        Ok(HashMap::new())
+        let listeners = crate::ports::tcp_listeners()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        let mut out: EndpointMap = HashMap::new();
+        for l in listeners {
+            if l.pid == 0 {
+                continue;
+            }
+            let raw = l.address.trim_start_matches('[').trim_end_matches(']');
+            let Ok(mut ip) = raw.parse::<IpAddr>() else {
+                continue;
+            };
+            if ip.is_unspecified() {
+                ip = match ip {
+                    IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+                };
+            }
+            let v = out.entry(l.pid).or_default();
+            if !v.contains(&ListenEndpoint { ip, port: l.port }) {
+                v.push(ListenEndpoint { ip, port: l.port });
+            }
+        }
+        for eps in out.values_mut() {
+            // IPv4 优先（health 探测顺序），同族内端口升序
+            eps.sort_by_key(|e| (u8::from(e.ip.is_ipv6()), e.port));
+        }
+        Ok(out)
     }
 
+    #[cfg(target_os = "linux")]
     pub fn process_names() -> std::io::Result<Vec<(u32, String)>> {
-        Ok(Vec::new())
+        let all = procfs::process::all_processes()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        Ok(all
+            .into_iter()
+            .filter_map(|p| p.ok())
+            .filter_map(|p| {
+                let comm = p.stat().ok()?.comm;
+                Some((p.pid as u32, comm))
+            })
+            .collect())
     }
 
-    pub fn process_details(_pid: u32) -> Option<(String, String)> {
-        None
+    #[cfg(target_os = "linux")]
+    pub fn process_details(pid: u32) -> Option<(String, String)> {
+        let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
+            .ok()?
+            .to_string_lossy()
+            .into_owned();
+        let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let cmd_line = raw
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some((cwd, cmd_line))
     }
 
-    pub fn process_stats(_pid: u32) -> (Option<f32>, Option<u64>) {
-        (None, None)
+    #[cfg(target_os = "linux")]
+    pub fn process_stats(pid: u32) -> (Option<f32>, Option<u64>) {
+        let Ok(p) = procfs::process::Process::new(pid as i32) else {
+            return (None, None);
+        };
+        let Ok(stat) = p.stat() else {
+            return (None, None);
+        };
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64;
+        let mem = Some(stat.rss * page);
+        let total = stat.utime + stat.stime;
+        let now = Instant::now();
+        let mut cache = cpu_cache().lock().ok();
+        let cpu = match cache.as_mut().and_then(|c| c.insert(pid, (total, now))) {
+            None => None,
+            Some((prev_total, prev_at)) => {
+                let wall = now.duration_since(prev_at).as_secs_f64();
+                if wall <= 0.0 {
+                    None
+                } else {
+                    let tps = procfs::ticks_per_second().max(1) as f64;
+                    let cores =
+                        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+                    let used = (total.saturating_sub(prev_total) as f64) / tps;
+                    let pct = used / wall / cores as f64 * 100.0;
+                    Some((pct as f32).clamp(0.0, cores as f32 * 100.0))
+                }
+            }
+        };
+        (cpu, mem)
     }
 
-    pub fn prune_cpu_cache(_keep: Vec<u32>) {}
+    #[cfg(not(target_os = "linux"))]
+    pub fn process_names() -> std::io::Result<Vec<(u32, String)>> {
+        let out = std::process::Command::new("ps")
+            .args(["-axo", "pid=,comm="])
+            .output()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text
+            .lines()
+            .filter_map(|line| {
+                let mut it = line.split_whitespace();
+                let pid: u32 = it.next()?.parse().ok()?;
+                let comm = it.next()?; // macOS comm 为全路径，取文件名
+                let name = comm.rsplit('/').next()?.to_string();
+                Some((pid, name))
+            })
+            .collect())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn process_details(pid: u32) -> Option<(String, String)> {
+        // cwd：`lsof -a -p <pid> -d cwd -Fn` 的 `n<路径>` 行；cmdline：ps command
+        let out = std::process::Command::new("lsof")
+            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let cwd = text
+            .lines()
+            .find(|l| l.starts_with('n'))
+            .map(|l| l[1..].to_string())
+            .unwrap_or_default();
+        let cmd_line = std::process::Command::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        Some((cwd, cmd_line))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn process_stats(pid: u32) -> (Option<f32>, Option<u64>) {
+        let Some(out) = std::process::Command::new("ps")
+            .args(["-o", "%cpu=,rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+        else {
+            return (None, None);
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let Some(line) = text.lines().next() else {
+            return (None, None);
+        };
+        let mut it = line.split_whitespace();
+        let cpu = it.next().and_then(|v| v.parse::<f32>().ok());
+        let mem = it.next().and_then(|v| v.parse::<u64>().ok()).map(|kb| kb * 1024);
+        (cpu, mem)
+    }
 }
 
 use imp::process_names;

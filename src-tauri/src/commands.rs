@@ -642,6 +642,7 @@ pub fn app_save_prefs(
     close_to_tray: Option<bool>,
     start_on_login: Option<bool>,
     update_check: Option<bool>,
+    locale: Option<String>,
 ) -> Result<HashMap<&'static str, bool>, IpcError> {
     let mut autostart_change: Option<bool> = None;
     {
@@ -661,6 +662,10 @@ pub fn app_save_prefs(
         }
         if let Some(v) = update_check {
             data.update_check = v;
+        }
+        if let Some(v) = locale {
+            // 1.4 §6.1：非法值由前端选择器约束；这里只透传，未知值 UI 回落 zh-CN
+            data.locale = v;
         }
     }
     // 先落盘偏好，再注册/注销开机自启（v1.1 规格 §8.4）
@@ -1080,6 +1085,58 @@ pub fn workspace_scan_apply(
 }
 
 // ---------------------------------------------------------------------------
+// 1.4 Taskfile 导入（feature spec §7，ipc.md §10.8）
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct TaskfilePreviewOut {
+    pub tasks: Vec<supertask_core::taskfile::TaskfileImportItem>,
+    pub warnings: Vec<String>,
+}
+
+/// Taskfile v3 导入预览（纯内存计算，无落盘；文件缺失 `TASKFILE_NOT_FOUND`，
+/// 版本/语法不支持 `TASKFILE_INVALID`）。
+#[tauri::command(rename = "import.taskfilePreview")]
+pub fn import_taskfile_preview(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<TaskfilePreviewOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    let out = supertask_core::taskfile::preview(Path::new(&workspace_id), Some(&current.scripts))
+        .map_err(ipc_err)?;
+    Ok(TaskfilePreviewOut {
+        tasks: out.tasks,
+        warnings: out.warnings,
+    })
+}
+
+/// 按选择应用 Taskfile 导入；写回走 saveForm 机制（base_hash 冲突 → `YAML_CONFLICT`）。
+/// 只增改所选 `scripts.*`，其余字段不动。
+#[tauri::command(rename = "import.taskfileApply")]
+pub fn import_taskfile_apply(
+    state: EngineState<'_>,
+    workspace_id: String,
+    selected: Vec<String>,
+    base_hash: String,
+) -> Result<YamlSaveOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    let (merged, _) = supertask_core::taskfile::apply(
+        &current,
+        Path::new(&workspace_id),
+        &selected,
+    )
+    .map_err(ipc_err)?;
+    let (spec, hash, warnings) = state.save_form(&merged, &base_hash).map_err(ipc_err)?;
+    Ok(YamlSaveOut {
+        spec,
+        hash,
+        warnings: warnings_to_strings(warnings),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // 1.1 Desktop: 自动更新（v1.1 规格 §9，ipc.md §10.6）
 // ---------------------------------------------------------------------------
 
@@ -1148,6 +1205,28 @@ pub fn app_update_install(
 ) -> Result<OperationOut, IpcError> {
     ensure_not_exiting(&exiting)?;
 
+    // 1.4 §4.5：Linux 只支持检查更新，安装返回 PLATFORM_UNSUPPORTED 并给手动替换指引
+    #[cfg(not(windows))]
+    {
+        let _ = version;
+        return Err(err(
+            ErrorCode::PlatformUnsupported,
+            "Linux 暂不支持应用内安装更新：请下载新版本 AppImage 手动替换",
+        ));
+    }
+    #[cfg(windows)]
+    {
+        install_update_windows(app, hub, engine, version)
+    }
+}
+
+#[cfg(windows)]
+fn install_update_windows(
+    app: AppHandle,
+    hub: HubState<'_>,
+    engine: EngineState<'_>,
+    version: String,
+) -> Result<OperationOut, IpcError> {
     // 前置 1：Git/模板/扫描等 operation 进行中 → 阻止（§9.2）
     if hub.has_active() {
         return Err(err(

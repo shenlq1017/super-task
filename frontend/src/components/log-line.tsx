@@ -1,4 +1,5 @@
 import { type MouseEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LogLine } from "@/ipc/protocol";
@@ -68,6 +69,7 @@ export function LogLineRow({
   onSelect: () => void;
   onCopy: (e: MouseEvent) => void;
 }) {
+  const { t } = useTranslation();
   const style = streamStyle(line.stream);
   const hasBar = line.stream !== "stdout";
 
@@ -103,8 +105,8 @@ export function LogLineRow({
       </span>
       <button
         type="button"
-        title={copied ? "已复制" : "复制此行"}
-        aria-label={copied ? "已复制" : "复制此行"}
+        title={copied ? t("common.copied") : t("logs.copyLine")}
+        aria-label={copied ? t("common.copied") : t("logs.copyLine")}
         tabIndex={selected ? 0 : -1}
         onClick={(e) => {
           e.stopPropagation();
@@ -124,7 +126,7 @@ export function LogLineRow({
         )}
       >
         {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-        <span className="hidden sm:inline">{copied ? "已复制" : "复制"}</span>
+        <span className="hidden sm:inline">{copied ? t("common.copied") : t("common.copy")}</span>
       </button>
     </div>
   );

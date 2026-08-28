@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { ChevronDown, FolderOpen, FolderSearch, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/providers/workspace-provider";
@@ -11,11 +12,12 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
   const ws = useWorkspace();
   const openWs = useOpenWorkspace();
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const wsName =
-    ws.state.workspaceId?.split(/[\\/]/).filter(Boolean).pop() ?? "未打开工作区";
+    ws.state.workspaceId?.split(/[\\/]/).filter(Boolean).pop() ?? t("common.noWorkspace");
 
   // 当前工作区已在顶部单独展示，最近列表里排除自身
   const otherRecents = ws.state.recents.filter((p) => p !== ws.state.workspaceId);
@@ -32,7 +34,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
   const pickDirectory = async () => {
     setOpen(false);
     if (!isTauri()) {
-      const p = window.prompt("输入工作区目录路径");
+      const p = window.prompt(t("common.inputWorkspacePath"));
       if (p) await openWs(p);
       return;
     }
@@ -62,7 +64,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
           open && "bg-[rgb(0_0_0_/_0.045)]",
           collapsed && "justify-center px-1",
         )}
-        title="切换工作区"
+        title={t("workspace.switch")}
         aria-expanded={open}
       >
         <span className="grid size-7 shrink-0 place-items-center rounded-[9px] bg-gradient-to-br from-[#6E79DE] to-[#4F5AC8] text-[0.82rem] font-bold text-white shadow-[0_2px_8px_rgb(94_106_210_/_0.35)]">
@@ -73,7 +75,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
             {wsName}
           </span>
           <span className="block truncate font-mono text-[0.58rem] text-[var(--t3,#8a8f98)]">
-            {ws.state.workspaceId ?? "点击选择或切换工作区"}
+            {ws.state.workspaceId ?? t("workspace.pickHint")}
           </span>
         </span>
         <ChevronDown
@@ -94,7 +96,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="border-b border-[var(--line,#e6e6e6)] px-3 py-2 text-[0.58rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">
-            工作区
+            {t("workspace.title")}
           </div>
 
           {ws.state.workspaceId ? (
@@ -110,7 +112,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
           {otherRecents.length > 0 ? (
             <div className="max-h-48 overflow-y-auto p-1">
               <div className="px-2 py-1 text-[0.58rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">
-                最近
+                {t("workspace.recent")}
               </div>
               {otherRecents.map((path) => {
                 const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -132,7 +134,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
               })}
             </div>
           ) : (
-            <div className="px-3 py-3 text-[0.75rem] text-[var(--t3,#8a8f98)]">暂无最近工作区</div>
+            <div className="px-3 py-3 text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("workspace.noRecent")}</div>
           )}
 
           <div className="flex flex-col gap-0.5 border-t border-[var(--line,#e6e6e6)] p-1">
@@ -142,7 +144,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
               className="flex w-full items-center gap-2 rounded-[var(--r-sm,8px)] px-2 py-1.5 text-[0.78rem] font-medium text-[var(--t1,#222326)] transition-colors hover:bg-[rgb(0_0_0_/_0.045)]"
             >
               <FolderSearch className="size-3.5 text-[var(--st-accent,#5e6ad2)]" />
-              打开其他目录…
+              {t("workspace.openOther")}
             </button>
             {ws.state.workspaceId ? (
               <button
@@ -151,7 +153,7 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
                 className="flex w-full items-center gap-2 rounded-[var(--r-sm,8px)] px-2 py-1.5 text-[0.78rem] font-medium text-[var(--st-danger,#dc2626)] transition-colors hover:bg-[var(--st-danger-tint,#fdecec)]"
               >
                 <X className="size-3.5" />
-                关闭当前工作区
+                {t("palette.closeWorkspace")}
               </button>
             ) : null}
           </div>

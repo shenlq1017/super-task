@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import type { ComponentType, ReactNode } from "react";
 import { AppShell } from "./AppShell";
 import { ComingSoonPage } from "../pages/coming-soon-page";
@@ -35,11 +36,12 @@ const LIVE_PAGES: Record<string, ComponentType> = {
 function WorkspaceBootstrap({ children }: { children: ReactNode }) {
   const ws = useWorkspace();
   const loc = useLocation();
+  const { t } = useTranslation();
 
   if (!ws.state.bootstrapped) {
     return (
       <div className="flex flex-1 items-center justify-center text-[0.875rem] text-[var(--t3,#8a8f98)]" role="status">
-        正在恢复工作区…
+        {t("common.restoringWorkspace")}
       </div>
     );
   }

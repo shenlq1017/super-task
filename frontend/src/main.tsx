@@ -1,6 +1,7 @@
 import { StrictMode, Component, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { HashRouter } from "react-router-dom";
+import "./i18n"; // i18next 初始化（先于 App 渲染）
 import { App } from "./app/App";
 import "./index.css";
 

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { SessionProvider, useSession } from "../providers/session-provider";
 import { WorkspaceProvider, useWorkspace } from "../providers/workspace-provider";
 import { RuntimeProvider } from "../providers/runtime-provider";
@@ -23,10 +24,11 @@ function RecentsMigrator() {
 
 function Gate() {
   const { meta, state } = useSession();
+  const { t } = useTranslation();
   if (!meta.ready && !state.error) {
     return (
       <p style={{ padding: 24, color: "var(--t2)" }} role="status">
-        正在连接引擎…
+        {t("common.connectingEngine")}
       </p>
     );
   }

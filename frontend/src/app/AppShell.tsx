@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { groupedFeatures, navLabel, GROUP_TITLE, type NavGroup } from "../features/registry";
+import { formatIpcFailure } from "@/lib/error-messages";
+import { groupedFeatures, navTranslationKey, type NavGroup } from "../features/registry";
 import { useFeatures, useSession } from "../providers/session-provider";
 import { useWorkspace } from "../providers/workspace-provider";
 import { useToast } from "@/components/ui/toast";
@@ -85,6 +87,7 @@ function SidebarItem({
   collapsed: boolean;
   onAction?: () => void;
 }) {
+  const { t } = useTranslation();
   // 对齐原型：左侧 3px 紫条作为 active 指示；hover 滑出，active 常驻
   const renderInner = (isActive: boolean) => (
     <>
@@ -120,7 +123,7 @@ function SidebarItem({
   if (soon || !to) {
     return (
       <div
-        title={soon ? `${label}（尚未提供）` : label}
+        title={soon ? t("common.soonHint", { label }) : label}
         onClick={onAction}
         className={cn(baseCls, soon && soonCls)}
       >
@@ -144,9 +147,16 @@ export function AppShell() {
   const { state } = useSession();
   const ws = useWorkspace();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const openWs = useOpenWorkspace();
+
+  /** feature id → 本地化导航文案（labelKey → `nav.*`）。 */
+  const navText = (id: string): string => {
+    const key = navTranslationKey(id);
+    return key ? t(key) : id;
+  };
 
   const [collapsed, setCollapsed] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -167,7 +177,7 @@ export function AppShell() {
 
   const pickDirectory = async () => {
     if (!isTauri()) {
-      const p = window.prompt("输入工作区目录路径");
+      const p = window.prompt(t("common.inputWorkspacePath"));
       if (p) await openWs(p);
       return;
     }
@@ -191,9 +201,9 @@ export function AppShell() {
     try {
       await ws.actions.scanDraft(ws.state.workspaceId);
       await ws.actions.refreshSpec();
-      toast("已重新扫描工作区", "ok");
+      toast(t("common.rescanned"), "ok");
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), "err");
+      toast(formatIpcFailure(e), "err");
     }
   };
 
@@ -209,9 +219,9 @@ export function AppShell() {
 
   const groups = groupedFeatures(features);
   const cur = features.find((f) => f.path === location.pathname);
-  const section = cur ? navLabel(cur.id) : "欢迎";
+  const section = cur ? navText(cur.id) : t("nav.welcome");
   const wsName =
-    ws.state.workspaceId?.split(/[\\/]/).filter(Boolean).pop() ?? "未打开工作区";
+    ws.state.workspaceId?.split(/[\\/]/).filter(Boolean).pop() ?? t("common.noWorkspace");
 
   const shellCtx: ShellCtx = { compact, defaultFollow: follow };
 
@@ -235,7 +245,7 @@ export function AppShell() {
             className="mt-1.5 flex items-center gap-2 rounded-full border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-3 py-1.5 text-[var(--t3,#8a8f98)] shadow-sm transition-all hover:border-[var(--line-strong,#d0d6e0)] hover:text-[var(--t2,#62666d)]"
           >
             <Command className="size-3.5" />
-            <span className={cn("text-[0.74rem]", collapsed && "hidden")}>搜索 / 命令</span>
+            <span className={cn("text-[0.74rem]", collapsed && "hidden")}>{t("common.searchCommand")}</span>
             <kbd className={cn("ml-auto font-mono text-[10px] text-[var(--t3,#8a8f98)]", collapsed && "hidden")}>⌘K</kbd>
           </button>
 
@@ -249,13 +259,13 @@ export function AppShell() {
                     collapsed && "hidden",
                   )}
                 >
-                  {GROUP_TITLE[g.group as NavGroup]}
+                  {t(`groups.${g.group as NavGroup}`)}
                 </div>
                 {g.items.map((f) => (
                   <SidebarItem
                     key={f.id}
                     to={f.path}
-                    label={navLabel(f.id)}
+                    label={navText(f.id)}
                     icon={NAV_ICONS[f.id] ?? <Wrench className="size-4" />}
                     soon={f.status === "soon"}
                     version={f.since}
@@ -274,7 +284,7 @@ export function AppShell() {
                 className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-[var(--t2,#62666d)] transition-colors hover:bg-black/5 hover:text-[var(--t1,#222326)]"
               >
                 <SettingsIcon className="size-4 shrink-0" />
-                <span className={cn("truncate", collapsed && "hidden")}>设置</span>
+                <span className={cn("truncate", collapsed && "hidden")}>{t("nav.settings")}</span>
               </button>
               {settingsOpen ? (
                 <SettingsPopover
@@ -295,10 +305,10 @@ export function AppShell() {
             <button
               onClick={() => setCollapsed((v) => !v)}
               className="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-[var(--t3,#8a8f98)] transition-colors hover:bg-black/5 hover:text-[var(--t2,#62666d)]"
-              title={collapsed ? "展开侧栏" : "收起侧栏"}
+              title={collapsed ? t("common.expandSidebar") : t("common.collapseSidebar")}
             >
               {collapsed ? <PanelLeftOpen className="size-4 shrink-0" /> : <PanelLeftClose className="size-4 shrink-0" />}
-              <span className={cn("truncate", collapsed && "hidden")}>收起侧栏</span>
+              <span className={cn("truncate", collapsed && "hidden")}>{t("common.collapseSidebar")}</span>
             </button>
           </div>
         </aside>
@@ -317,21 +327,21 @@ export function AppShell() {
             <button
               onClick={() => setCmdOpen(true)}
               className="mx-auto flex h-7 max-w-[28rem] flex-1 items-center gap-2 rounded-lg border border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] px-3 text-[var(--t3,#8a8f98)] transition-colors hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface,#fff)] hover:text-[var(--t2,#62666d)]"
-              title="搜索 / 命令面板 (⌘K)"
+              title={t("common.searchCommandTitle")}
             >
               <Search className="size-3.5" />
-              <span className="truncate text-[0.8rem]">搜索服务、命令 · 跳转到配置…</span>
+              <span className="truncate text-[0.8rem]">{t("common.commandPaletteSearch")}</span>
               <kbd className="ml-auto rounded border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--t3,#8a8f98)]">
                 ⌘K
               </kbd>
             </button>
 
             <div className="flex shrink-0 items-center gap-1.5">
-              <Button variant="ghost" size="sm" className="gap-1 text-[var(--t2,#62666d)]" onClick={onScan} title="扫描工作区（⌘R）">
-                <ScanLine /> <span className={cn(collapsed && "hidden")}>扫描</span>
+              <Button variant="ghost" size="sm" className="gap-1 text-[var(--t2,#62666d)]" onClick={onScan} title={t("common.scanWorkspaceTitle")}>
+                <ScanLine /> <span className={cn(collapsed && "hidden")}>{t("common.scan")}</span>
               </Button>
-              <Button variant="outline" size="sm" className="gap-1" onClick={onDir} title="打开工作区目录">
-                <FolderOpen /> <span className={cn(collapsed && "hidden")}>目录</span>
+              <Button variant="outline" size="sm" className="gap-1" onClick={onDir} title={t("common.openWorkspaceDir")}>
+                <FolderOpen /> <span className={cn(collapsed && "hidden")}>{t("common.directory")}</span>
               </Button>
             </div>
           </header>
@@ -357,7 +367,7 @@ export function AppShell() {
         <span className="ml-auto flex shrink-0 items-center gap-2 pl-3">
           <span className="flex items-center gap-1.5 text-[var(--st-ok-deep,#1e7e35)]">
             <span className="size-1.5 rounded-full bg-[var(--st-ok,#27a644)]" />
-            {ws.state.workspaceId ? "yaml 已同步" : "未打开工作区"}
+            {ws.state.workspaceId ? t("common.workspaceSynced") : t("common.noWorkspace")}
           </span>
           <span className="text-[var(--line-strong,#d0d6e0)]">·</span>
           <span>v{state.hello?.product_version ?? "1.0"}</span>
@@ -403,6 +413,7 @@ function SettingsPopover({
   onOpenSettings: () => void;
   collapsed: boolean;
 }) {
+  const { t } = useTranslation();
   const Row = ({
     label,
     on,
@@ -442,16 +453,16 @@ function SettingsPopover({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-        设置
+        {t("settingsPopover.title")}
       </div>
-      <Row label="跟随底部日志" on={follow} onToggle={onFollow} />
-      <Row label="实时健康检查" on={health} onToggle={onHealth} disabled />
-      <Row label="紧凑密度" on={compact} onToggle={onCompact} />
+      <Row label={t("settingsPopover.followLogs")} on={follow} onToggle={onFollow} />
+      <Row label={t("settingsPopover.liveHealth")} on={health} onToggle={onHealth} disabled />
+      <Row label={t("settingsPopover.compactDensity")} on={compact} onToggle={onCompact} />
       <button
         onClick={onOpenSettings}
         className="mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[0.76rem] text-[var(--t2,#62666d)] hover:bg-black/5"
       >
-        <SettingsIcon className="size-3.5" /> 打开设置页
+        <SettingsIcon className="size-3.5" /> {t("settingsPopover.openSettings")}
       </button>
     </div>
   );

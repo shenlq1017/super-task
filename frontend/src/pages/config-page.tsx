@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
   ChevronRight,
+  FileInput,
   FileText,
   KeyRound,
   Layers,
@@ -21,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { EnvVariablesEditor } from "@/components/env-variables-editor";
+import { TaskfileImportPanel } from "@/components/taskfile-import-panel";
 import { cn } from "@/lib/utils";
 import { useYaml } from "@/providers/yaml-provider";
 import { useWorkspace } from "@/providers/workspace-provider";
@@ -28,6 +31,8 @@ import { useToast } from "@/components/ui/toast";
 import {
   apiScanApply,
   apiScanPreview,
+  apiTaskfileApply,
+  apiTaskfilePreview,
   apiYamlGet,
   apiProfilesList,
   apiProfilesActivate,
@@ -43,8 +48,11 @@ import type {
   ScanPreviewOut,
   ServiceSpec,
   SuperTaskFile,
+  TaskfilePreviewOut,
 } from "@/ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
+import { formatIpcFailure } from "@/lib/error-messages";
+import i18n from "@/i18n";
 
 function detectCycle(spec: SuperTaskFile): string[] | null {
   const deps: Record<string, string[]> = {};
@@ -82,6 +90,7 @@ function V12ConfigPanel() {
   const ws = useWorkspace();
   const yaml = useYaml();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const wid = ws.state.workspaceId;
   const [profiles, setProfiles] = useState<import("@/ipc/protocol").ProfilesListOut | null>(null);
   const [secrets, setSecrets] = useState<import("@/ipc/protocol").SecretsStatusOut | null>(null);
@@ -108,7 +117,7 @@ function V12ConfigPanel() {
 
   const activate = async (id: string) => {
     if (!wid || !yaml.state.hash) {
-      toast("配置尚未加载完成，请稍后再切换 profile", "warn");
+      toast(t("pages.config.profileNotReady"), "warn");
       return;
     }
     if (profiles?.active === id) return;
@@ -116,7 +125,7 @@ function V12ConfigPanel() {
       await apiProfilesActivate(wid, id, yaml.state.hash);
       await Promise.all([yaml.actions.reload(), ws.actions.refreshSpec()]);
       await reload();
-      toast(`已切换到 profile：${id}`, "ok");
+      toast(t("pages.config.profileSwitched", { id }), "ok");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -128,7 +137,7 @@ function V12ConfigPanel() {
       await apiSecretsSet(wid, secretKey.trim(), secretValue);
       setSecretValue("");
       await reload();
-      toast(`已保存 ${secretKey.trim()}（值不会回显）`, "ok");
+      toast(t("pages.config.secretSaved", { key: secretKey.trim() }), "ok");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -139,7 +148,7 @@ function V12ConfigPanel() {
     try {
       await apiSecretsDelete(wid, key);
       await reload();
-      toast(`已删除 ${key}`, "ok");
+      toast(t("pages.config.secretDeleted", { key }), "ok");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -149,7 +158,7 @@ function V12ConfigPanel() {
     if (!wid) return;
     try {
       const out = await apiSecretsValidate(wid);
-      toast(out.ok ? "必需密钥检查通过" : `缺少：${out.missing.join(", ")}`, out.ok ? "ok" : "warn");
+      toast(out.ok ? t("pages.config.secretsOk") : t("pages.config.secretsMissing", { keys: out.missing.join(", ") }), out.ok ? "ok" : "warn");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -162,10 +171,10 @@ function V12ConfigPanel() {
     const ids = new Set<string>(["default", ...items.map((p) => p.id)]);
     return [...ids].map((id) => {
       const meta = items.find((p) => p.id === id);
-      const suffix = meta?.enabled_count != null ? ` · ${meta.enabled_count} 项启用` : "";
-      return { id, label: id === "default" ? `default（隐式）${suffix}` : `${id}${suffix}` };
+      const suffix = meta?.enabled_count != null ? ` · ${meta.enabled_count}` : "";
+      return { id, label: id === "default" ? `${t("pages.config.defaultImplicit", { id })}${suffix}` : `${id}${suffix}` };
     });
-  }, [profiles]);
+  }, [profiles, t]);
   const canSwitchProfile = (profiles?.profiles.length ?? 0) > 0;
 
   return (
@@ -177,7 +186,7 @@ function V12ConfigPanel() {
             <h3 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">Profile</h3>
             <Badge variant="secondary" className="text-[10px]">env / enabled / port</Badge>
             <Button className="ml-auto" variant="soft" size="sm" onClick={() => void reload()} disabled={!wid || loading}>
-              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} /> 刷新
+              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} /> {t("common.refresh")}
             </Button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -190,9 +199,9 @@ function V12ConfigPanel() {
                 <SelectTrigger
                   size="sm"
                   className="h-8 min-w-[12rem] flex-1 cursor-pointer border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] text-xs"
-                  aria-label="当前 profile"
+                  aria-label={t("pages.config.currentProfileAria")}
                 >
-                  <SelectValue placeholder="选择 profile" />
+                  <SelectValue placeholder={t("pages.config.pickProfile")} />
                 </SelectTrigger>
                 <SelectContent>
                   {profileOptions.map((p) => (
@@ -205,13 +214,13 @@ function V12ConfigPanel() {
             ) : (
               <div className="flex min-h-8 flex-1 items-center gap-2">
                 <Badge variant="outline" className="font-mono text-xs">{activeProfile}</Badge>
-                <span className="text-[0.7rem] text-[var(--t3,#8a8f98)]">yaml 未定义其他 profile</span>
+                <span className="text-[0.7rem] text-[var(--t3,#8a8f98)]">{t("pages.config.noExtraProfiles")}</span>
               </div>
             )}
           </div>
           <p className="mt-2 text-[0.7rem] leading-relaxed text-[var(--t3,#8a8f98)]">
-            运行中服务/脚本会阻止切换，避免运行态与配置不一致。
-            {!yaml.state.hash ? " 配置加载中，切换暂不可用。" : null}
+            {t("pages.config.profileSwitchHint")}
+            {!yaml.state.hash ? ` ${t("pages.config.profileLoading")}` : null}
           </p>
         </div>
 
@@ -219,9 +228,9 @@ function V12ConfigPanel() {
           <div className="mb-2 flex items-center gap-2">
             <KeyRound className="size-3.5 text-[var(--st-accent,#5e6ad2)]" />
             <h3 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">Secrets</h3>
-            {secrets?.file ? <Badge variant="outline" className="max-w-[10rem] truncate" title={secrets.file}>{secrets.file}</Badge> : <Badge variant="outline">用户环境</Badge>}
+            {secrets?.file ? <Badge variant="outline" className="max-w-[10rem] truncate" title={secrets.file}>{secrets.file}</Badge> : <Badge variant="outline">{t("pages.config.userEnv")}</Badge>}
             <Badge variant="secondary" className="font-mono text-[10px]">{secretCount}</Badge>
-            <Button className="ml-auto" variant="soft" size="sm" onClick={() => void validateSecrets()} disabled={!wid}>校验必需项</Button>
+            <Button className="ml-auto" variant="soft" size="sm" onClick={() => void validateSecrets()} disabled={!wid}>{t("pages.config.validateRequired")}</Button>
           </div>
 
           <div className="flex max-h-[10rem] flex-col gap-1 overflow-y-auto">
@@ -231,19 +240,19 @@ function V12ConfigPanel() {
                 className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-2 py-1.5 text-xs"
               >
                 <code className="min-w-0 truncate font-mono" title={item.key}>{item.key}</code>
-                <Badge variant={item.present ? "default" : "outline"}>{item.present ? "已设置" : "缺失"}</Badge>
+                <Badge variant={item.present ? "default" : "outline"}>{item.present ? t("pages.config.present") : t("pages.config.absent")}</Badge>
                 {item.git_tracked ? <Badge variant="outline" className="border-red-200 text-red-600">Git</Badge> : <span />}
                 <button
                   type="button"
                   onClick={() => setDeleteKey(item.key)}
                   className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)]"
-                  title={`删除 ${item.key}`}
+                  title={t("pages.config.deleteSecretTitle", { key: item.key })}
                 >
                   <Trash2 className="size-3.5" />
                 </button>
               </div>
             )) : (
-              <p className="py-1 text-xs text-[var(--t3,#8a8f98)]">暂无登记密钥；在下方添加。</p>
+              <p className="py-1 text-xs text-[var(--t3,#8a8f98)]">{t("pages.config.noSecrets")}</p>
             )}
           </div>
 
@@ -258,7 +267,7 @@ function V12ConfigPanel() {
             <Input
               className="h-8 text-xs"
               type="password"
-              placeholder="值（保存后不回显）"
+              placeholder={t("pages.config.secretValuePlaceholder")}
               value={secretValue}
               onChange={(e) => setSecretValue(e.target.value)}
               onKeyDown={(e) => {
@@ -267,7 +276,7 @@ function V12ConfigPanel() {
               aria-label="secret value"
             />
             <Button size="sm" variant="success" onClick={() => void saveSecret()} disabled={!wid || !secretKey.trim()}>
-              保存
+              {t("common.save")}
             </Button>
           </div>
         </div>
@@ -275,9 +284,9 @@ function V12ConfigPanel() {
 
       <ConfirmDialog
         open={deleteKey != null}
-        title="删除密钥"
-        description={deleteKey ? `确定删除 ${deleteKey}？值将从用户环境中移除，已运行服务可能仍持有旧值直到重启。` : undefined}
-        confirmText="删除"
+        title={t("pages.config.deleteSecretHeading")}
+        description={deleteKey ? t("pages.config.deleteSecretDesc", { key: deleteKey }) : undefined}
+        confirmText={t("common.delete")}
         destructive
         onConfirm={() => {
           if (deleteKey) void deleteSecret(deleteKey);
@@ -293,6 +302,7 @@ function FormTab() {
   const ws = useWorkspace();
   const yaml = useYaml();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const spec = ws.state.spec;
   const [draft, setDraft] = useState<SuperTaskFile | null>(spec);
   const [saving, setSaving] = useState(false);
@@ -311,7 +321,7 @@ function FormTab() {
     });
   }, [serviceIds]);
 
-  if (!spec || !draft) return <div className="p-4 text-[0.875rem] text-[var(--t3,#8a8f98)]">无配置</div>;
+  if (!spec || !draft) return <div className="p-4 text-[0.875rem] text-[var(--t3,#8a8f98)]">{t("pages.config.noSpec")}</div>;
 
   const setSvc = (id: string, patch: Partial<SuperTaskFile["services"][string]>) =>
     setDraft((d) => (d ? { ...d, services: { ...d.services, [id]: { ...d.services[id], ...patch } } } : d));
@@ -330,14 +340,14 @@ function FormTab() {
   const save = async () => {
     const cycle = detectCycle(draft!);
     if (cycle) {
-      toast(`depends_on 存在循环依赖：${cycle.join(" → ")}，已拒绝保存`, "err");
+      toast(t("pages.config.cycleDetected", { cycle: cycle.join(" → ") }), "err");
       return;
     }
     setSaving(true);
     const ok = await yaml.actions.saveForm(draft!);
     setSaving(false);
-    if (ok) toast("配置已保存", "ok");
-    else toast(yaml.state.error ?? "保存失败（可能外部已修改）", "err");
+    if (ok) toast(t("pages.config.saved"), "ok");
+    else toast(yaml.state.error ?? t("pages.config.saveFailed"), "err");
   };
 
   const wsEnvCount = Object.keys(draft.env).length;
@@ -346,17 +356,17 @@ function FormTab() {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-4 py-2">
         <Button size="sm" variant="success" onClick={save} disabled={saving}>
-          {saving ? "保存中…" : "保存表单"}
+          {saving ? t("pages.config.saving") : t("pages.config.saveForm")}
         </Button>
         <span className="font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">
-          {serviceIds.length} 服务 · {wsEnvCount} 工作区变量
+          {t("pages.config.serviceCount", { n: serviceIds.length })} · {t("pages.config.wsVarCount", { n: wsEnvCount })}
         </span>
         {yaml.state.warnings.length ? (
-          <span className="text-[0.75rem] text-[var(--st-warn,#9a6700)]">{yaml.state.warnings.length} 条解析警告</span>
+          <span className="text-[0.75rem] text-[var(--st-warn,#9a6700)]">{t("pages.config.warningCount", { n: yaml.state.warnings.length })}</span>
         ) : null}
         <div className="ml-auto flex gap-1">
-          <Button size="sm" variant="outline" onClick={() => setOpenIds(new Set(serviceIds))}>全部展开</Button>
-          <Button size="sm" variant="outline" onClick={() => setOpenIds(new Set())}>全部收起</Button>
+          <Button size="sm" variant="outline" onClick={() => setOpenIds(new Set(serviceIds))}>{t("pages.config.expandAll")}</Button>
+          <Button size="sm" variant="outline" onClick={() => setOpenIds(new Set())}>{t("pages.config.collapseAll")}</Button>
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4">
@@ -368,7 +378,7 @@ function FormTab() {
             aria-expanded={wsEnvOpen}
           >
             {wsEnvOpen ? <ChevronDown className="size-4 text-[var(--t3,#8a8f98)]" /> : <ChevronRight className="size-4 text-[var(--t3,#8a8f98)]" />}
-            <span className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">工作区环境变量</span>
+            <span className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{t("pages.config.wsEnv")}</span>
             <Badge variant="secondary" className="font-mono text-[10px]">{wsEnvCount}</Badge>
           </button>
           {wsEnvOpen ? (
@@ -380,7 +390,7 @@ function FormTab() {
 
         <section className="flex flex-col gap-2">
           <div className="flex items-center gap-2 px-0.5">
-            <h3 className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">服务</h3>
+            <h3 className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{t("pages.config.services")}</h3>
             <span className="font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">{serviceIds.length}</span>
           </div>
           {Object.entries(draft.services).map(([id, s]) => {
@@ -398,6 +408,7 @@ function FormTab() {
                     {open ? <ChevronDown className="size-4 shrink-0 text-[var(--t3,#8a8f98)]" /> : <ChevronRight className="size-4 shrink-0 text-[var(--t3,#8a8f98)]" />}
                     <span className="truncate font-semibold text-[var(--t1,#222326)]">{id}</span>
                     <Badge variant="outline" className="shrink-0 text-[10px] uppercase">{s.kind}</Badge>
+                    {s.build_tool === "gradle" ? <Badge variant="outline" className="shrink-0 text-[10px] uppercase">gradle</Badge> : null}
                     {s.port != null ? <span className="shrink-0 font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">{s.port}</span> : null}
                     <span className="shrink-0 font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]">{envN} env</span>
                   </button>
@@ -407,14 +418,14 @@ function FormTab() {
                       checked={s.enabled}
                       onChange={(e) => setSvc(id, { enabled: e.target.checked })}
                     />
-                    启用
+                    {t("pages.config.enabled")}
                   </label>
                 </div>
                 {open ? (
                   <div className="space-y-3 border-t border-[var(--line,#e6e6e6)] px-3 py-3">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-[7.5rem_1fr]">
                       <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
-                        端口
+                        {t("pages.config.portLabel")}
                         <Input
                           type="number"
                           className="mt-1 font-mono"
@@ -423,7 +434,7 @@ function FormTab() {
                         />
                       </label>
                       <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
-                        depends_on（逗号分隔）
+                        {t("pages.config.dependsOnLabel")}
                         <Input
                           className="mt-1 font-mono"
                           value={(s.depends_on ?? []).join(", ")}
@@ -439,7 +450,7 @@ function FormTab() {
                       </label>
                     </div>
                     <div>
-                      <div className="mb-1.5 text-[0.75rem] font-medium text-[var(--t3,#8a8f98)]">服务环境变量</div>
+                      <div className="mb-1.5 text-[0.75rem] font-medium text-[var(--t3,#8a8f98)]">{t("pages.config.serviceEnv")}</div>
                       <EnvVariablesEditor value={s.env} onChange={(env) => setEnv(id, env)} hideTitle />
                     </div>
                   </div>
@@ -456,6 +467,7 @@ function FormTab() {
 function RawTab() {
   const yaml = useYaml();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [text, setText] = useState(yaml.state.text);
   const [saving, setSaving] = useState(false);
 
@@ -482,33 +494,33 @@ function RawTab() {
     setSaving(true);
     const ok = await yaml.actions.saveText(text);
     setSaving(false);
-    if (ok) toast("YAML 已保存", "ok");
-    else toast(yaml.state.error ?? "保存失败（可能外部已修改，请重新加载）", "err");
+    if (ok) toast(t("pages.config.yamlSaved"), "ok");
+    else toast(yaml.state.error ?? t("pages.config.saveFailedReload"), "err");
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-4 py-2">
         <Button size="sm" variant="success" onClick={save} disabled={saving || !dirty}>
-          {saving ? "保存中…" : "保存 YAML"}
+          {saving ? t("pages.config.saving") : t("pages.config.saveYaml")}
         </Button>
         <Button
           size="sm"
           variant="outline"
           disabled={!dirty}
           onClick={() => setText(yaml.state.text)}
-          title="丢弃未保存修改"
+          title={t("pages.config.discardHint")}
         >
-          还原
+          {t("pages.config.revert")}
         </Button>
-        {dirty ? <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">未保存</Badge> : null}
+        {dirty ? <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">{t("pages.config.unsaved")}</Badge> : null}
         {ports ? (
-          <span className="text-[0.75rem] text-[var(--st-warn,#9a6700)]">端口 {ports} 重复（仍可保存）</span>
+          <span className="text-[0.75rem] text-[var(--st-warn,#9a6700)]">{t("pages.config.portDup", { port: ports })}</span>
         ) : (
-          <span className="text-[0.75rem] text-[var(--st-ok-deep,#1e7e35)]">端口无重复</span>
+          <span className="text-[0.75rem] text-[var(--st-ok-deep,#1e7e35)]">{t("pages.config.portOk")}</span>
         )}
         <span className="ml-auto font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">
-          hash {yaml.state.hash.slice(0, 8) || "—"} · {text.split("\n").length} 行
+          hash {yaml.state.hash.slice(0, 8) || "—"} · {t("common.linesUnit", { n: text.split("\n").length })}
         </span>
       </div>
       <Textarea
@@ -516,7 +528,7 @@ function RawTab() {
         onChange={(e) => setText(e.target.value)}
         className="min-h-0 flex-1 resize-none rounded-none border-0 bg-[#FBFBFC] px-4 py-3 font-mono text-[0.78rem] leading-[1.65]"
         spellCheck={false}
-        aria-label="supertask.yaml 原文"
+        aria-label={t("pages.config.rawAria")}
       />
     </div>
   );
@@ -533,7 +545,7 @@ function specFieldValue(spec: ServiceSpec | null | undefined, field: string): st
   if (!spec) return "—";
   const v = (spec as unknown as Record<string, unknown>)[field];
   if (v === undefined || v === null) return "—";
-  if (typeof v === "string") return v === "" ? "（空）" : v;
+  if (typeof v === "string") return v === "" ? i18n.t("pages.config.emptyValue") : v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   try {
     return JSON.stringify(v);
@@ -542,20 +554,21 @@ function specFieldValue(spec: ServiceSpec | null | undefined, field: string): st
   }
 }
 
-const SCAN_GROUPS: { status: ScanMergeItem["status"]; title: string }[] = [
-  { status: "added", title: "新发现" },
-  { status: "id_conflict", title: "ID 冲突" },
-  { status: "match_diff", title: "有差异" },
-  { status: "match_same", title: "一致" },
-  { status: "missing", title: "未发现" },
+const SCAN_GROUPS: { status: ScanMergeItem["status"]; titleKey: string }[] = [
+  { status: "added", titleKey: "pages.config.groupAdded" },
+  { status: "id_conflict", titleKey: "pages.config.groupConflict" },
+  { status: "match_diff", titleKey: "pages.config.groupDiff" },
+  { status: "match_same", titleKey: "pages.config.groupSame" },
+  { status: "missing", titleKey: "pages.config.groupMissing" },
 ];
 
 function ScanStatusBadge({ status }: { status: ScanMergeItem["status"] }) {
-  if (status === "match_same") return <Badge variant="secondary">一致</Badge>;
-  if (status === "match_diff") return <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">有差异</Badge>;
-  if (status === "missing") return <Badge variant="outline" className="border-red-200 bg-[var(--st-danger-tint,#fdecec)] text-[#DC2626]">未发现</Badge>;
-  if (status === "id_conflict") return <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">ID 冲突</Badge>;
-  return <Badge variant="soon">新发现</Badge>;
+  const { t } = useTranslation();
+  if (status === "match_same") return <Badge variant="secondary">{t("pages.config.groupSame")}</Badge>;
+  if (status === "match_diff") return <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">{t("pages.config.groupDiff")}</Badge>;
+  if (status === "missing") return <Badge variant="outline" className="border-red-200 bg-[var(--st-danger-tint,#fdecec)] text-[#DC2626]">{t("pages.config.groupMissing")}</Badge>;
+  if (status === "id_conflict") return <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">{t("pages.config.groupConflict")}</Badge>;
+  return <Badge variant="soon">{t("pages.config.groupAdded")}</Badge>;
 }
 
 /** match_diff 的字段行：当前值 / 发现值并排小字 + 保留/采用切换。 */
@@ -570,16 +583,17 @@ function DiffFieldRow({
   choice: FieldChoice;
   onChoose: (c: FieldChoice) => void;
 }) {
+  const { t } = useTranslation();
   const cur = specFieldValue(item.current, field);
   const disc = specFieldValue(item.discovered, field);
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] px-2 py-1.5">
       <code className="shrink-0 font-mono text-[0.72rem] font-semibold text-[var(--t1,#222326)]">{field}</code>
-      <span className="min-w-0 flex-1 truncate font-mono text-[0.7rem] text-[var(--t2,#62666d)]" title={`当前：${cur}`}>
-        当前 {cur}
+      <span className="min-w-0 flex-1 truncate font-mono text-[0.7rem] text-[var(--t2,#62666d)]" title={t("pages.config.currentTitle", { value: cur })}>
+        {t("pages.config.currentShort")} {cur}
       </span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[0.7rem] text-[var(--st-accent,#5e6ad2)]" title={`发现：${disc}`}>
-        发现 {disc}
+      <span className="min-w-0 flex-1 truncate font-mono text-[0.7rem] text-[var(--st-accent,#5e6ad2)]" title={t("pages.config.discoveredTitle", { value: disc })}>
+        {t("pages.config.discoveredShort")} {disc}
       </span>
       <span className="inline-flex shrink-0 items-center gap-0.5 rounded-[var(--r-sm,8px)] bg-[var(--surface,#fff)] p-0.5">
         <button
@@ -593,7 +607,7 @@ function DiffFieldRow({
               : "text-[var(--t3,#8a8f98)] hover:text-[var(--t1,#222326)]",
           )}
         >
-          保留当前
+          {t("pages.config.keepCurrent")}
         </button>
         <button
           type="button"
@@ -606,7 +620,7 @@ function DiffFieldRow({
               : "text-[var(--t3,#8a8f98)] hover:text-[var(--t1,#222326)]",
           )}
         >
-          采用发现值
+          {t("pages.config.useDiscovered")}
         </button>
       </span>
     </div>
@@ -626,6 +640,7 @@ function ScanItemRow({
   fieldChoices: Record<string, FieldChoice>;
   onFieldChoice: (field: string, c: FieldChoice) => void;
 }) {
+  const { t } = useTranslation();
   const kind = item.discovered?.kind ?? item.current?.kind ?? "";
   return (
     <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] p-2.5">
@@ -633,7 +648,7 @@ function ScanItemRow({
         {item.status === "added" || item.status === "id_conflict" ? (
           <label className="flex shrink-0 items-center gap-1.5 text-[0.76rem] font-medium text-[var(--t1,#222326)]">
             <input type="checkbox" checked={checked} onChange={(e) => onToggle(e.target.checked)} />
-            {item.status === "added" ? "加入" : "以候选 id 加入"}
+            {item.status === "added" ? t("pages.config.addToYaml") : t("pages.config.addAsCandidate")}
           </label>
         ) : null}
         <span className="font-mono text-[0.82rem] font-semibold text-[var(--t1,#222326)]">{item.service_id}</span>
@@ -647,7 +662,7 @@ function ScanItemRow({
 
       {item.status === "id_conflict" ? (
         <div className="mt-1.5 text-[0.74rem] text-[var(--t2,#62666d)]">
-          已存在同名服务，将以此候选 id 写入：
+          {t("pages.config.idConflictDesc")}
           <code className="ml-1 rounded bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[0.72rem]">
             {item.candidate_id ?? "—"}
           </code>
@@ -666,14 +681,14 @@ function ScanItemRow({
             />
           ))}
           <span className="text-[0.7rem] text-[var(--t3,#8a8f98)]">
-            采用发现值仅覆盖扫描器负责字段（kind、module/dir、package_manager），端口、环境变量等用户字段一律保留。
+            {t("pages.config.updateScopeHint")}
           </span>
         </div>
       ) : null}
 
       {item.status === "missing" ? (
         <div className="mt-1.5 text-[0.74rem] text-[#B7791F]">
-          磁盘上未发现该服务对应的项目结构；不会删除，仅提示。
+          {t("pages.config.missingDesc")}
         </div>
       ) : null}
     </div>
@@ -703,24 +718,25 @@ function ScanPreviewPanel({
   onApply: () => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const addable = preview.items.filter((it) => it.status === "added" || it.status === "id_conflict");
   const allAddableChecked = addable.length > 0 && addable.every((it) => addChecked[it.service_id]);
 
   return (
     <section
       className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--r-lg,16px)] border border-[rgb(94_106_210_/_0.35)] bg-[var(--surface,#fff)] shadow-[var(--shadow-2,0_6px_20px_rgb(16_24_40_/_0.09))]"
-      aria-label="重新扫描预览"
+      aria-label={t("pages.config.rescanAria")}
     >
       <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-t-[var(--r-lg,16px)] border-b border-[var(--line,#e6e6e6)] bg-[var(--st-accent-tint,#eef0fb)] px-3 py-2.5">
-        <h3 className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">重新扫描预览</h3>
-        <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{preview.items.length} 项</span>
+        <h3 className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{t("pages.config.rescanTitle")}</h3>
+        <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{t("pages.config.itemCount", { n: preview.items.length })}</span>
         {addable.length > 0 ? (
           <Button size="sm" variant="outline" onClick={() => onSelectAllAddable(!allAddableChecked)}>
-            {allAddableChecked ? "取消全选新发现" : `全选新发现（${addable.length}）`}
+            {allAddableChecked ? t("pages.config.unselectAllAdded") : t("pages.config.selectAllAdded", { n: addable.length })}
           </Button>
         ) : null}
         <Button variant="outline" size="sm" className="ml-auto" onClick={onClose}>
-          关闭
+          {t("common.close")}
         </Button>
       </div>
 
@@ -734,13 +750,13 @@ function ScanPreviewPanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
         <div className="flex flex-col gap-3">
-          {SCAN_GROUPS.map(({ status, title }) => {
+          {SCAN_GROUPS.map(({ status, titleKey }) => {
             const items = preview.items.filter((it) => it.status === status);
             if (items.length === 0) return null;
             return (
               <div key={status}>
                 <div className="mb-1.5 flex items-center gap-2 px-0.5">
-                  <span className="text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{title}</span>
+                  <span className="text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t(titleKey)}</span>
                   <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{items.length}</span>
                 </div>
                 <div className="flex flex-col gap-1.5">
@@ -763,10 +779,10 @@ function ScanPreviewPanel({
 
       <div className="flex shrink-0 items-center gap-2 rounded-b-[var(--r-lg,16px)] border-t border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] px-3 py-2.5">
         <span className="min-w-0 flex-1 text-[0.74rem] text-[var(--t3,#8a8f98)]">
-          应用所选写回 yaml（base_hash 校验）。一致/未发现项不会删除。
+          {t("pages.config.applyHint")}
         </span>
         <Button size="sm" variant="default" onClick={onApply} disabled={applying || applyCount === 0}>
-          {applying ? "应用中…" : `应用所选（${applyCount}）`}
+          {applying ? t("pages.config.applying") : t("pages.config.applySelected", { n: applyCount })}
         </Button>
       </div>
     </section>
@@ -778,6 +794,7 @@ export function ConfigPage() {
   const ws = useWorkspace();
   const yaml = useYaml();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [tab, setTab] = useState<"form" | "raw">("form");
 
   // 重新扫描预览状态
@@ -787,6 +804,12 @@ export function ConfigPage() {
   const [conflictOpen, setConflictOpen] = useState(false);
   const [addChecked, setAddChecked] = useState<Record<string, boolean>>({});
   const [fieldChoices, setFieldChoices] = useState<Record<string, Record<string, FieldChoice>>>({});
+
+  // 1.4 Taskfile 导入向导状态（feature spec §7 / §11.2）
+  const [taskPreview, setTaskPreview] = useState<TaskfilePreviewOut | null>(null);
+  const [taskLoading, setTaskLoading] = useState(false);
+  const [taskApplying, setTaskApplying] = useState(false);
+  const [taskChecked, setTaskChecked] = useState<Record<string, boolean>>({});
 
   const resetChoices = () => {
     setAddChecked({});
@@ -798,9 +821,15 @@ export function ConfigPage() {
     resetChoices();
   };
 
+  const closeTaskPreview = () => {
+    setTaskPreview(null);
+    setTaskChecked({});
+  };
+
   // 切换工作区后旧预览失效
   useEffect(() => {
     closePreview();
+    closeTaskPreview();
   }, [ws.state.workspaceId]);
 
   const rescan = async () => {
@@ -810,11 +839,62 @@ export function ConfigPage() {
     try {
       const out = await apiScanPreview(wid);
       setPreview(out);
+      closeTaskPreview(); // 与 Taskfile 导入向导互斥
       resetChoices(); // 二次扫描重置选择
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     } finally {
       setScanning(false);
+    }
+  };
+
+  // 1.4：Taskfile 导入（ipc.md §10.8）。预览为纯内存计算；应用走 yaml.saveForm 机制。
+  const openTaskfileImport = async () => {
+    const wid = ws.state.workspaceId;
+    if (!wid || taskLoading) return;
+    setTaskLoading(true);
+    try {
+      const out = await apiTaskfilePreview(wid);
+      closePreview(); // 与扫描预览互斥
+      setTaskPreview(out);
+      const checked: Record<string, boolean> = {};
+      for (const it of out.tasks) checked[it.script_id] = it.selected;
+      setTaskChecked(checked);
+    } catch (e) {
+      toast(formatIpcFailure(e), "err");
+    } finally {
+      setTaskLoading(false);
+    }
+  };
+
+  const applyTaskfile = async () => {
+    const wid = ws.state.workspaceId;
+    if (!wid || !taskPreview || taskApplying) return;
+    const selected = taskPreview.tasks
+      .filter((it) => !it.internal && taskChecked[it.script_id])
+      .map((it) => it.script_id);
+    if (selected.length === 0) {
+      toast(t("pages.config.taskfile.selectFirst"), "warn");
+      return;
+    }
+    setTaskApplying(true);
+    try {
+      // base_hash 优先取 yaml-provider 当前值；无 hash 时先 yaml.get
+      let baseHash = yaml.state.hash;
+      if (!baseHash) baseHash = (await apiYamlGet()).hash;
+      await apiTaskfileApply(wid, selected, baseHash);
+      toast(t("pages.config.taskfile.applied", { n: selected.length }), "ok");
+      closeTaskPreview();
+      await yaml.actions.reload();
+      await ws.actions.refreshSpec();
+    } catch (e) {
+      if (e instanceof IpcFailure && e.code === "YAML_CONFLICT") {
+        setConflictOpen(true);
+      } else {
+        toast(formatIpcFailure(e), "err");
+      }
+    } finally {
+      setTaskApplying(false);
     }
   };
 
@@ -844,7 +924,7 @@ export function ConfigPage() {
       // match_same / missing：不传（默认 keep 语义）
     }
     if (choices.length === 0) {
-      toast("请先勾选要应用的变更", "warn");
+      toast(t("pages.config.selectChangesFirst"), "warn");
       return;
     }
 
@@ -854,7 +934,7 @@ export function ConfigPage() {
       let baseHash = yaml.state.hash;
       if (!baseHash) baseHash = (await apiYamlGet()).hash;
       await apiScanApply(wid, choices, baseHash);
-      toast(`已应用 ${choices.length} 项变更`, "ok");
+      toast(t("pages.config.appliedN", { n: choices.length }), "ok");
       closePreview();
       await yaml.actions.reload();
       await ws.actions.refreshSpec();
@@ -874,21 +954,21 @@ export function ConfigPage() {
       <div className="flex items-center gap-2 border-b border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-4 py-2">
         <div className="inline-flex items-center gap-0.5 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-0.5">
           {([
-            { k: "form", label: "表单", icon: SlidersHorizontal },
-            { k: "raw", label: "原文 YAML", icon: FileText },
-          ] as const).map((t) => (
+            { k: "form", label: t("pages.config.tabForm"), icon: SlidersHorizontal },
+            { k: "raw", label: t("pages.config.tabRaw"), icon: FileText },
+          ] as const).map((tabItem) => (
             <button
-              key={t.k}
+              key={tabItem.k}
               type="button"
-              onClick={() => setTab(t.k)}
+              onClick={() => setTab(tabItem.k)}
               className={cn(
                 "flex cursor-pointer items-center gap-1 rounded-[7px] px-3 py-1.5 text-[0.73rem] font-semibold transition-all duration-150",
-                tab === t.k
+                tab === tabItem.k
                   ? "bg-[var(--surface,#fff)] text-[var(--st-accent,#5e6ad2)] shadow-sm"
                   : "text-[var(--t2,#62666d)] hover:text-[var(--t1,#222326)]",
               )}
             >
-              <t.icon className="size-3.5" /> {t.label}
+              <tabItem.icon className="size-3.5" /> {tabItem.label}
             </button>
           ))}
         </div>
@@ -898,12 +978,24 @@ export function ConfigPage() {
           className="ml-auto gap-1"
           onClick={() => void rescan()}
           disabled={!ws.state.workspaceId || scanning}
-          title={ws.state.workspaceId ? "重新扫描磁盘并生成合并预览" : "请先打开工作区"}
+          title={ws.state.workspaceId ? t("pages.config.rescanTitleFull") : t("pages.config.openWsFirst")}
         >
           <RefreshCw className={cn("size-3.5", scanning && "animate-spin")} />
-          {scanning ? "扫描中…" : preview ? "重新扫描" : "重新扫描"}
+          {scanning ? t("pages.config.scanning") : t("pages.config.rescan")}
         </Button>
-        {preview ? <Badge variant="outline" className="border-[rgb(94_106_210_/_0.35)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)]">预览中</Badge> : null}
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1"
+          onClick={() => void openTaskfileImport()}
+          disabled={!ws.state.workspaceId || taskLoading}
+          title={ws.state.workspaceId ? t("pages.config.taskfile.entryHint") : t("pages.config.openWsFirst")}
+        >
+          <FileInput className={cn("size-3.5", taskLoading && "animate-pulse")} />
+          {t("pages.config.taskfile.entry")}
+        </Button>
+        {preview ? <Badge variant="outline" className="border-[rgb(94_106_210_/_0.35)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)]">{t("pages.config.previewing")}</Badge> : null}
+        {taskPreview ? <Badge variant="outline" className="border-[rgb(94_106_210_/_0.35)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)]">{t("pages.config.taskfile.previewing")}</Badge> : null}
       </div>
 
       <V12ConfigPanel />
@@ -932,6 +1024,25 @@ export function ConfigPage() {
               onClose={closePreview}
             />
           </div>
+        ) : taskPreview ? (
+          <div className="flex min-h-0 flex-1 flex-col p-4">
+            <TaskfileImportPanel
+              preview={taskPreview}
+              checked={taskChecked}
+              onToggle={(scriptId, v) => setTaskChecked((m) => ({ ...m, [scriptId]: v }))}
+              onSelectAll={(v) => {
+                const next: Record<string, boolean> = {};
+                for (const it of taskPreview.tasks) {
+                  if (!it.internal) next[it.script_id] = v;
+                }
+                setTaskChecked((m) => ({ ...m, ...next }));
+              }}
+              applying={taskApplying}
+              applyCount={taskPreview.tasks.filter((it) => !it.internal && taskChecked[it.script_id]).length}
+              onApply={() => void applyTaskfile()}
+              onClose={closeTaskPreview}
+            />
+          </div>
         ) : tab === "form" ? (
           <FormTab />
         ) : (
@@ -941,9 +1052,9 @@ export function ConfigPage() {
 
       <ConfirmDialog
         open={conflictOpen}
-        title="文件已被外部修改"
-        description="supertask.yaml 在扫描后被外部修改，本次应用已取消。请重新加载最新内容后重试。"
-        confirmText="重新加载"
+        title={t("pages.config.conflictTitle")}
+        description={t("pages.config.conflictDesc")}
+        confirmText={t("pages.config.reload")}
         onConfirm={() => {
           setConflictOpen(false);
           void yaml.actions.reload();

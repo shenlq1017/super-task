@@ -64,6 +64,8 @@ export const cmd = {
   WORKSPACE_OPEN_IDE: "workspace.openIde",
   WORKSPACE_SCAN_PREVIEW: "workspace.scanPreview",
   WORKSPACE_SCAN_APPLY: "workspace.scanApply",
+  IMPORT_TASKFILE_PREVIEW: "import.taskfilePreview",
+  IMPORT_TASKFILE_APPLY: "import.taskfileApply",
   APP_IMPORT_RECENTS: "app.importRecents",
   APP_UPDATE_CHECK: "app.update.check",
   APP_UPDATE_INSTALL: "app.update.install",
@@ -102,6 +104,8 @@ export type ToolProbe = {
 export type ToolchainProbe = {
   java: ToolProbe;
   maven: ToolProbe;
+  /** 1.4 §5.4：仅信息展示（wrapper 是唯一推荐执行方式），不提供安装入口。 */
+  gradle: ToolProbe;
   node: ToolProbe;
   npm: ToolProbe;
   pnpm: ToolProbe;
@@ -212,13 +216,15 @@ export type ToolchainOpResult = {
   hash?: string;
 };
 
-/** app.load 的 prefs（除本类型外其余 DTO 均为 snake_case）。 */
+/** app.load 的 prefs（除本类型外其余 DTO 均为 snake_case）。1.4 新增 locale（§9）。 */
 export type Prefs = {
   theme: string;
   restoreLast: boolean;
   closeToTray: boolean;
   startOnLogin: boolean;
   updateCheck: boolean;
+  /** "auto" | "zh-CN" | "zh-TW" | "en-US" | "ja-JP"；旧后端可能缺省。 */
+  locale?: string;
 };
 
 export type AppLoadOut = {
@@ -281,6 +287,8 @@ export type LoggingSpec = {
 
 export type ServiceSpec = {
   kind: string;
+  /** 1.4：maven | gradle；缺省后端按构建文件探测。 */
+  build_tool?: string | null;
   /** 1.3 kind: compose：compose 文件内的服务名（非 SuperTask id）。 */
   service?: string | null;
   enabled: boolean;
@@ -628,4 +636,28 @@ export type UpdateCheckResult = {
   notes?: string | null;
   date?: string | null;
 };
+
+// ---------------------------------------------------------------------------
+// 1.4 DTOs — Taskfile v3 一次性导入（feature spec §7，ipc.md §10.8）
+// ---------------------------------------------------------------------------
+
+/** `import.taskfilePreview` 条目。mirror `crates/supertask-core/src/taskfile.rs`。 */
+export type TaskfileImportItem = {
+  /** Taskfile 原名 */
+  task: string;
+  /** 目标 script id（已合法化） */
+  script_id: string;
+  cmds_count: number;
+  /** 默认动作（插值/冲突/internal 默认 false） */
+  selected: boolean;
+  /** 该项的忽略/风险说明（后端中文，与 message 口径一致） */
+  warnings: string[];
+  /** UI 展示扩展：internal 任务，预览标灰不可选 */
+  internal: boolean;
+  /** UI 展示扩展：目标已存在同名脚本 id，默认 keep */
+  id_conflict: boolean;
+};
+
+export type TaskfilePreviewOut = { tasks: TaskfileImportItem[]; warnings: string[] };
+
 

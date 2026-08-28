@@ -134,6 +134,9 @@ pub fn scan_draft_with_runner(
         }
     }
 
+    // ---- 1.4 §5.4：Gradle 多模块（root 有 settings.gradle(.kts)），文本级解析 ----
+    scan_gradle(root, &mut services, &mut port_java, &mut warnings);
+
     scan_node_roots(root, &reactors, &mut services, &mut warnings);
 
     // 1.3 §7：compose 文件发现 → kind: compose 服务草稿（Docker 不可用 → 警告跳过）
@@ -214,6 +217,7 @@ impl ServiceSpec {
             cwd: None,
             launch: None,
             module: None,
+            build_tool: None,
             jvm_args: vec![],
             dir: None,
             package_manager: None,
@@ -618,6 +622,143 @@ fn collect_pkg_dirs(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>
 
 fn pkg_has_script(txt: &str, name: &str) -> bool {
     txt.contains(&format!("\"{name}\"")) && txt.contains("\"scripts\"")
+}
+
+// ============================================================================
+// 1.4 §5.4 Gradle 多模块：settings.gradle(.kts) include 文本级解析（不执行 gradle）
+// ============================================================================
+
+/// settings 文件候选（工作区根，不递归），按优先级降序。
+pub const SETTINGS_CANDIDATES: &[&str] = &["settings.gradle", "settings.gradle.kts"];
+
+fn scan_gradle(
+    root: &Path,
+    services: &mut IndexMap<String, ServiceSpec>,
+    port: &mut u16,
+    warnings: &mut Vec<String>,
+) {
+    let present: Vec<&str> = SETTINGS_CANDIDATES
+        .iter()
+        .copied()
+        .filter(|c| root.join(c).is_file())
+        .collect();
+    if present.is_empty() {
+        return;
+    }
+    if present.len() > 1 {
+        let chosen = present[0];
+        warnings.push(format!(
+            "多个 settings 文件并存：{}；采用优先级最高的 {chosen}",
+            present.join("、")
+        ));
+    }
+    let Ok(text) = fs::read_to_string(root.join(present[0])) else {
+        return;
+    };
+    let modules = parse_gradle_includes(&text, warnings);
+    for module in modules {
+        let dir = root.join(module.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if !dir.is_dir() {
+            warnings.push(format!("跳过 gradle 模块 {module}：目录不存在"));
+            continue;
+        }
+        let build_text = ["build.gradle", "build.gradle.kts"]
+            .iter()
+            .find_map(|f| fs::read_to_string(dir.join(f)).ok());
+        let Some(build_text) = build_text else {
+            warnings.push(format!("跳过 gradle 模块 {module}：无 build.gradle(.kts)"));
+            continue;
+        };
+        if !build_text.contains("org.springframework.boot") {
+            continue; // 纯 java 库模块：静默忽略（§5.4）
+        }
+        let id_src = module.rsplit('/').next().unwrap_or(&module).to_string();
+        let id = unique_id(&sanitize_id(&id_src), services);
+        services.insert(
+            id,
+            ServiceSpec {
+                kind: "spring-boot".into(),
+                module: Some(module.clone()),
+                build_tool: Some("gradle".into()),
+                port: Some(*port),
+                health: Some(spring_health(*port, &build_text)),
+                grace_secs: Some(45),
+                launch: Some("run".into()),
+                ..ServiceSpec::default_service()
+            },
+        );
+        *port = port.saturating_add(1);
+    }
+}
+
+/// `include 'x'` / `include "x"` / `include(":x", ":y")` 的文本级解析。
+/// include 的动态语法（变量、拼接、循环生成）解析不了 → 跳过并警告，
+/// 不阻塞其余模块（§5.4）。嵌套项目路径 `:a:b` → 目录相对路径 `a/b`。
+fn parse_gradle_includes(text: &str, warnings: &mut Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty()
+            || line.starts_with("//")
+            || line.starts_with("/*")
+            || line.starts_with('*')
+        {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("include") else {
+            continue;
+        };
+        // includeFlat / includeFolders：暂不支持，警告跳过
+        if let Some(_) = rest.strip_prefix("Flat").or_else(|| rest.strip_prefix("Folders")) {
+            warnings.push(format!(
+                "settings.gradle 的 include{label} 暂不支持，已跳过: {line}",
+                label = if rest.starts_with("Flat") { "Flat" } else { "Folders" }
+            ));
+            continue;
+        }
+        // includedBuild 等其他 include* API：静默忽略
+        let is_include_call = match rest.chars().next() {
+            Some('(') | Some('\'') | Some('"') => true,
+            Some(c) => c.is_whitespace(),
+            None => false,
+        };
+        if !is_include_call {
+            continue;
+        }
+        let args = rest.trim().trim_start_matches('(').trim_end_matches(')');
+        let mut modules: Vec<String> = Vec::new();
+        let mut dynamic = args.trim().is_empty();
+        for seg in args.split(',') {
+            let seg = seg.trim();
+            let quoted = seg
+                .strip_prefix(['\'', '"'])
+                .and_then(|s| s.strip_suffix(['\'', '"']));
+            match quoted {
+                Some(m) => {
+                    if m.contains('$') || m.contains('+') || m.trim().is_empty() {
+                        dynamic = true;
+                        break;
+                    }
+                    let norm = m.trim_start_matches(':').replace(':', "/");
+                    if !norm.is_empty() && !out.contains(&norm) && !modules.contains(&norm) {
+                        modules.push(norm);
+                    }
+                }
+                None => {
+                    dynamic = true;
+                    break;
+                }
+            }
+        }
+        if dynamic {
+            warnings.push(format!(
+                "settings.gradle 含动态 include 语法，无法静态解析，已跳过: {line}"
+            ));
+            continue;
+        }
+        out.extend(modules);
+    }
+    out
 }
 
 // ============================================================================
@@ -1151,6 +1292,147 @@ mod tests {
             }
             Err(e) => assert_eq!(e.code(), ErrorCode::NoYaml),
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- 1.4 §5.4 Gradle 多模块 ----
+
+    #[test]
+    fn gradle_include_parse_variants() {
+        let mut w = Vec::new();
+        let mods = parse_gradle_includes(
+            r#"rootProject.name = "demo"
+include 'user-service'
+include "billing"
+include(":notifications", ":apps:admin")
+includeFlat 'siblings'
+include 'a', 'b'
+// include 'commented'
+includedBuild 'other-repo'
+"#,
+            &mut w,
+        );
+        assert_eq!(
+            mods,
+            vec![
+                "user-service",
+                "billing",
+                "notifications",
+                "apps/admin",
+                "a",
+                "b"
+            ]
+        );
+        // includeFlat 警告；includedBuild 静默忽略
+        assert!(w.iter().any(|x| x.contains("includeFlat")), "{w:?}");
+        assert_eq!(w.len(), 1, "{w:?}");
+
+        // 动态语法：变量拼接 / 空参 → 警告跳过，不阻塞其余
+        let mut w2 = Vec::new();
+        let mods2 = parse_gradle_includes(
+            "include \":svc-$name\"\ninclude()\ninclude 'ok-module'\n",
+            &mut w2,
+        );
+        assert_eq!(mods2, vec!["ok-module"]);
+        assert_eq!(w2.len(), 2, "{w2:?}");
+        assert!(w2.iter().all(|x| x.contains("动态 include")));
+    }
+
+    #[test]
+    fn gradle_multimodule_scan_generates_boot_drafts() {
+        let root = std::env::temp_dir().join(format!("st-scan-gradle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("user-service")).unwrap();
+        fs::create_dir_all(root.join("billing")).unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("settings.gradle"),
+            "rootProject.name = 'demo'\ninclude 'user-service'\ninclude 'billing'\ninclude 'lib'\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("user-service/build.gradle"),
+            "plugins { id 'org.springframework.boot' version '3.3.0' }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("billing/build.gradle"),
+            "plugins {\n  id 'org.springframework.boot'\n  id 'io.spring.dependency-management'\n}\ndependencies { implementation 'org.springframework.boot:spring-boot-starter-actuator' }\n",
+        )
+        .unwrap();
+        fs::write(root.join("lib/build.gradle"), "plugins { id 'java-library' }\n").unwrap();
+        let (file, warnings) = scan_draft(&root).unwrap();
+        let api = file.services.get("user-service").expect("boot 模块应生成草稿");
+        assert_eq!(api.kind, "spring-boot");
+        assert_eq!(api.build_tool.as_deref(), Some("gradle"));
+        assert_eq!(api.module.as_deref(), Some("user-service"));
+        assert_eq!(api.launch.as_deref(), Some("run"));
+        assert_eq!(api.port, Some(8080));
+        // 库模块静默忽略
+        assert!(!file.services.contains_key("lib"));
+        // 第二个 boot 模块端口递增 + actuator 健康检查
+        let billing = file.services.get("billing").unwrap();
+        assert_eq!(billing.build_tool.as_deref(), Some("gradle"));
+        assert_eq!(billing.port, Some(8081));
+        assert_eq!(billing.health.as_ref().unwrap().r#type, HealthType::Http);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gradle_kotlin_dsl_and_missing_dir() {
+        let root = std::env::temp_dir().join(format!("st-scan-gradlekts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("apps/api")).unwrap();
+        fs::write(
+            root.join("settings.gradle.kts"),
+            "rootProject.name = \"demo\"\ninclude(\":apps:api\")\ninclude(\":ghost\")\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps/api/build.gradle.kts"),
+            "plugins { id(\"org.springframework.boot\") }\n",
+        )
+        .unwrap();
+        let (file, warnings) = scan_draft(&root).unwrap();
+        let api = file.services.get("api").expect("嵌套模块按末段生成 id");
+        assert_eq!(api.module.as_deref(), Some("apps/api"));
+        assert_eq!(api.build_tool.as_deref(), Some("gradle"));
+        // ghost 目录不存在 → 警告
+        assert!(warnings.iter().any(|w| w.contains("ghost")), "{warnings:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gradle_scan_merge_owns_build_tool() {
+        // 扫描草稿的 build_tool 进 merge 后可覆盖 current
+        let root = std::env::temp_dir().join(format!("st-scan-gradlemerge-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("api")).unwrap();
+        fs::write(root.join("settings.gradle"), "include 'api'\n").unwrap();
+        fs::write(root.join("api/build.gradle"), "id 'org.springframework.boot'\n").unwrap();
+        let (draft, _) = scan_draft(&root).unwrap();
+        let current = crate::spec::parse_yaml(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    build_tool: maven\n    port: 9090\n",
+        )
+        .unwrap()
+        .0;
+        let p = crate::merge::preview(&current, &draft, vec![]);
+        let m = p.items.iter().find(|i| i.service_id == "api").unwrap();
+        assert_eq!(m.status, crate::merge::MergeStatus::MatchDiff);
+        assert!(m.field_diffs.contains(&"build_tool".to_string()));
+        let out = crate::merge::apply(
+            &current,
+            &draft,
+            &[crate::merge::MergeChoice {
+                id: "api".into(),
+                action: crate::merge::MergeAction::Update,
+                fields: None,
+            }],
+        )
+        .unwrap();
+        assert_eq!(out.services["api"].build_tool.as_deref(), Some("gradle"));
+        assert_eq!(out.services["api"].port, Some(9090));
         let _ = fs::remove_dir_all(&root);
     }
 

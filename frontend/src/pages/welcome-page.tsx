@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -11,6 +12,7 @@ import { FolderOpen, ScanLine, Plus, FolderSearch } from "lucide-react";
 export function WelcomePage() {
   const ws = useWorkspace();
   const openWs = useOpenWorkspace();
+  const { t } = useTranslation();
   const [path, setPath] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -28,7 +30,7 @@ export function WelcomePage() {
     setBusy(true);
     try {
       if (!isTauri()) {
-        const p = window.prompt("输入工作区目录路径");
+        const p = window.prompt(t("common.inputWorkspacePath"));
         if (p) await openWs(p);
         return;
       }
@@ -42,15 +44,16 @@ export function WelcomePage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center overflow-auto p-8">
       <div className="w-full max-w-xl">
-        <h1 className="text-2xl font-bold tracking-tight text-[var(--t1,#222326)]">欢迎使用 SuperTask</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-[var(--t1,#222326)]">{t("pages.welcome.title")}</h1>
         <p className="mt-1 text-[0.875rem] text-[var(--t2,#62666d)]">
-          一份 <code className="rounded bg-[var(--surface-2,#f3f4f5)] px-1 font-mono text-[0.8rem]">supertask.yaml</code>
-          ，可视化启停 Spring Boot 多模块 + Node，带日志与健康检查。
+          {t("pages.welcome.taglinePrefix")}
+          <code className="rounded bg-[var(--surface-2,#f3f4f5)] px-1 font-mono text-[0.8rem]">supertask.yaml</code>
+          {t("pages.welcome.taglineSuffix")}
         </p>
 
         <Card className="mt-6 p-4">
           <div className="mb-2 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">
-            <FolderOpen className="size-4" /> 打开已有工作区
+            <FolderOpen className="size-4" /> {t("pages.welcome.openExisting")}
           </div>
           <div className="flex gap-2">
             <Input
@@ -60,24 +63,24 @@ export function WelcomePage() {
               onKeyDown={(e) => e.key === "Enter" && openWs(path)}
             />
             <Button variant="outline" onClick={pickDirectory} disabled={busy} className="gap-1">
-              <FolderSearch /> 选择目录
+              <FolderSearch /> {t("pages.welcome.pickDir")}
             </Button>
             <Button onClick={() => openWs(path)} disabled={busy}>
-              打开
+              {t("common.open")}
             </Button>
           </div>
           <div className="mt-3 flex items-center gap-2">
             <Button variant="outline" size="sm" className="gap-1" onClick={scanCreate} disabled={busy}>
-              <ScanLine /> 扫描目录并生成草稿
+              <ScanLine /> {t("pages.welcome.scanDraft")}
             </Button>
-            <span className="text-[0.65rem] text-[var(--t3,#8a8f98)]">无 yaml 也能扫描 Maven/Node 工程并生成可启停草稿</span>
+            <span className="text-[0.65rem] text-[var(--t3,#8a8f98)]">{t("pages.welcome.scanHint")}</span>
           </div>
         </Card>
 
         {ws.state.recents.length > 0 ? (
           <Card className="mt-4 p-4">
             <div className="mb-2 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">
-              <Plus className="size-4" /> 最近
+              <Plus className="size-4" /> {t("workspace.recent")}
             </div>
             <div className="flex flex-col gap-1">
               {ws.state.recents.map((r) => (

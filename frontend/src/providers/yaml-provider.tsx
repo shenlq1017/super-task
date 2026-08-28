@@ -2,6 +2,7 @@ import { createContext, use, useEffect, useRef, useState, type ReactNode } from 
 import { IpcFailure, type SuperTaskFile, type YamlView } from "../ipc/protocol";
 import { apiYamlGet, apiYamlSaveForm, apiYamlSaveText } from "../ipc/api";
 import { useWorkspace } from "./workspace-provider";
+import { errorDisplayText } from "@/lib/error-messages";
 
 type YamlState = {
   view: YamlView | null;
@@ -69,7 +70,7 @@ export function YamlProvider({ children }: { children: ReactNode }) {
     try {
       const out = await apiYamlSaveText(t, baseHashRef.current);
       if ((out as unknown as { code?: string }).code === "YAML_CONFLICT") {
-        setError("保存冲突：文件已被外部修改，请重新加载后再保存。");
+        setError(errorDisplayText("YAML_CONFLICT"));
         return false;
       }
       setText(out.spec ? t : t);

@@ -6,9 +6,6 @@ license.workspace = true
 description = "SuperTask engine: spec, runtime, logs, IPC types. No Tauri dependency."
 
 [dependencies]
-# 系统监听端口枚举（GetExtendedTcpTable 封装，IPv4/IPv6；替代手解 TCP 表）
-netstat2 = "0.9"
-
 indexmap = { version = "2", features = ["serde"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -24,7 +21,19 @@ include_dir = "0.7"
 # Windows 子进程混输 GBK（cmd 批处理/包装脚本 echo 中文）时的行解码兜底
 encoding_rs = "0.8"
 
+[target.'cfg(unix)'.dependencies]
+# 1.4 proc 平台层：进程组 setpgid/killpg、Linux PDEATHSIG（复用标准封装，不裸写 libc）
+nix = { version = "0.29", default-features = false, features = ["process", "signal", "user"] }
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# 1.4 §6.3 复用清单：/proc/net/tcp 与 /proc/<pid>/stat 的成熟解析器
+procfs = { version = "0.17", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
+# 系统监听端口枚举（GetExtendedTcpTable 封装，IPv4/IPv6；替代手解 TCP 表）。
+# 仅 Windows 路径使用；Linux 走 /proc/net/tcp 自实现（netstat2 的 linux 分支与新版 libc 源码不兼容）
+netstat2 = "0.9"
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_NetworkManagement_IpHelper",

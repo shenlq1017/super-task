@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { RefreshCw, Copy, Radar, FolderOpen, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,9 +39,10 @@ function formatBytes(bytes: number): string {
 
 /** CPU / 内存读数：首次差分采样或读取失败显示占位。 */
 function MetricCell({ value, format, placeholder }: { value: number | null; format: (v: number) => string; placeholder: string }) {
+  const { t } = useTranslation();
   if (value == null) {
     return (
-      <span title="下个刷新周期出读数，或该进程拒绝读取" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+      <span title={t("pages.discover.metricPending")} className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
         {placeholder}
       </span>
     );
@@ -65,6 +67,7 @@ function DetailField({ label, children }: { label: string; children: React.React
 export function DiscoverPage() {
   const ws = useWorkspace();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const openWorkspace = useOpenWorkspace();
   const [items, setItems] = useState<ForeignService[]>([]);
   const [loading, setLoading] = useState(false);
@@ -80,11 +83,11 @@ export function DiscoverPage() {
     } catch (e) {
       // 不再静默：读端口表失败必须让用户知道这不是「没有服务」
       const msg = e instanceof Error && e.message ? e.message : "";
-      toastGlobal(`发现查询失败${msg ? `：${msg}` : ""}，稍后自动重试`, "err");
+      toastGlobal(msg ? t("pages.discover.queryFailedWithMsg", { msg }) : t("pages.discover.queryFailed"), "err");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void refresh();
@@ -111,7 +114,7 @@ export function DiscoverPage() {
 
   const copy = async (text: string, label: string) => {
     await navigator.clipboard?.writeText(text);
-    toast(`已复制${label}`, "ok");
+    toast(t("pages.discover.copied", { label }), "ok");
   };
 
   const openAsWorkspace = async (s: ForeignService) => {
@@ -127,7 +130,7 @@ export function DiscoverPage() {
     if (!target) return;
     try {
       await apiSystemKillProcess(target.pid);
-      toast(`已终止 ${target.name}（PID ${target.pid}）`, "ok");
+      toast(t("pages.discover.killed", { name: target.name, pid: target.pid }), "ok");
       if (detail?.pid === target.pid) setDetail(null);
     } catch (e) {
       toast(e instanceof IpcFailure ? e.message : String(e), "err");
@@ -143,7 +146,7 @@ export function DiscoverPage() {
       <tr
         key={`${s.pid}-${s.name}`}
         onClick={() => setDetail(s)}
-        title="点击查看详情"
+        title={t("pages.discover.rowTitle")}
         className={cn(
           "cursor-pointer border-b border-[var(--line,#e6e6e6)] transition-colors duration-100 last:border-0 hover:bg-[var(--surface-2,#f3f4f5)]",
           matched.length > 0 && "bg-[rgb(94_106_210_/_0.04)]",
@@ -189,7 +192,7 @@ export function DiscoverPage() {
         <td className="px-4 py-2.5">
           {matched.length > 0 ? (
             <span className="inline-flex items-center gap-1.5">
-              <Badge variant="soon" className="shrink-0">↔ 工作区</Badge>
+              <Badge variant="soon" className="shrink-0">{t("pages.discover.matchedBadge")}</Badge>
               <span className="truncate text-[0.75rem] text-[var(--st-accent-hover,#4f5ac8)]">
                 {matched.map((m) => m.id).join(", ")}
               </span>
@@ -203,7 +206,7 @@ export function DiscoverPage() {
             {s.cwd ? (
               <button
                 type="button"
-                title={`把 ${s.cwd} 打开为工作区`}
+                title={t("pages.discover.openAsWorkspaceTitle", { cwd: s.cwd })}
                 onClick={() => void openAsWorkspace(s)}
                 className="grid size-6 place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[rgb(0_0_0_/_0.06)] hover:text-[var(--st-accent,#5e6ad2)]"
               >
@@ -212,7 +215,7 @@ export function DiscoverPage() {
             ) : null}
             <button
               type="button"
-              title={`终止 ${s.name}（PID ${s.pid}）整棵进程树`}
+              title={t("pages.discover.killTreeTitle", { name: s.name, pid: s.pid })}
               onClick={() => setKillTarget(s)}
               className="grid size-6 place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)]"
             >
@@ -220,7 +223,7 @@ export function DiscoverPage() {
             </button>
             <button
               type="button"
-              title={`复制 PID ${s.pid}`}
+              title={t("pages.discover.copyPidTitle", { pid: s.pid })}
               onClick={() => void copy(String(s.pid), ` PID ${s.pid}`)}
               className="grid size-6 place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[rgb(0_0_0_/_0.06)] hover:text-[var(--t1,#222326)]"
             >
@@ -238,21 +241,21 @@ export function DiscoverPage() {
         <div className="mx-auto flex max-w-5xl flex-col gap-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1,#222326)]">发现</h2>
+              <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1,#222326)]">{t("pages.discover.title")}</h2>
               <p className="mt-0.5 text-[0.78rem] text-[var(--t3,#8a8f98)]">
-                本机所有 java / node / python 等开发服务的监听进程。每 {REFRESH_MS / 1000}s 自动刷新，点击行查看详情。
+                {t("pages.discover.desc", { secs: REFRESH_MS / 1000 })}
               </p>
             </div>
             <Button variant="soft" size="sm" onClick={() => void refresh()} disabled={loading} className="gap-1">
-              <RefreshCw className={cn(loading && "animate-spin")} /> 刷新
+              <RefreshCw className={cn(loading && "animate-spin")} /> {t("common.refresh")}
             </Button>
           </div>
 
           {items.length === 0 && !loading ? (
             <div className="flex flex-col items-center gap-3 rounded-[var(--r-lg,16px)] border border-dashed border-[var(--line-strong,#d0d6e0)] p-10">
               <Radar className="size-9 text-[var(--line-strong,#d0d6e0)]" />
-              <div className="text-[0.88rem] font-semibold text-[var(--t1,#222326)]">没有发现运行中的开发服务</div>
-              <div className="text-[0.78rem] text-[var(--t3,#8a8f98)]">启动 Spring Boot / Node / Python 服务后会出现在这里。</div>
+              <div className="text-[0.88rem] font-semibold text-[var(--t1,#222326)]">{t("pages.discover.emptyTitle")}</div>
+              <div className="text-[0.78rem] text-[var(--t3,#8a8f98)]">{t("pages.discover.emptyDesc")}</div>
             </div>
           ) : (
             <>
@@ -260,13 +263,13 @@ export function DiscoverPage() {
                 <table className="w-full border-collapse text-left">
                   <thead>
                     <tr className="border-b border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-                      <th className="px-4 py-2.5 font-semibold">进程</th>
+                      <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colProcess")}</th>
                       <th className="px-4 py-2.5 font-semibold">PID</th>
                       <th className="px-4 py-2.5 font-semibold">CPU</th>
-                      <th className="px-4 py-2.5 font-semibold">内存</th>
-                      <th className="px-4 py-2.5 font-semibold">监听端口</th>
-                      <th className="px-4 py-2.5 font-semibold">工作目录</th>
-                      <th className="px-4 py-2.5 font-semibold">工作区匹配</th>
+                      <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colMemory")}</th>
+                      <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colPorts")}</th>
+                      <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colCwd")}</th>
+                      <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colMatch")}</th>
                       <th className="px-2 py-2.5" />
                     </tr>
                   </thead>
@@ -283,10 +286,10 @@ export function DiscoverPage() {
                     className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-2,#f3f4f5)]"
                   >
                     <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">
-                      其他监听进程（{others.length}）
+                      {t("pages.discover.others", { n: others.length })}
                     </span>
                     <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">
-                      {showOther ? "收起" : "展开"} · 非 java/node/python/deno/bun 运行时
+                      {showOther ? t("common.collapse") : t("common.expand")} · {t("pages.discover.othersHint")}
                     </span>
                   </button>
                   {showOther ? (
@@ -300,10 +303,7 @@ export function DiscoverPage() {
           )}
 
           <p className="text-[0.72rem] leading-relaxed text-[var(--t3,#8a8f98)]">
-            说明：通过系统 TCP 表（IPv4 + IPv6）+ 进程名识别。CPU / 内存为系统采样读数
-            （首次刷新只有内存，CPU 从第二个周期起显示）；点击行可查看完整命令行等详情。
-            若端口与当前工作区的 supertask.yaml 匹配，打开工作区时该服务会直接显示为「外部 · 仅监控」状态。
-            行内 ⏹ 可强制终止整棵进程树（taskkill /T /F，不可恢复），系统进程与 SuperTask 自身不可终止。
+            {t("pages.discover.footnote")}
           </p>
         </div>
       </div>
@@ -311,16 +311,16 @@ export function DiscoverPage() {
       <ConfirmDialog
         open={killTarget != null}
         destructive
-        title={`终止 ${killTarget?.name ?? ""}（PID ${killTarget?.pid ?? ""}）`}
+        title={t("pages.discover.killConfirmTitle", { name: killTarget?.name ?? "", pid: killTarget?.pid ?? "" })}
         description={
           <>
-            将 taskkill /T /F 强制终止该进程及全部子进程，未保存的数据会丢失。
+            {t("pages.discover.killConfirmDesc")}
             {killTarget?.cwd ? (
               <span className="mt-1 block font-mono text-[0.72rem] text-[var(--t2,#62666d)]">{killTarget.cwd}</span>
             ) : null}
           </>
         }
-        confirmText="强制终止"
+        confirmText={t("pages.discover.killForce")}
         onConfirm={() => void confirmKill()}
         onCancel={() => setKillTarget(null)}
       />
@@ -338,19 +338,19 @@ export function DiscoverPage() {
                   </span>
                 </DialogTitle>
                 <DialogDescription>
-                  进程详情 · 每 {REFRESH_MS / 1000}s 随列表自动刷新读数
+                  {t("pages.discover.detailDesc", { secs: REFRESH_MS / 1000 })}
                 </DialogDescription>
               </DialogHeader>
 
               <div className="flex flex-col gap-2">
-                <DetailField label="运行时">{detailLive.kind}</DetailField>
+                <DetailField label={t("pages.discover.fRuntime")}>{detailLive.kind}</DetailField>
                 <DetailField label="CPU">
-                  <MetricCell value={detailLive.cpu_percent} format={(v) => `${v.toFixed(1)}%`} placeholder="首次采样中，下个周期显示" />
+                  <MetricCell value={detailLive.cpu_percent} format={(v) => `${v.toFixed(1)}%`} placeholder={t("pages.discover.cpuSampling")} />
                 </DetailField>
-                <DetailField label="内存">
-                  <MetricCell value={detailLive.memory_bytes} format={formatBytes} placeholder="读取失败（可能为受保护进程）" />
+                <DetailField label={t("pages.discover.fMemory")}>
+                  <MetricCell value={detailLive.memory_bytes} format={formatBytes} placeholder={t("pages.discover.memFailed")} />
                 </DetailField>
-                <DetailField label="监听端口">
+                <DetailField label={t("pages.discover.colPorts")}>
                   <span className="flex flex-wrap gap-1">
                     {detailLive.ports.map((p) => (
                       <span key={p} className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[0.7rem] text-[var(--primary,#5E6AD2)]">
@@ -359,14 +359,14 @@ export function DiscoverPage() {
                     ))}
                   </span>
                 </DetailField>
-                <DetailField label="工作目录">
+                <DetailField label={t("pages.discover.colCwd")}>
                   {detailLive.cwd ? (
                     <span className="inline-flex items-start gap-1.5">
                       <span className="font-mono text-[0.72rem]">{detailLive.cwd}</span>
                       <button
                         type="button"
-                        title="复制路径"
-                        onClick={() => void copy(detailLive.cwd!, "路径")}
+                        title={t("pages.discover.copyPath")}
+                        onClick={() => void copy(detailLive.cwd!, t("pages.discover.labelPath"))}
                         className="shrink-0 text-[var(--t3,#8a8f98)] transition-colors hover:text-[var(--t1,#222326)]"
                       >
                         <Copy className="size-3" />
@@ -376,14 +376,14 @@ export function DiscoverPage() {
                     <span className="text-[var(--t3,#8a8f98)]">—</span>
                   )}
                 </DetailField>
-                <DetailField label="命令行">
+                <DetailField label={t("pages.discover.fCmdline")}>
                   {detailLive.cmd_line ? (
                     <span className="inline-flex items-start gap-1.5">
                       <span className="max-h-24 overflow-y-auto font-mono text-[0.72rem]">{detailLive.cmd_line}</span>
                       <button
                         type="button"
-                        title="复制命令行"
-                        onClick={() => void copy(detailLive.cmd_line!, "命令行")}
+                        title={t("pages.discover.copyCmdline")}
+                        onClick={() => void copy(detailLive.cmd_line!, t("pages.discover.labelCmdline"))}
                         className="shrink-0 text-[var(--t3,#8a8f98)] transition-colors hover:text-[var(--t1,#222326)]"
                       >
                         <Copy className="size-3" />
@@ -393,16 +393,16 @@ export function DiscoverPage() {
                     <span className="text-[var(--t3,#8a8f98)]">—</span>
                   )}
                 </DetailField>
-                <DetailField label="工作区">
+                <DetailField label={t("pages.discover.fWorkspace")}>
                   {detailMatched.length > 0 ? (
                     <span className="inline-flex flex-wrap items-center gap-1.5">
-                      <Badge variant="soon" className="shrink-0">↔ 当前工作区</Badge>
+                      <Badge variant="soon" className="shrink-0">{t("pages.discover.matchedCurrent")}</Badge>
                       <span className="text-[0.75rem] text-[var(--st-accent-hover,#4f5ac8)]">
                         {detailMatched.map((m) => `${m.id} (${m.p})`).join("、")}
                       </span>
                     </span>
                   ) : detailLive.cwd ? (
-                    <span className="text-[var(--t3,#8a8f98)]">与当前工作区无端口交集</span>
+                    <span className="text-[var(--t3,#8a8f98)]">{t("pages.discover.noPortMatch")}</span>
                   ) : (
                     <span className="text-[var(--t3,#8a8f98)]">—</span>
                   )}
@@ -411,7 +411,7 @@ export function DiscoverPage() {
 
               <DialogFooter>
                 <Button variant="outline" size="sm" onClick={() => void copy(String(detailLive.pid), ` PID ${detailLive.pid}`)}>
-                  复制 PID
+                  {t("pages.discover.copyPid")}
                 </Button>
                 <Button
                   variant="destructive"
@@ -421,11 +421,11 @@ export function DiscoverPage() {
                     setKillTarget(detailLive);
                   }}
                 >
-                  终止进程树
+                  {t("pages.discover.killProcessTree")}
                 </Button>
                 {detailLive.cwd ? (
                   <Button size="sm" className="gap-1" onClick={() => void openAsWorkspace(detailLive)}>
-                    <FolderOpen /> 打开为工作区
+                    <FolderOpen /> {t("pages.discover.openAsWorkspace")}
                   </Button>
                 ) : null}
               </DialogFooter>

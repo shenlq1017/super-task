@@ -91,6 +91,12 @@ pub enum ErrorCode {
     ComposePortMismatch,
     DockerBuildUnknown,
     ImageBuildFailed,
+    // ---- 1.4 ----
+    PlatformUnsupported,
+    BuildToolAmbiguous,
+    GradleWrapperMissing,
+    TaskfileNotFound,
+    TaskfileInvalid,
 }
 
 #[derive(Debug, Error)]

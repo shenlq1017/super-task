@@ -1,5 +1,6 @@
 import { isTauri } from "@/ipc/invoke";
 import { invoke } from "@/ipc/invoke";
+import i18n from "@/i18n";
 
 function browserDownload(filename: string, text: string): boolean {
   try {
@@ -45,7 +46,7 @@ export async function downloadTextFile(filename: string, text: string): Promise<
       const { save } = await import("@tauri-apps/plugin-dialog");
       const path = await save({
         defaultPath: filename,
-        filters: [{ name: "日志", extensions: ["log", "txt"] }],
+        filters: [{ name: i18n.t("logs.downloadFilterName"), extensions: ["log", "txt"] }],
       });
       if (!path) return "cancelled";
       await invoke<{ ok: boolean }>("app.writeTextFile", { path, contents: text });

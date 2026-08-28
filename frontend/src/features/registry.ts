@@ -2,33 +2,29 @@ import type { Feature } from "../ipc/protocol";
 
 export type NavGroup = "workspace" | "extend" | "system";
 
+/**
+ * UI-only nav metadata。label 为 i18n key（`nav.<labelKey>`，1.4 规格 §6.2），
+ * 文案在 `src/i18n/locales/*` 维护；Status/path come from `session.hello`。
+ */
 export type NavMeta = {
-  label: string;
+  labelKey: string;
   group: NavGroup;
 };
 
-/** UI-only labels/groups. Status/path come from `session.hello`. */
 export const NAV_META: Record<string, NavMeta> = {
-  run: { label: "运行", group: "workspace" },
-  logs: { label: "日志", group: "workspace" },
-  config: { label: "配置", group: "workspace" },
-  env: { label: "环境（探测）", group: "workspace" },
-  workspaces: { label: "工作区", group: "workspace" },
-  discover: { label: "发现", group: "workspace" },
-  templates: { label: "模板", group: "workspace" },
-  git: { label: "Git", group: "workspace" },
-  docker: { label: "容器", group: "workspace" },
-  gateway: { label: "网关", group: "extend" },
-  cloud: { label: "云", group: "extend" },
-  ai: { label: "AI", group: "extend" },
-  settings: { label: "设置", group: "system" },
-};
-
-/** Sidebar group titles — mirror the clickable prototype (方案 H / Linear). */
-export const GROUP_TITLE: Record<NavGroup, string> = {
-  workspace: "主功能",
-  extend: "未来版本",
-  system: "系统",
+  run: { labelKey: "run", group: "workspace" },
+  logs: { labelKey: "logs", group: "workspace" },
+  config: { labelKey: "config", group: "workspace" },
+  env: { labelKey: "env", group: "workspace" },
+  workspaces: { labelKey: "workspaces", group: "workspace" },
+  discover: { labelKey: "discover", group: "workspace" },
+  templates: { labelKey: "templates", group: "workspace" },
+  git: { labelKey: "git", group: "workspace" },
+  docker: { labelKey: "docker", group: "workspace" },
+  gateway: { labelKey: "gateway", group: "extend" },
+  cloud: { labelKey: "cloud", group: "extend" },
+  ai: { labelKey: "ai", group: "extend" },
+  settings: { labelKey: "settings", group: "system" },
 };
 
 /** Feature ids rendered by hand at the bottom of the sidebar (not in a group list). */
@@ -36,8 +32,10 @@ export const PINNED_NAV = ["settings"] as const;
 
 const GROUP_ORDER: NavGroup[] = ["workspace", "extend", "system"];
 
-export function navLabel(id: string): string {
-  return NAV_META[id]?.label ?? id;
+/** feature id → i18n key（`nav.<labelKey>`）；未知 id 返回 null。 */
+export function navTranslationKey(id: string): string | null {
+  const meta = NAV_META[id];
+  return meta ? `nav.${meta.labelKey}` : null;
 }
 
 export function groupedFeatures(features: Feature[]): { group: NavGroup; items: Feature[] }[] {

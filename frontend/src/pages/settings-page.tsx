@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,7 +12,10 @@ import { apiSavePrefs, apiUpdateCheck, apiUpdateInstall } from "../ipc/api";
 import { IpcFailure } from "../ipc/protocol";
 import type { UpdateCheckResult } from "../ipc/protocol";
 import { opErrorLabel } from "../lib/status";
+import { errorDisplayText } from "@/lib/error-messages";
 import { useToast } from "@/components/ui/toast";
+import { applyLocalePreference } from "@/i18n";
+import { isSupportedLocale, resolveLocale, SUPPORTED_LOCALES } from "@/i18n/resolve-locale";
 
 /** 偏好开关行：与既有 checkbox 样式一致，说明文案放第二行。 */
 function PrefRow({
@@ -42,7 +46,14 @@ function PrefRow({
   );
 }
 
-const INSTALL_BLOCKED_HINT = "无法安装：有服务运行中或后台任务进行中。请先停止全部服务，再重新安装。";
+/** 语言选项（跟随系统 + 四语）。标签用各语言自称，不随当前语言翻译。 */
+const LOCALE_OPTIONS: { value: "auto" | (typeof SUPPORTED_LOCALES)[number]; label: string }[] = [
+  { value: "auto", label: "跟随系统" },
+  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
+  { value: "en-US", label: "English" },
+  { value: "ja-JP", label: "日本語" },
+];
 
 /** 更新区块：检查更新（长操作）→ 结果 → 确认安装。 */
 function UpdateCard() {
@@ -50,6 +61,7 @@ function UpdateCard() {
   const { get } = useOperations();
   const runtime = useRuntime();
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const [checkOpId, setCheckOpId] = useState<string | null>(null);
   const [installOpId, setInstallOpId] = useState<string | null>(null);
@@ -87,7 +99,7 @@ function UpdateCard() {
     } catch (e) {
       // 同步拒绝（UPDATE_BLOCKED_RUNNING / UPDATE_FAILED）：给出原因与下一步
       if (e instanceof IpcFailure && e.code === "UPDATE_BLOCKED_RUNNING") {
-        setBlocked(INSTALL_BLOCKED_HINT);
+        setBlocked(t("pages.settings.installBlockedHint"));
       } else {
         toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
       }
@@ -97,54 +109,54 @@ function UpdateCard() {
   // 安装 operation 失败：UPDATE_BLOCKED_RUNNING → 显示原因 + 停止全部快捷键
   useEffect(() => {
     if (installOp?.state === "failed" && installOp.error_code === "UPDATE_BLOCKED_RUNNING") {
-      setBlocked(INSTALL_BLOCKED_HINT);
+      setBlocked(t("pages.settings.installBlockedHint"));
     }
-  }, [installOp]);
+  }, [installOp, t]);
 
   return (
     <Card className="p-4">
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-[0.875rem] font-semibold text-[var(--t1,#222326)]">更新</h3>
+        <h3 className="text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.settings.updateTitle")}</h3>
         <span className="font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">
-          当前版本 {state.hello?.product_version ?? "—"}
+          {t("pages.settings.currentVersion", { version: state.hello?.product_version ?? "—" })}
         </span>
       </div>
       <p className="mt-1 text-[0.75rem] leading-relaxed text-[var(--t3,#8a8f98)]">
-        安装前会自动阻止：有服务运行中或后台任务进行时无法安装。安装需用户确认，发现更新只提示。
+        {t("pages.settings.updatePolicy")}
       </p>
 
       <div className="mt-3 flex items-center gap-2">
         <Button size="sm" variant="soft" onClick={() => void startCheck()} disabled={checkRunning || installRunning}>
-          检查更新
+          {t("pages.settings.checkUpdate")}
         </Button>
         {checkRunning ? (
           <span className="flex items-center gap-1.5 text-[0.76rem] text-[var(--t2,#62666d)]" role="status">
             <Loader2 className="size-3.5 animate-spin text-[var(--st-accent,#5e6ad2)]" />
-            {checkOp.message ?? "正在检查更新…"}
+            {checkOp.message ?? t("pages.settings.checkingUpdate")}
           </span>
         ) : null}
       </div>
 
       {checkOp?.state === "failed" ? (
         <div className="mt-2.5 rounded-lg border border-red-200 bg-[var(--st-danger-tint,#fdecec)] px-3 py-2 text-[0.78rem] text-[#DC2626]" role="alert">
-          {opErrorLabel(checkOp.error_code)}
+          {errorDisplayText(checkOp.error_code, checkOp.message, opErrorLabel(checkOp.error_code))}
         </div>
       ) : null}
 
       {checkOp?.state === "succeeded" && !available ? (
         <div className="mt-2.5 flex items-center gap-2 text-[0.8rem] text-[var(--st-ok-deep,#1e7e35)]" role="status">
           <span className="size-1.5 rounded-full bg-[var(--st-ok,#27a644)]" />
-          已是最新
+          {t("pages.settings.upToDate")}
         </div>
       ) : null}
 
       {available ? (
         <div className="mt-3 rounded-[var(--r-md,12px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] p-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">发现新版本</span>
+            <span className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{t("pages.settings.newVersionFound")}</span>
             <span className="font-mono text-[0.8rem] text-[var(--st-accent,#5e6ad2)]">{available.version}</span>
             {available.date ? (
-              <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">发布于 {available.date}</span>
+              <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.settings.releasedAt", { date: available.date })}</span>
             ) : null}
             <Button
               size="sm"
@@ -152,7 +164,7 @@ function UpdateCard() {
               disabled={installRunning || checkRunning}
               onClick={() => setConfirmInstall(true)}
             >
-              安装更新
+              {t("pages.settings.installUpdate")}
             </Button>
           </div>
           {available.notes ? (
@@ -167,7 +179,7 @@ function UpdateCard() {
         <div className="mt-3 rounded-[var(--r-md,12px)] border border-[rgb(94_106_210_/_0.35)] p-3" role="status">
           <div className="flex items-center gap-2 text-[0.8rem] text-[var(--t1,#222326)]">
             <Loader2 className="size-3.5 animate-spin text-[var(--st-accent,#5e6ad2)]" />
-            {installOp.message ?? "正在处理更新…"}
+            {installOp.message ?? t("pages.settings.processingUpdate")}
           </div>
           {/* progress 可能为 null：只显示状态文案，不伪造百分比 */}
           {installOp.progress != null ? (
@@ -191,19 +203,17 @@ function UpdateCard() {
         >
           <span className="min-w-0 flex-1">{blocked}</span>
           <Button variant="destructive" size="sm" onClick={() => void runtime.actions.stopAll()}>
-            停止全部
+            {t("common.stopAll")}
           </Button>
         </div>
       ) : null}
 
       <ConfirmDialog
         open={confirmInstall}
-        title={`安装更新 ${available?.version ?? ""}？`}
-        description={
-          "安装过程中 SuperTask 将退出，由安装器接管完成升级。\n有服务运行中或后台任务进行时会自动阻止安装。"
-        }
-        confirmText="安装更新"
-        cancelText="取消"
+        title={t("pages.settings.confirmInstallTitle", { version: available?.version ?? "" })}
+        description={t("pages.settings.confirmInstallDesc")}
+        confirmText={t("pages.settings.installUpdate")}
+        cancelText={t("common.cancel")}
         onConfirm={() => {
           setConfirmInstall(false);
           if (available?.version) void startInstall(available.version);
@@ -217,7 +227,9 @@ function UpdateCard() {
 export function SettingsPage() {
   const { state } = useSession();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [theme, setTheme] = useState(state.app?.prefs.theme ?? "light");
+  const [locale, setLocale] = useState<string>(state.app?.prefs?.locale ?? "auto");
   const [restore, setRestore] = useState(state.app?.prefs.restoreLast ?? true);
   const [closeToTray, setCloseToTray] = useState(state.app?.prefs.closeToTray ?? true);
   const [startOnLogin, setStartOnLogin] = useState(state.app?.prefs.startOnLogin ?? false);
@@ -225,6 +237,7 @@ export function SettingsPage() {
 
   useEffect(() => {
     setTheme(state.app?.prefs.theme ?? "light");
+    setLocale(state.app?.prefs?.locale ?? "auto");
     setRestore(state.app?.prefs.restoreLast ?? true);
     setCloseToTray(state.app?.prefs.closeToTray ?? true);
     setStartOnLogin(state.app?.prefs.startOnLogin ?? false);
@@ -233,8 +246,8 @@ export function SettingsPage() {
 
   const save = async () => {
     try {
-      await apiSavePrefs({ theme, restoreLast: restore, closeToTray, startOnLogin, updateCheck });
-      toast("偏好已保存", "ok");
+      await apiSavePrefs({ theme, locale, restoreLast: restore, closeToTray, startOnLogin, updateCheck });
+      toast(t("operations.prefsSaved"), "ok");
     } catch (e) {
       if (e instanceof IpcFailure && e.code === "AUTOSTART_FAILED") {
         // 后端已回滚偏好为 false；UI 开关同步回滚为未开启
@@ -244,81 +257,128 @@ export function SettingsPage() {
     }
   };
 
+  /** 语言切换：即时生效（changeLanguage），并立即持久化到 app data。 */
+  const changeLocale = async (value: string) => {
+    setLocale(value);
+    applyLocalePreference(value);
+    try {
+      await apiSavePrefs({ locale: value });
+      toast(t("operations.prefsSaved"), "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    }
+  };
+
+  // 显式 locale 未知 → 已回落 zh-CN，给出提示（规格 §2.3.4）
+  const unknownLocale = locale !== "auto" && !isSupportedLocale(locale);
+  const resolvedAuto = locale === "auto" ? resolveLocale("auto") : null;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto p-6">
         <div className="mx-auto flex max-w-2xl flex-col gap-6">
           <Card className="p-4">
-            <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">常规</h3>
+            <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.settings.general")}</h3>
             <div className="flex flex-col divide-y divide-[var(--line,#e6e6e6)]">
               <PrefRow
-                label="恢复上次工作区"
-                desc="启动时自动打开最近使用的工作区"
+                label={t("pages.settings.restoreLast")}
+                desc={t("pages.settings.restoreLastDesc")}
                 checked={restore}
                 onChange={setRestore}
               />
               <PrefRow
-                label="关闭窗口时隐藏到托盘"
-                desc="点关闭按钮时最小化到托盘而不是退出；可从托盘菜单退出 SuperTask"
+                label={t("pages.settings.closeToTray")}
+                desc={t("pages.settings.closeToTrayDesc")}
                 checked={closeToTray}
                 onChange={setCloseToTray}
               />
               <PrefRow
-                label="开机自动启动 SuperTask"
-                desc="登录 Windows 后自动启动（仅启动 SuperTask，不自动启动项目服务）"
+                label={t("pages.settings.startOnLogin")}
+                desc={t("pages.settings.startOnLoginDesc")}
                 checked={startOnLogin}
                 onChange={setStartOnLogin}
               />
               <PrefRow
-                label="自动检查更新"
-                desc="启动后联网检查新版本；发现更新只提示，安装需确认"
+                label={t("pages.settings.updateCheck")}
+                desc={t("pages.settings.updateCheckDesc")}
                 checked={updateCheck}
                 onChange={setUpdateCheck}
               />
             </div>
             <div className="mt-3 flex justify-end">
               <Button size="sm" variant="success" onClick={() => void save()}>
-                保存
+                {t("common.save")}
               </Button>
             </div>
           </Card>
 
           <Card className="p-4">
-            <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">外观</h3>
+            <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.settings.appearance")}</h3>
             <div className="flex gap-2">
-              {(["light", "dark"] as const).map((t) => (
+              {(["light", "dark"] as const).map((th) => (
                 <button
-                  key={t}
-                  disabled={t === "dark"}
-                  onClick={() => setTheme(t)}
+                  key={th}
+                  disabled={th === "dark"}
+                  onClick={() => setTheme(th)}
                   className={cn(
                     "flex-1 rounded-[var(--r-sm,8px)] border px-3 py-2 text-[0.875rem] transition-colors duration-150",
-                    theme === t
+                    theme === th
                       ? "border-[var(--st-accent,#5e6ad2)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent-hover,#4f5ac8)]"
                       : "border-[var(--line,#e6e6e6)] text-[var(--t2,#62666d)] hover:border-[var(--line-strong,#d0d6e0)]",
-                    t === "dark" && "opacity-50",
+                    th === "dark" && "opacity-50",
                   )}
                 >
-                  {t === "light" ? "浅色" : "深色（即将）"}
+                  {th === "light" ? t("pages.settings.themeLight") : t("pages.settings.themeDarkSoon")}
                 </button>
               ))}
             </div>
+
+            {/* 语言（1.4 §2.3）：跟随系统 / 简体中文 / 繁體中文 / English / 日本語 */}
+            <div className="mt-4 flex items-center justify-between gap-4">
+              <label htmlFor="st-locale" className="text-[0.875rem] text-[var(--t1,#222326)]">
+                {t("pages.settings.language")}
+                <span className="block text-[0.75rem] leading-relaxed text-[var(--t3,#8a8f98)]">
+                  {t("pages.settings.languageDesc")}
+                </span>
+              </label>
+              <select
+                id="st-locale"
+                value={locale}
+                onChange={(e) => void changeLocale(e.target.value)}
+                className="h-8 shrink-0 cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-2 text-[0.8rem] text-[var(--t1,#222326)] transition-colors duration-150 hover:border-[var(--t3,#8a8f98)] focus-visible:border-[var(--st-accent,#5e6ad2)] focus-visible:outline-none"
+              >
+                {LOCALE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.value === "auto" ? t("pages.settings.languageAuto") : opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {unknownLocale ? (
+              <p className="mt-2 text-[0.75rem] text-[#B7791F]" role="alert">
+                {t("pages.settings.unknownLocale", { locale })}
+              </p>
+            ) : resolvedAuto ? (
+              <p className="mt-2 text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                {t("pages.settings.autoResolved", { locale: resolvedAuto })}
+              </p>
+            ) : null}
           </Card>
 
           <UpdateCard />
 
           <Card className="p-4">
-            <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">关于</h3>
+            <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.settings.about")}</h3>
             <dl className="grid grid-cols-[120px_1fr] gap-y-1.5 text-[0.875rem]">
-              <dt className="text-[var(--t3,#8a8f98)]">产品版本</dt>
+              <dt className="text-[var(--t3,#8a8f98)]">{t("pages.settings.productVersion")}</dt>
               <dd className="font-mono text-[var(--t1,#222326)]">{state.hello?.product_version}</dd>
-              <dt className="text-[var(--t3,#8a8f98)]">引擎</dt>
+              <dt className="text-[var(--t3,#8a8f98)]">{t("pages.settings.engine")}</dt>
               <dd className="font-mono text-[var(--t1,#222326)]">
                 {state.hello?.engine} {state.hello?.engine_version}
               </dd>
-              <dt className="text-[var(--t3,#8a8f98)]">协议</dt>
+              <dt className="text-[var(--t3,#8a8f98)]">{t("pages.settings.protocol")}</dt>
               <dd className="font-mono text-[var(--t1,#222326)]">{state.hello?.protocol}</dd>
-              <dt className="text-[var(--t3,#8a8f98)]">系统</dt>
+              <dt className="text-[var(--t3,#8a8f98)]">{t("pages.settings.os")}</dt>
               <dd className="font-mono text-[var(--t1,#222326)]">{state.hello?.os}</dd>
             </dl>
           </Card>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import { useOutletContext, NavLink } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -95,7 +96,7 @@ function kindLabel(kind: string): string {
   return "SPRING";
 }
 
-function KindBadge({ kind }: { kind: string }) {
+function KindBadge({ kind, buildTool }: { kind: string; buildTool?: string | null }) {
   const color =
     kind === "node"
       ? "#2E90FA"
@@ -105,10 +106,17 @@ function KindBadge({ kind }: { kind: string }) {
           ? "var(--t3,#8a8f98)"
           : "var(--st-accent,#5e6ad2)";
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]">
-      <span className="size-1.5 rounded-full" style={{ background: color }} />
-      {kindLabel(kind)}
-    </span>
+    <>
+      <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]">
+        <span className="size-1.5 rounded-full" style={{ background: color }} />
+        {kindLabel(kind)}
+      </span>
+      {buildTool === "gradle" ? (
+        <span className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]">
+          gradle
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -129,11 +137,11 @@ function serviceYamlFragment(id: string, s: ServiceSpec): string {
 
 /* ---------------- IDE 打开菜单（spec §13.3） ---------------- */
 
-const IDE_TARGETS: { id: IdeTarget; label: string }[] = [
-  { id: "explorer", label: "资源管理器" },
-  { id: "cursor", label: "Cursor" },
-  { id: "idea", label: "IntelliJ IDEA" },
-  { id: "code", label: "VS Code" },
+const IDE_TARGETS: { id: IdeTarget; labelKey: string }[] = [
+  { id: "explorer", labelKey: "pages.run.ideExplorer" },
+  { id: "cursor", labelKey: "pages.run.ideCursor" },
+  { id: "idea", labelKey: "pages.run.ideIdea" },
+  { id: "code", labelKey: "pages.run.ideCode" },
 ];
 
 /**
@@ -143,6 +151,7 @@ const IDE_TARGETS: { id: IdeTarget; label: string }[] = [
 function IdeOpenMenu({ variant }: { variant: "icon" | "button" }) {
   const ws = useWorkspace();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<IdeTarget | null>(null);
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
@@ -178,12 +187,12 @@ function IdeOpenMenu({ variant }: { variant: "icon" | "button" }) {
     setBusy(ide);
     try {
       const out = await apiOpenIde(workspaceId, ide);
-      toast(`已用 ${label} 打开：${out.path}`, "ok");
+      toast(t("pages.run.openedWith", { label, path: out.path }), "ok");
       setOpen(false);
       triggerRef.current?.focus();
     } catch (e) {
       if (e instanceof IpcFailure && e.code === "IDE_NOT_FOUND") {
-        toast(`未检测到 ${label}，可手动安装或改用其他方式`, "warn");
+        toast(t("pages.run.ideNotFound", { label }), "warn");
       } else {
         toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
       }
@@ -199,14 +208,14 @@ function IdeOpenMenu({ variant }: { variant: "icon" | "button" }) {
         type="button"
         onClick={toggle}
         disabled={!workspaceId}
-        aria-label="打开工作区（资源管理器或 IDE）"
+        aria-label={t("pages.run.openWsAria")}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="打开工作区"
+        title={t("pages.run.openWsTitle")}
         className={cn(buttonVariants({ variant: "outline", size: "sm" }), variant === "icon" && "size-7 px-0")}
       >
         <ExternalLink className="size-3.5" />
-        {variant === "button" ? "打开" : null}
+        {variant === "button" ? t("common.open") : null}
       </button>
 
       {open ? (
@@ -214,22 +223,22 @@ function IdeOpenMenu({ variant }: { variant: "icon" | "button" }) {
           <div className="fixed inset-0 z-[205]" onClick={() => setOpen(false)} aria-hidden />
           <div
             role="menu"
-            aria-label="选择打开方式"
+            aria-label={t("pages.run.pickIdeAria")}
             className="fixed z-[210] min-w-[10.5rem] overflow-hidden rounded-[var(--r-md,12px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-1 shadow-[var(--shadow-2,0_6px_20px_rgb(16_24_40_/_0.09))]"
             style={{ top: pos?.top ?? 0, right: pos?.right ?? 0 }}
           >
-            {IDE_TARGETS.map((t, i) => (
+            {IDE_TARGETS.map((target, i) => (
               <button
-                key={t.id}
+                key={target.id}
                 role="menuitem"
                 // eslint-disable-next-line jsx-a11y/no-autofocus -- 菜单打开即聚焦首项，键盘可达
                 autoFocus={i === 0}
                 disabled={busy !== null}
-                onClick={() => void openWith(t.id, t.label)}
+                onClick={() => void openWith(target.id, t(target.labelKey))}
                 className="flex w-full items-center rounded-[var(--r-sm,8px)] px-2.5 py-1.5 text-left text-[0.8rem] text-[var(--t1,#222326)] transition-colors duration-150 hover:bg-[var(--st-accent-tint,#eef0fb)] focus-visible:bg-[var(--st-accent-tint,#eef0fb)] focus-visible:outline-none disabled:opacity-50"
               >
-                {t.label}
-                {busy === t.id ? <span className="ml-auto text-[0.68rem] text-[var(--t3,#8a8f98)]">打开中…</span> : null}
+                {t(target.labelKey)}
+                {busy === target.id ? <span className="ml-auto text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.run.opening")}</span> : null}
               </button>
             ))}
           </div>
@@ -287,6 +296,7 @@ function ServiceCard({
   onOpen: () => void;
 }) {
   const runtime = useRuntime();
+  const { t } = useTranslation();
   const meta = STATE_META[svc.state];
   const isRunning = svc.state === "running";
   const isBusy = svc.state === "starting" || svc.state === "stopping" || svc.state === "building";
@@ -298,7 +308,7 @@ function ServiceCard({
     ? <span className="block truncate text-[11px] text-[var(--st-danger,#dc2626)]" title={svc.last_error}>⚠ {svc.last_error}</span>
     : <span className="flex items-center gap-1 text-[11px] text-[var(--t3,#8a8f98)]">
         <span className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px]">
-          {spec?.depends_on?.length ? `依赖 ${spec.depends_on.join(", ")}` : "无依赖"}
+          {spec?.depends_on?.length ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") }) : t("pages.run.noDeps")}
         </span>
       </span>;
 
@@ -332,10 +342,10 @@ function ServiceCard({
       <div className="flex items-center gap-2">
         <StatusDot state={svc.state} size={8} />
         <span className="truncate text-[0.88rem] font-semibold text-[var(--t1,#222326)]">{id}</span>
-        <KindBadge kind={svc.kind} />
+        <KindBadge kind={svc.kind} buildTool={spec?.build_tool} />
         {external ? (
-          <span className="shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]" title="外部进程：非 SuperTask 启动，仅监控，停止将 taskkill 整棵树">
-            外部
+          <span className="shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]" title={t("pages.run.externalTitle")}>
+            {t("pages.run.externalShort")}
           </span>
         ) : null}
         <div className="ml-auto flex gap-1 opacity-50 transition-opacity group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
@@ -344,7 +354,7 @@ function ServiceCard({
             <button
               type="button"
               className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--st-warn-line,#f0dcb0)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)] transition-colors duration-150 hover:border-[#E0C080] hover:bg-[rgb(234_179_8_/_0.2)] disabled:cursor-not-allowed disabled:opacity-50"
-              title={external ? "停止外部进程并重新由 SuperTask 启动" : "重启"}
+              title={external ? t("pages.run.restartExternalTitle") : t("common.restart")}
               disabled={isBusy}
               onClick={() => runtime.actions.restartOne(id)}
             >
@@ -359,7 +369,7 @@ function ServiceCard({
                 ? "border-transparent text-[var(--t3,#8a8f98)] hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)]"
                 : "border-transparent text-[var(--t3,#8a8f98)] hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)]",
             )}
-            title={isRunning ? "停止" : "启动"}
+            title={isRunning ? t("common.stop") : t("common.start")}
             disabled={isBusy}
             onClick={() =>
               isRunning || svc.state === "starting"
@@ -376,14 +386,14 @@ function ServiceCard({
 
       <ConfirmDialog
         open={confirmStop}
-        title={`停止「${id}」？`}
+        title={t("pages.run.stopConfirmTitle", { id })}
         description={
           external
-            ? "该服务为外部进程（非 SuperTask 启动），将按端口定位 PID 并 taskkill 结束整棵进程树。"
-            : "将结束该服务的整棵进程树（含其派生的子进程）。"
+            ? t("pages.run.stopConfirmExternal")
+            : t("pages.run.stopConfirmDesc")
         }
-        confirmText="停止服务"
-        cancelText="取消"
+        confirmText={t("pages.run.stopService")}
+        cancelText={t("common.cancel")}
         destructive
         onConfirm={() => {
           setConfirmStop(false);
@@ -401,9 +411,9 @@ function ServiceCard({
           // 1.3 §5.3：compose 服务无宿主进程，pid 恒为 null
           <span
             className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px]"
-            title="容器托管：由 docker compose 管理，无宿主 pid"
+            title={t("pages.run.containerManagedTitle")}
           >
-            容器托管
+            {t("pages.run.containerManaged")}
           </span>
         ) : null}
         {isRunning && svc.started_at_ms ? <span className="font-mono text-[var(--t3,#8a8f98)]">· {fmtDuration(svc.started_at_ms)}</span> : null}
@@ -427,6 +437,7 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
   const yaml = useYaml();
   const runtime = useRuntime();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const spec = ws.state.spec;
   const svc = spec?.services[id];
   const isRunning = runtime.state.services[id]?.state === "running";
@@ -455,7 +466,7 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
     if (!ws.state.workspaceId || portBusy) return;
     const { n, valid } = portNumber();
     if (!valid) {
-      setPortCheck({ port: n, inUse: false, message: "请输入 1024–65535 的整数端口后再检查" });
+      setPortCheck({ port: n, inUse: false, message: t("pages.run.portRangeFirst") });
       return;
     }
     setPortBusy(true);
@@ -463,18 +474,22 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
       const out = await apiPortsInspect(ws.state.workspaceId, id, n);
       const item = out.items[0];
       if (!item) {
-        setPortCheck({ port: n, inUse: false, message: "无法判断该端口的占用情况" });
+        setPortCheck({ port: n, inUse: false, message: t("pages.run.portUnknown") });
       } else if (item.in_use) {
         setPortCheck({
           port: item.port,
           inUse: true,
-          message: `${item.port} 已被 ${item.process_name ?? `PID ${item.pid ?? "未知"}`} 占用${item.managed ? "（SuperTask 托管）" : "（外部进程）"}`,
+          message: t("pages.run.portInUseBy", {
+            port: item.port,
+            name: item.process_name ?? (item.pid != null ? `PID ${item.pid}` : t("pages.run.pidUnknown")),
+            managed: item.managed ? t("pages.run.managedBySt") : t("pages.run.externalProcess"),
+          }),
         });
       } else {
         setPortCheck({
           port: item.port,
           inUse: false,
-          message: `${item.port} 可用${isRunning && svc.port === item.port ? "（当前服务）" : ""}`,
+          message: t("pages.run.portAvailable", { port: item.port, current: isRunning && svc.port === item.port ? t("pages.run.currentService") : "" }),
         });
       }
     } catch (e) {
@@ -494,7 +509,7 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
       setPortCheck(
         out.candidates.length
           ? null
-          : { port: portNumber().n, inUse: false, message: "没有可用候选端口" },
+          : { port: portNumber().n, inUse: false, message: t("pages.run.noCandidates") },
       );
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
@@ -513,18 +528,18 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
     if (!spec || !ws.state.workspaceId || !yaml.state.hash || portBusy) return;
     const { n, valid } = portNumber();
     if (!valid) {
-      toast("端口必须是 1024–65535 的整数", "warn");
+      toast(t("pages.templates.portInvalid"), "warn");
       return;
     }
     setPortBusy(true);
     try {
       const out = await apiPortsAssign(ws.state.workspaceId, id, n, yaml.state.hash, restart);
       if (out.restart_required) {
-        setPortCheck({ port: n, inUse: false, message: "服务正在运行；确认后点击「改端口并重启」" });
+        setPortCheck({ port: n, inUse: false, message: t("pages.run.restartRequired") });
       } else {
         await Promise.all([yaml.actions.reload(), ws.actions.refreshSpec()]);
-        setPortCheck({ port: n, inUse: false, message: out.notes.length ? out.notes.join("；") : "端口已保存" });
-        toast("端口已保存", "ok");
+        setPortCheck({ port: n, inUse: false, message: out.notes.length ? out.notes.join("；") : t("pages.run.portSaved") });
+        toast(t("pages.run.portSaved"), "ok");
       }
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
@@ -545,9 +560,9 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
     const ok = await yaml.actions.saveForm(next);
     if (ok) {
       await ws.actions.refreshSpec();
-      toast("已保存环境变量", "ok");
+      toast(t("pages.run.envSaved"), "ok");
     } else {
-      toast(yaml.state.error ?? "保存失败", "err");
+      toast(yaml.state.error ?? t("operations.savedFailed"), "err");
     }
   };
 
@@ -555,8 +570,8 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
     <div className={cn("flex flex-col gap-5 p-4", compact && "gap-4 p-3")}>
       <section className="flex flex-col gap-2">
         <div className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-          <Settings2 className="size-3.5" /> 端口
-          {svc.port != null ? <span className="font-mono text-[10px] font-normal normal-case text-[var(--t2,#62666d)]">当前 {svc.port}</span> : null}
+          <Settings2 className="size-3.5" /> {t("pages.run.portSection")}
+          {svc.port != null ? <span className="font-mono text-[10px] font-normal normal-case text-[var(--t2,#62666d)]">{t("pages.run.currentPort", { port: svc.port })}</span> : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Input
@@ -564,32 +579,32 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
             value={portDraft}
             onChange={(e) => editPortDraft(e.target.value)}
             className="h-8 max-w-[7.5rem] font-mono text-sm"
-            placeholder="端口"
-            aria-label="服务端口"
+            placeholder={t("pages.run.portSection")}
+            aria-label={t("pages.run.servicePortAria")}
           />
           <Button variant="soft" size="sm" onClick={() => void inspectPorts()} disabled={!ws.state.workspaceId || portBusy || !portValid}>
-            检查
+            {t("pages.run.check")}
           </Button>
           <Button variant="outline" size="sm" onClick={() => void suggestPorts()} disabled={!ws.state.workspaceId || portBusy}>
-            建议
+            {t("pages.run.suggest")}
           </Button>
           <Button size="sm" variant="success" onClick={() => void assignPort(false)} disabled={!ws.state.workspaceId || portBusy || !portValid}>
-            保存
+            {t("common.save")}
           </Button>
           {isRunning ? (
             <Button size="sm" variant="warn" onClick={() => void assignPort(true)} disabled={portBusy || !portValid}>
-              改端口并重启
+              {t("pages.run.changePortRestart")}
             </Button>
           ) : null}
         </div>
         {portCandidates.length > 0 ? (
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">建议端口</span>
+            <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.run.suggestedPorts")}</span>
             {portCandidates.map((p) => (
               <button
                 key={p}
                 type="button"
-                title={`填入 ${p}`}
+                title={t("pages.run.fillPort", { port: p })}
                 className="cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-2 py-0.5 font-mono text-[0.72rem] font-medium text-[var(--t1,#222326)] transition-colors hover:border-[var(--st-accent,#5e6ad2)] hover:bg-[var(--st-accent-tint,#eef0fb)] hover:text-[var(--st-accent,#5e6ad2)]"
                 onClick={() => {
                   setPortDraft(String(p));
@@ -627,42 +642,49 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
 
 /* ---------------- health panel ---------------- */
 
-/** 长 URL 拆成「路径优先 + host 次要」，完整串放 title / 复制。 */
+/** 长 URL 拆成「路径优先 + host 次要」，完整串放 title / 复制。hint 为 i18n key。 */
 function healthTarget(h: ServiceSpec["health"] | undefined, port: number | null | undefined) {
   if (!h || h.type === "none") {
-    return { kind: "none" as const, path: "未配置", host: "", full: "", hint: "在配置页为服务添加 health" };
+    return { kind: "none" as const, path: "unset", pathValue: "", host: "", full: "", hintKey: "pages.run.healthHintNone" };
   }
   if (h.type === "tcp") {
     const p = port ?? null;
     return {
       kind: "tcp" as const,
-      path: p != null ? `:${p}` : "未设端口",
-      host: "TCP 探测",
+      path: p != null ? `:${p}` : "noPort",
+      pathValue: p != null ? `:${p}` : "",
+      host: "tcp",
       full: p != null ? `tcp://127.0.0.1:${p}` : "",
-      hint: "端口可连接即为成功",
+      hintKey: "pages.run.healthHintTcp",
     };
   }
   const raw = (h.http ?? "").trim();
   if (!raw) {
-    return { kind: "http" as const, path: "—", host: "", full: "", hint: "http 2xx 为成功" };
+    return { kind: "http" as const, path: "—", pathValue: "—", host: "", full: "", hintKey: "pages.run.healthHintHttp" };
   }
   try {
     const u = new URL(raw);
     const path = `${u.pathname || "/"}${u.search}`;
-    return { kind: "http" as const, path, host: u.host, full: raw, hint: "http 2xx 为成功" };
+    return { kind: "http" as const, path, pathValue: path, host: u.host, full: raw, hintKey: "pages.run.healthHintHttp" };
   } catch {
-    return { kind: "http" as const, path: raw, host: port != null ? `port ${port}` : "", full: raw, hint: "http 2xx 为成功" };
+    return { kind: "http" as const, path: raw, pathValue: raw, host: port != null ? `port ${port}` : "", full: raw, hintKey: "pages.run.healthHintHttp" };
   }
 }
 
 function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec | undefined }) {
+  const { t } = useTranslation();
   const h = spec?.health;
   const last = svc.health;
   const target = healthTarget(h, svc.port);
   const { toast } = useToast();
   const watching = svc.state === "running" || svc.state === "unhealthy";
-  const statusLabel = !h || h.type === "none" ? "未配置" : last ? (last.ok ? "健康" : "异常") : watching ? "探测中" : "已暂停";
-  const failReason = svc.last_error ? svc.last_error : watching ? null : "服务未运行，健康检查已暂停";
+  // 状态枚举：unset / ok / bad / probing / paused（文案走 pages.run.health*）
+  const statusKey: "unset" | "ok" | "bad" | "probing" | "paused" = !h || h.type === "none"
+    ? "unset"
+    : last
+      ? last.ok ? "ok" : "bad"
+      : watching ? "probing" : "paused";
+  const failReason = svc.last_error ? svc.last_error : watching ? null : t("pages.run.healthPausedReason");
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -670,13 +692,13 @@ function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec
         <span
           className={cn(
             "rounded-[var(--r-sm,8px)] px-2.5 py-1 text-[0.82rem] font-semibold",
-            statusLabel === "健康" && "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]",
-            statusLabel === "异常" && "bg-[var(--st-danger-tint,#fdecec)] text-[var(--st-danger,#dc2626)]",
-            (statusLabel === "未配置" || statusLabel === "已暂停" || statusLabel === "探测中") &&
+            statusKey === "ok" && "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]",
+            statusKey === "bad" && "bg-[var(--st-danger-tint,#fdecec)] text-[var(--st-danger,#dc2626)]",
+            (statusKey === "unset" || statusKey === "paused" || statusKey === "probing") &&
               "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]",
           )}
         >
-          {statusLabel}
+          {t(`pages.run.health_${statusKey}`)}
         </span>
         <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 py-0.5 text-[11px] font-medium text-[var(--t2,#62666d)]">
           <span
@@ -701,17 +723,17 @@ function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec
 
       <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] p-3">
         <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-          探测目标
-          <span className="ml-auto font-normal normal-case tracking-normal">{target.hint}</span>
+          {t("pages.run.healthTarget")}
+          <span className="ml-auto font-normal normal-case tracking-normal">{t(target.hintKey)}</span>
         </div>
         <div className="flex min-w-0 items-start gap-2">
           <div className="min-w-0 flex-1">
             <div className="truncate font-mono text-[0.95rem] font-semibold text-[var(--t1,#222326)]" title={target.full || target.path}>
-              {target.path}
+              {target.path === "unset" ? t("pages.run.healthUnset") : target.path === "noPort" ? t("pages.run.healthNoPort") : target.path}
             </div>
             {target.host ? (
               <div className="mt-0.5 truncate font-mono text-[0.72rem] text-[var(--t2,#62666d)]" title={target.full}>
-                {target.host}
+                {target.host === "tcp" ? t("pages.run.healthTcpHost") : target.host}
               </div>
             ) : null}
           </div>
@@ -722,10 +744,10 @@ function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec
               className="shrink-0 gap-1"
               onClick={() => {
                 void navigator.clipboard?.writeText(target.full);
-                toast("已复制探测地址", "ok");
+                toast(t("pages.run.healthCopied"), "ok");
               }}
             >
-              <Copy className="size-3.5" /> 复制
+              <Copy className="size-3.5" /> {t("common.copy")}
             </Button>
           ) : null}
         </div>
@@ -734,17 +756,17 @@ function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
           <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-            最近结果
+            {t("pages.run.recentResult")}
             <span className="ml-auto flex items-center gap-2 text-[10px] font-normal normal-case">
-              <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-ok,#27a644)]" />成功</span>
-              <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-warn,#9a6700)]" />慢</span>
-              <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-danger,#dc2626)]" />失败</span>
+              <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-ok,#27a644)]" />{t("pages.run.legendOk")}</span>
+              <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-warn,#9a6700)]" />{t("pages.run.legendSlow")}</span>
+              <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-danger,#dc2626)]" />{t("pages.run.legendFail")}</span>
             </span>
           </div>
           <HealthSparkline ok={last?.ok} />
           <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-[13px]">
             <span className={cn("font-medium", healthClass(last?.ok))}>
-              {last ? (last.ok ? "健康" : "异常") : "尚无结果"}
+              {last ? (last.ok ? t("pages.run.health_ok") : t("pages.run.health_bad")) : t("pages.run.noResultYet")}
             </span>
             {last?.detail ? (
               <span className="min-w-0 truncate font-mono text-[12px] text-[var(--t2,#62666d)]" title={last.detail}>
@@ -757,14 +779,14 @@ function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec
           </div>
         </div>
         <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">失败原因</div>
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.run.failReason")}</div>
           <p
             className={cn(
               "text-[0.8rem] leading-relaxed",
               failReason && svc.last_error ? "text-[var(--st-danger,#dc2626)]" : "text-[var(--t2,#62666d)]",
             )}
           >
-            {failReason ?? "—（无）"}
+            {failReason ?? t("pages.run.failNone")}
           </p>
         </div>
       </div>
@@ -776,22 +798,23 @@ function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec
 
 function ConfigPanel({ id }: { id: string }) {
   const ws = useWorkspace();
+  const { t } = useTranslation();
   const spec = ws.state.spec?.services[id];
   if (!spec) return null;
   const text = serviceYamlFragment(id, spec);
   return (
     <div className="flex flex-col gap-3 p-4">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-medium">原文 YAML（片段）</div>
+        <div className="text-sm font-medium">{t("pages.run.rawFragment")}</div>
         <Button variant="outline" size="sm" asChild className="gap-1">
-          <NavLink to="/config">在配置页编辑</NavLink>
+          <NavLink to="/config">{t("pages.run.editInConfig")}</NavLink>
         </Button>
       </div>
       <pre className="overflow-auto rounded-lg border border-[var(--line,#e6e6e6)] bg-[#FBFBFC] p-3 font-mono text-[12px] leading-relaxed text-[var(--t2,#62666d)]">
         {text}
       </pre>
       <p className="text-[11px] text-[var(--t3,#8a8f98)]">
-        端口重复 → 警告不阻断；depends_on 成环 → 在配置页拒绝保存并指出环。
+        {t("pages.run.rawFragmentHint")}
       </p>
     </div>
   );
@@ -803,6 +826,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   const rt = useRuntime();
   const ws = useWorkspace();
   const runtime = useRuntime();
+  const { t } = useTranslation();
   const [tab, setTab] = useState<"logs" | "env" | "health" | "config" | "metrics" | "container">("logs");
   const [confirmStop, setConfirmStop] = useState(false);
   const [building, setBuilding] = useState(false);
@@ -832,7 +856,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
     setBuilding(true);
     try {
       await apiRuntimeBuild(workspaceId, id);
-      toast(`已开始构建 ${id}`, "info");
+      toast(t("pages.run.buildStarted", { id }), "info");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     } finally {
@@ -841,30 +865,30 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   };
 
   const stack = isCompose
-    ? `Compose · ${spec?.service ?? id}`
+    ? t("pages.run.stackCompose", { service: spec?.service ?? id })
     : svc.kind === "node"
-      ? `Node · ${spec?.package_manager ?? "npm"}`
+      ? t("pages.run.stackNode", { pm: spec?.package_manager ?? "npm" })
       : spec?.module && spec.module !== "."
-        ? `Spring Boot · ${spec.module}`
-        : "Spring Boot";
-  const topo = spec?.depends_on?.length ? `依赖 ${spec.depends_on.join(", ")}` : "无依赖";
+        ? t("pages.run.stackSpringModule", { module: spec.module })
+        : t("pages.run.stackSpring");
+  const topo = spec?.depends_on?.length ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") }) : t("pages.run.noDeps");
 
   type DetailTab = "logs" | "env" | "health" | "config" | "metrics" | "container";
   const tabs: { k: DetailTab; label: string; icon: typeof FileText }[] = [
-    { k: "logs", label: "日志", icon: FileText },
-    { k: "env", label: "环境", icon: Settings2 },
-    { k: "health", label: "健康", icon: Activity },
-    { k: "config", label: "配置", icon: FileText },
-    { k: "metrics", label: "指标", icon: Activity },
+    { k: "logs", label: t("nav.logs"), icon: FileText },
+    { k: "env", label: t("pages.run.tabEnv"), icon: Settings2 },
+    { k: "health", label: t("pages.run.tabHealth"), icon: Activity },
+    { k: "config", label: t("nav.config"), icon: FileText },
+    { k: "metrics", label: t("pages.run.tabMetrics"), icon: Activity },
     // 1.3：容器 Tab 仅 compose 服务显示（镜像/容器 ID/healthcheck/退出码，只读）
-    ...(isCompose ? [{ k: "container" as DetailTab, label: "容器", icon: Container }] : []),
+    ...(isCompose ? [{ k: "container" as DetailTab, label: t("nav.docker"), icon: Container }] : []),
   ];
   const locked = [
     // 版本以界面设计文档（真源）为准：终端 = 1.5 PTY；
     // 容器 Tab 1.3 已对 compose 服务上线，不再列入锁定项；
     // 代理 = 1.6 网关。指标 1.2 已上线为正式 Tab。
-    { label: "终端", v: "1.5" },
-    { label: "代理", v: "1.6" },
+    { label: t("pages.run.lockTerminal"), v: "1.5" },
+    { label: t("pages.run.lockProxy"), v: "1.6" },
   ];
 
   return (
@@ -874,13 +898,13 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-clip">
           <StatusDot state={svc.state} size={10} />
           <h1 className="min-w-0 truncate text-[1.08rem] font-bold tracking-tight text-[var(--t1,#222326)]">{id}</h1>
-          <KindBadge kind={svc.kind} />
+          <KindBadge kind={svc.kind} buildTool={spec?.build_tool} />
           {external ? (
             <span
               className="shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 py-0.5 text-[11px] font-medium text-[var(--t2,#62666d)]"
-              title="外部进程：非 SuperTask 启动，仅监控"
+              title={t("pages.run.externalMonitorTitle")}
             >
-              外部 · 仅监控
+              {t("pages.run.externalMonitor")}
             </span>
           ) : null}
           <span
@@ -898,7 +922,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
           {jarService || composeService ? (
             <Button size="sm" variant="secondary" className="gap-1" onClick={() => void buildJar()} disabled={building || isBusy}>
               {building ? <Loader2 className="size-3.5 animate-spin" /> : <Hammer className="size-3.5" />}
-              {building ? "构建中…" : jarService ? "构建 jar" : "构建镜像"}
+              {building ? t("pages.run.building") : jarService ? t("pages.run.buildJar") : t("pages.docker.buildImage")}
             </Button>
           ) : null}
           {isRunning ? (
@@ -907,10 +931,10 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               variant="warn"
               className="gap-1"
               disabled={isBusy}
-              title={external ? "停止外部进程并重新由 SuperTask 启动" : undefined}
+              title={external ? t("pages.run.restartExternalTitle") : undefined}
               onClick={() => runtime.actions.restartOne(id)}
             >
-              <RotateCw className="size-3.5" /> 重启
+              <RotateCw className="size-3.5" /> {t("common.restart")}
             </Button>
           ) : null}
           {isRunning || svc.state === "starting" ? (
@@ -921,11 +945,11 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               disabled={isBusy}
               onClick={() => (isRunning ? setConfirmStop(true) : runtime.actions.stopOne(id))}
             >
-              <Square className="size-3.5" /> 停止
+              <Square className="size-3.5" /> {t("common.stop")}
             </Button>
           ) : (
             <Button size="sm" variant="default" className="gap-1" disabled={isBusy} onClick={() => runtime.actions.startOne(id)}>
-              <Play className="size-3.5" /> {svc.state === "exited" || svc.last_error ? "重试启动" : "启动"}
+              <Play className="size-3.5" /> {svc.state === "exited" || svc.last_error ? t("pages.run.retryStart") : t("common.start")}
             </Button>
           )}
         </div>
@@ -933,14 +957,14 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
 
       <ConfirmDialog
         open={confirmStop}
-        title={`停止「${id}」？`}
+        title={t("pages.run.stopConfirmTitle", { id })}
         description={
           external
-            ? "该服务为外部进程（非 SuperTask 启动），将按端口定位 PID 并 taskkill 结束整棵进程树。"
-            : "将结束该服务的整棵进程树（含其派生的子进程）。"
+            ? t("pages.run.stopConfirmExternal")
+            : t("pages.run.stopConfirmDesc")
         }
-        confirmText="停止服务"
-        cancelText="取消"
+        confirmText={t("pages.run.stopService")}
+        cancelText={t("common.cancel")}
         destructive
         onConfirm={() => {
           setConfirmStop(false);
@@ -964,11 +988,11 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               ? "text-[#4ADE80]"
               : "text-[#9AA0AB] hover:bg-white/10 hover:text-[#E7E9EC]",
           )}
-          title={copied ? "已复制" : "复制命令"}
+          title={copied ? t("common.copied") : t("pages.run.copyCmd")}
           onClick={() => {
             void copyText(cmd).then((ok) => {
               if (!ok) {
-                toast("复制失败，请手动选择复制", "err");
+                toast(t("pages.run.copyCmdFailed"), "err");
                 return;
               }
               setCopied(true);
@@ -977,27 +1001,27 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
           }}
         >
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-          {copied ? <span>已复制</span> : null}
+          {copied ? <span>{t("common.copied")}</span> : null}
         </button>
       </div>
 
       {/* meta strip */}
       <div className="mx-4 mt-2 flex flex-wrap items-center gap-x-[1.1rem] gap-y-1.5 rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-3.5 py-2">
-        <Meta k="端口" v={svc.port != null ? `${svc.port}` : "—"} accent />
-        <Meta k="运行栈" v={stack} />
-        <Meta k="拓扑" v={topo} muted />
+        <Meta k={t("pages.run.metaPort")} v={svc.port != null ? `${svc.port}` : "—"} accent />
+        <Meta k={t("pages.run.metaStack")} v={stack} />
+        <Meta k={t("pages.run.metaTopo")} v={topo} muted />
         <Meta
           k="PID"
           v={
             svc.pid != null
               ? `${svc.pid}${isRunning ? " · Job Object" : ""}`
               : isCompose
-                ? "容器托管"
+                ? t("pages.run.containerManaged")
                 : "—"
           }
         />
-        <Meta k="日志" v={`service:${id}`} mono />
-        <Meta k="已运行" v={svc.started_at_ms ? fmtDuration(svc.started_at_ms) : "—"} ok={isRunning} />
+        <Meta k={t("pages.run.metaLog")} v={`service:${id}`} mono />
+        <Meta k={t("pages.run.metaUptime")} v={svc.started_at_ms ? fmtDuration(svc.started_at_ms) : "—"} ok={isRunning} />
       </div>
 
       {/* segbar */}
@@ -1061,6 +1085,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
 }
 
 function MetricsPanel({ id, metric, compose = false }: { id: string; metric: ServiceMetrics | null; compose?: boolean }) {
+  const { t } = useTranslation();
   const fmtBytes = (n: number | null | undefined) => {
     if (n == null) return "—";
     if (n < 1024) return `${n} B`;
@@ -1069,15 +1094,15 @@ function MetricsPanel({ id, metric, compose = false }: { id: string; metric: Ser
     return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
   };
   const emptyHint = compose
-    ? "容器托管：容器由 Docker Compose 管理，1.3 不采集容器内指标（docker stats 不在范围），CPU / 内存以「—」展示"
-    : `${id} 当前没有可用的 Job Object 指标（外部进程不采样）`;
+    ? t("pages.run.metricsComposeHint")
+    : t("pages.run.metricsEmptyHint", { id });
   return (
     <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3">
       <MetricTile icon={<Cpu className="size-4" />} label="CPU" value={metric?.cpu_percent == null ? "—" : `${metric.cpu_percent.toFixed(1)}%`} />
-      <MetricTile icon={<HardDrive className="size-4" />} label="内存" value={fmtBytes(metric?.memory_bytes)} />
-      <MetricTile icon={<Boxes className="size-4" />} label="进程树" value={metric?.process_count == null ? "—" : `${metric.process_count} 个进程`} />
+      <MetricTile icon={<HardDrive className="size-4" />} label={t("pages.run.metaMemory")} value={fmtBytes(metric?.memory_bytes)} />
+      <MetricTile icon={<Boxes className="size-4" />} label={t("pages.run.metaProcTree")} value={metric?.process_count == null ? "—" : t("pages.run.procCount", { n: metric.process_count })} />
       <div className="sm:col-span-3 text-[0.72rem] text-[var(--t3,#8a8f98)]">
-        {metric ? `最近采样：${new Date(metric.sampled_at_ms).toLocaleTimeString()}` : emptyHint}
+        {metric ? t("pages.run.lastSample", { time: new Date(metric.sampled_at_ms).toLocaleTimeString() }) : emptyHint}
       </div>
     </div>
   );
@@ -1092,6 +1117,7 @@ function MetricsPanel({ id, metric, compose = false }: { id: string; metric: Ser
 function ContainerPanel({ id }: { id: string }) {
   const ws = useWorkspace();
   const rt = useRuntime();
+  const { t } = useTranslation();
   const [probe, setProbe] = useState<DockerProbe | null>(null);
   const [containers, setContainers] = useState<ContainerSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1125,14 +1151,14 @@ function ContainerPanel({ id }: { id: string }) {
   const engineOffline =
     probe && (!probe.found || !probe.running)
       ? !probe.found
-        ? "未检测到 Docker：PATH 中没有 docker 可执行文件。"
-        : "Docker 引擎未运行：请启动 Docker Desktop 后重试。"
+        ? t("pages.run.dockerNotFoundHint")
+        : t("pages.run.dockerDownHint")
       : null;
 
   if (loading && containers == null && !error) {
     return (
       <div className="flex items-center gap-2 p-4 text-[0.8rem] text-[var(--t2,#62666d)]">
-        <Loader2 className="size-3.5 animate-spin" /> 正在查询容器状态…
+        <Loader2 className="size-3.5 animate-spin" /> {t("pages.run.queryingContainer")}
       </div>
     );
   }
@@ -1141,11 +1167,11 @@ function ContainerPanel({ id }: { id: string }) {
     <div className="flex flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
-          <Container className="size-4 text-[#12B76A]" /> 容器信息
+          <Container className="size-4 text-[#12B76A]" /> {t("pages.run.containerInfo")}
           <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">compose: {composeService}</span>
         </div>
         <Button variant="soft" size="sm" className="gap-1" disabled={loading} onClick={() => void load()}>
-          {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />} 刷新
+          {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />} {t("common.refresh")}
         </Button>
       </div>
 
@@ -1157,24 +1183,24 @@ function ContainerPanel({ id }: { id: string }) {
         </div>
       ) : !container ? (
         <div className="rounded-[var(--r-md,12px)] border border-dashed border-[var(--line-strong,#d0d6e0)] p-5 text-center text-[0.8rem] text-[var(--t3,#8a8f98)]">
-          当前 compose project 中没有服务 {composeService} 的容器（尚未启动，或已被清理）。
+          {t("pages.run.noContainer", { service: composeService })}
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
-            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">镜像</div>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.docker.colImage")}</div>
             <div className="break-all font-mono text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{container.image}</div>
           </div>
           <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
-            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">容器 ID</div>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.docker.colContainerId")}</div>
             <div className="font-mono text-[0.85rem] font-semibold text-[var(--t1,#222326)]" title={container.container_id}>
               {container.container_id.startsWith("sha256:") ? container.container_id.slice(7, 19) : container.container_id.slice(0, 12)}
             </div>
           </div>
           <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
             <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-              healthcheck 状态
-              <span className="ml-1 font-normal normal-case tracking-normal">（compose 定义，仅展示）</span>
+              {t("pages.run.healthcheck")}
+              <span className="ml-1 font-normal normal-case tracking-normal">{t("pages.run.healthcheckNote")}</span>
             </div>
             {container.health ? (
               <span
@@ -1190,11 +1216,11 @@ function ContainerPanel({ id }: { id: string }) {
                 {container.health}
               </span>
             ) : (
-              <span className="text-[0.8rem] text-[var(--t3,#8a8f98)]">未定义或无读数</span>
+              <span className="text-[0.8rem] text-[var(--t3,#8a8f98)]">{t("pages.run.healthcheckNone")}</span>
             )}
           </div>
           <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
-            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">最近退出码</div>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.run.lastExitCode")}</div>
             {svc?.last_exit ? (
               <span
                 className={cn(
@@ -1212,7 +1238,7 @@ function ContainerPanel({ id }: { id: string }) {
       )}
 
       <p className="text-[0.72rem] leading-relaxed text-[var(--t3,#8a8f98)]">
-        compose 服务无宿主 pid 与 Job Object 指标（「容器托管」）；compose healthcheck 只展示，健康状态机仍按 YAML health（默认 tcp 打主机映射端口）。
+        {t("pages.run.containerFootnote")}
       </p>
     </div>
   );
@@ -1270,6 +1296,7 @@ function Meta({
 function useScriptView(id: string) {
   const rt = useRuntime();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const view: ScriptRuntimeView | null = rt.state.script?.id === id ? rt.state.script : null;
   const isRunning = view?.state === "running";
   // 引擎限制：同时只能跑一个脚本（SCRIPT_BUSY）
@@ -1278,7 +1305,7 @@ function useScriptView(id: string) {
   const run = async () => {
     try {
       await apiScriptRun(id);
-      toast(`已开始运行脚本 ${id}`, "info");
+      toast(t("pages.run.scriptStarted", { id }), "info");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -1286,7 +1313,7 @@ function useScriptView(id: string) {
   const cancel = async () => {
     try {
       await apiScriptCancel(id);
-      toast("已发送停止信号", "info");
+      toast(t("pages.run.stopSignalSent"), "info");
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     }
@@ -1297,11 +1324,12 @@ function useScriptView(id: string) {
 
 function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSpec; selected: boolean; onOpen: () => void }) {
   const { view, isRunning, anyRunning, run, cancel } = useScriptView(id);
+  const { t } = useTranslation();
   const [confirmStop, setConfirmStop] = useState(false);
 
   const foot = isRunning ? (
     <span className="flex items-center gap-1 text-[11px] text-[var(--st-ok-deep,#1e7e35)]">
-      运行中{view?.pid ? <span className="font-mono"> · pid {view.pid}</span> : null}
+      {t("states.script_running")}{view?.pid ? <span className="font-mono"> · pid {view.pid}</span> : null}
     </span>
   ) : view?.last_error ? (
     <span className="block truncate text-[11px] text-[var(--st-danger,#dc2626)]" title={view.last_error}>⚠ {view.last_error}</span>
@@ -1310,7 +1338,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
       {scriptStateLabel(view)}
     </span>
   ) : (
-    <span className="text-[11px] text-[var(--t3,#8a8f98)]">脚本任务 · {spec.cmds.length} 条命令</span>
+    <span className="text-[11px] text-[var(--t3,#8a8f98)]">{t("pages.run.scriptTask", { n: spec.cmds.length })}</span>
   );
 
   return (
@@ -1330,7 +1358,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
             <button
               type="button"
               className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)] disabled:cursor-not-allowed disabled:opacity-50"
-              title="停止脚本"
+              title={t("pages.run.stopScriptTitle")}
               onClick={() => setConfirmStop(true)}
             >
               <Square className="size-3.5" />
@@ -1339,7 +1367,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
             <button
               type="button"
               className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)] disabled:cursor-not-allowed disabled:opacity-50"
-              title={anyRunning ? "已有脚本在运行" : "运行脚本"}
+              title={anyRunning ? t("pages.run.scriptBusy") : t("pages.run.runScriptTitle")}
               disabled={anyRunning}
               onClick={() => void run()}
             >
@@ -1353,10 +1381,10 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
 
       <ConfirmDialog
         open={confirmStop}
-        title={`停止脚本「${id}」？`}
-        description="将结束该脚本当前命令的整棵进程树，后续命令不再执行。"
-        confirmText="停止脚本"
-        cancelText="取消"
+        title={t("pages.run.stopScriptConfirmTitle", { id })}
+        description={t("pages.run.stopScriptConfirmDesc")}
+        confirmText={t("pages.run.stopScript")}
+        cancelText={t("common.cancel")}
         destructive
         onConfirm={() => {
           setConfirmStop(false);
@@ -1371,6 +1399,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
 function ScriptDetail({ id }: { id: string }) {
   const ws = useWorkspace();
   const { view, isRunning, anyRunning, run, cancel } = useScriptView(id);
+  const { t } = useTranslation();
   const [confirmStop, setConfirmStop] = useState(false);
   const [copied, setCopied] = useState(false);
   const { toast } = useToast();
@@ -1387,7 +1416,7 @@ function ScriptDetail({ id }: { id: string }) {
   const copyCmds = () => {
     void copyText(spec.cmds.join("\n")).then((ok) => {
       if (!ok) {
-        toast("复制失败，请手动选择复制", "err");
+        toast(t("pages.run.copyCmdFailed"), "err");
         return;
       }
       setCopied(true);
@@ -1410,7 +1439,7 @@ function ScriptDetail({ id }: { id: string }) {
         <div className="flex shrink-0 items-center gap-2">
           {isRunning ? (
             <Button size="sm" variant="destructive" className="gap-1" onClick={() => setConfirmStop(true)}>
-              <Square className="size-3.5" /> 停止
+              <Square className="size-3.5" /> {t("common.stop")}
             </Button>
           ) : (
             <Button
@@ -1418,10 +1447,10 @@ function ScriptDetail({ id }: { id: string }) {
               variant="default"
               className="gap-1"
               disabled={anyRunning}
-              title={anyRunning ? "已有脚本在运行：同一工作区同时只能运行一个脚本" : undefined}
+              title={anyRunning ? t("errors.SCRIPT_BUSY") : undefined}
               onClick={() => void run()}
             >
-              <Play className="size-3.5" /> {view?.last_exit ? "重新运行" : "运行"}
+              <Play className="size-3.5" /> {view?.last_exit ? t("pages.run.rerun") : t("pages.run.run")}
             </Button>
           )}
         </div>
@@ -1429,10 +1458,10 @@ function ScriptDetail({ id }: { id: string }) {
 
       <ConfirmDialog
         open={confirmStop}
-        title={`停止脚本「${id}」？`}
-        description="将结束该脚本当前命令的整棵进程树，后续命令不再执行。"
-        confirmText="停止脚本"
-        cancelText="取消"
+        title={t("pages.run.stopScriptConfirmTitle", { id })}
+        description={t("pages.run.stopScriptConfirmDesc")}
+        confirmText={t("pages.run.stopScript")}
+        cancelText={t("common.cancel")}
         destructive
         onConfirm={() => {
           setConfirmStop(false);
@@ -1461,25 +1490,25 @@ function ScriptDetail({ id }: { id: string }) {
               "flex shrink-0 items-center gap-1 rounded-[var(--r-sm,8px)] px-1.5 py-1 text-[0.68rem] transition-all duration-150",
               copied ? "text-[#4ADE80]" : "text-[#9AA0AB] hover:bg-white/10 hover:text-[#E7E9EC]",
             )}
-            title={copied ? "已复制" : "复制命令"}
+            title={copied ? t("common.copied") : t("pages.run.copyCmd")}
             onClick={copyCmds}
           >
             {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-            {copied ? <span>已复制</span> : null}
+            {copied ? <span>{t("common.copied")}</span> : null}
           </button>
         </div>
       </div>
 
       {/* meta strip */}
       <div className="mx-4 mt-2 flex flex-wrap items-center gap-x-[1.1rem] gap-y-1.5 rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-3.5 py-2">
-        <Meta k="命令" v={`${spec.cmds.length} 条`} />
-        <Meta k="工作目录" v={spec.cwd ?? "工作区根目录"} muted />
-        <Meta k="超时" v={`${spec.timeout_secs ?? 1800}s`} />
+        <Meta k={t("pages.run.metaCmds")} v={t("pages.run.cmdCount", { n: spec.cmds.length })} />
+        <Meta k={t("pages.run.metaCwd")} v={spec.cwd ?? t("pages.run.wsRoot")} muted />
+        <Meta k={t("pages.run.metaTimeout")} v={`${spec.timeout_secs ?? 1800}s`} />
         <Meta k="PID" v={view?.pid != null ? `${view.pid} · Job Object` : "—"} />
-        <Meta k="日志" v={`script:${id}`} mono />
+        <Meta k={t("pages.run.metaLog")} v={`script:${id}`} mono />
         <Meta
-          k="上次退出"
-          v={view?.last_exit ? `码 ${view.last_exit.code}` : "—"}
+          k={t("pages.run.metaLastExit")}
+          v={view?.last_exit ? t("pages.run.exitCode", { code: view.last_exit.code }) : "—"}
           ok={view?.last_exit?.code === 0}
         />
       </div>
@@ -1497,6 +1526,7 @@ function ScriptDetail({ id }: { id: string }) {
 export function RunPage() {
   const rt = useRuntime();
   const ws = useWorkspace();
+  const { t } = useTranslation();
   const { compact } = useOutletContext<ShellCtx>();
   const [selected, setSelected] = useState<{ kind: "service" | "script"; id: string } | null>(null);
 
@@ -1549,7 +1579,7 @@ export function RunPage() {
               type="button"
               onClick={toggleCards}
               className="grid size-8 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] text-[var(--t2,#62666d)] transition-colors hover:border-[var(--t3,#8a8f98)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--t1,#222326)]"
-              title="展开服务列表"
+              title={t("pages.run.expandList")}
             >
               <PanelLeftOpen className="size-4" />
             </button>
@@ -1570,13 +1600,13 @@ export function RunPage() {
         ) : (
           <>
             <div className="flex items-center gap-2 px-1 pb-2 pt-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">服务</span>
-              <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">{serviceIds.length} · 运行 {running}</span>
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.run.servicesHeader")}</span>
+              <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">{t("pages.run.serviceCountRunning", { total: serviceIds.length, running })}</span>
               <button
                 type="button"
                 onClick={toggleCards}
                 className="ml-auto grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] text-[var(--t2,#62666d)] transition-colors hover:border-[var(--t3,#8a8f98)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--t1,#222326)]"
-                title={totalItems === 1 ? "收起服务列表（单服务工作区）" : "收起服务列表"}
+                title={totalItems === 1 ? t("pages.run.collapseListSingle") : t("pages.run.collapseList")}
               >
                 <PanelLeftClose className="size-3.5" />
               </button>
@@ -1584,7 +1614,7 @@ export function RunPage() {
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
               {serviceIds.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[var(--line,#e6e6e6)] p-6 text-center text-sm text-[var(--t3,#8a8f98)]">
-                  工作区没有可运行的服务。
+                  {t("pages.run.noServices")}
                 </div>
               ) : (
                 serviceIds.map((id) => (
@@ -1602,7 +1632,7 @@ export function RunPage() {
               {scriptIds.length > 0 ? (
                 <>
                   <div className="flex items-center gap-2 px-1 pb-2 pt-4">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">脚本</span>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.run.scriptsHeader")}</span>
                     <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">{scriptIds.length}</span>
                   </div>
                   {scriptIds.map((id) => (
@@ -1627,7 +1657,7 @@ export function RunPage() {
         style={{ background: "radial-gradient(70% 45% at 88% 0%, rgb(94 106 210 / 0.035), transparent 60%)" }}
       >
         {!sel ? (
-          <div className="flex h-full items-center justify-center text-sm text-[var(--t3,#8a8f98)]">选择一个服务查看详情</div>
+          <div className="flex h-full items-center justify-center text-sm text-[var(--t3,#8a8f98)]">{t("pages.run.selectDetail")}</div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--r-lg,16px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] shadow-[var(--shadow-1,0_1px_2px_rgb(16_24_40_/_0.05))]">
             {sel.kind === "service" ? <ServiceDetail id={sel.id} compact={compact} /> : <ScriptDetail id={sel.id} />}
@@ -1645,12 +1675,12 @@ export function RunPage() {
             className="w-[420px] rounded-xl border border-red-200 bg-white p-5 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="mb-2 text-sm font-semibold text-red-600">启动失败</div>
+            <div className="mb-2 text-sm font-semibold text-red-600">{t("pages.run.startFailed")}</div>
             <p className="mb-4 whitespace-pre-wrap break-words text-sm text-[var(--t1,#222326)]">
               {rt.state.error}
             </p>
             <div className="flex justify-end">
-              <Button onClick={() => rt.actions.clearError()}>知道了</Button>
+              <Button onClick={() => rt.actions.clearError()}>{t("pages.run.ack")}</Button>
             </div>
           </div>
         </div>

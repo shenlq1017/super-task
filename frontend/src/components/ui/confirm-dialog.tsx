@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "./button";
 import { cn } from "@/lib/utils";
 import { TriangleAlert } from "lucide-react";
@@ -11,8 +12,8 @@ export function ConfirmDialog({
   open,
   title,
   description,
-  confirmText = "确认",
-  cancelText = "取消",
+  confirmText,
+  cancelText,
   destructive,
   onConfirm,
   onCancel,
@@ -27,6 +28,9 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
+  const confirm = confirmText ?? t("common.confirm");
+  const cancel = cancelText ?? t("common.cancel");
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -71,7 +75,7 @@ export function ConfirmDialog({
         ) : null}
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" size="sm" onClick={onCancel}>
-            {cancelText}
+            {cancel}
           </Button>
           <Button
             size="sm"
@@ -83,7 +87,7 @@ export function ConfirmDialog({
             }
             onClick={onConfirm}
           >
-            {confirmText}
+            {confirm}
           </Button>
         </div>
       </div>

@@ -68,7 +68,145 @@ fn run_netstat() -> Result<String> {
 }
 
 pub fn tcp_listeners() -> Result<Vec<TcpListener>> {
-    Ok(parse_netstat_listeners(&run_netstat()?))
+    #[cfg(windows)]
+    {
+        Ok(parse_netstat_listeners(&run_netstat()?))
+    }
+    #[cfg(not(windows))]
+    {
+        unix_listeners()
+    }
+}
+
+/// 1.4 §4.4：Linux 读 `/proc/net/tcp{,6}` + `/proc/<pid>/fd` 关联 PID；
+/// macOS spawn `lsof -nP -iTCP -sTCP:LISTEN`（系统自带）。读不到 → `PORT_SCAN_FAILED`，
+/// 不把「无法检查」当「端口可用」（口径与 Windows 一致）。
+#[cfg(not(windows))]
+fn unix_listeners() -> Result<Vec<TcpListener>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_listeners()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        macos_listeners()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_listeners() -> Result<Vec<TcpListener>> {
+    fn read_small(path: &str) -> std::io::Result<String> {
+        Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
+    }
+    let v4 = read_small("/proc/net/tcp")
+        .map_err(|e| Error::new(ErrorCode::PortScanFailed, format!("无法读取 /proc/net/tcp: {e}")))?;
+    let v6 = read_small("/proc/net/tcp6")
+        .map_err(|e| Error::new(ErrorCode::PortScanFailed, format!("无法读取 /proc/net/tcp6: {e}")))?;
+    let mut rows = parse_proc_net_tcp(&v4);
+    rows.extend(parse_proc_net_tcp(&v6));
+
+    // inode → pid：扫 /proc/<pid>/fd 的 socket:[inode] 链接
+    let mut inode_pid: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+    if let Ok(all) = procfs::process::all_processes() {
+        for p in all.into_iter().filter_map(|p| p.ok()) {
+            let pid = p.pid as u32;
+            if let Ok(fds) = p.fd() {
+                for fd in fds.into_iter().flatten() {
+                    if let procfs::process::FDTarget::Socket(inode) = fd.target {
+                        inode_pid.entry(inode).or_insert(pid);
+                    }
+                }
+            }
+        }
+    }
+    Ok(rows
+        .into_iter()
+        .map(|(address, port, inode)| TcpListener {
+            address,
+            port,
+            pid: inode_pid.get(&inode).copied().unwrap_or(0),
+        })
+        .collect())
+}
+
+/// 解析 `/proc/net/tcp{,6}` 的 LISTEN 行 → (规范地址, 端口, inode)。
+/// `st == 0A` 即 LISTEN；v4 地址是 LE u32 的 hex，v6 是 4 个 LE u32 的 hex。
+#[cfg(target_os = "linux")]
+fn parse_proc_net_tcp(text: &str) -> Vec<(String, u16, u64)> {
+    let mut out = Vec::new();
+    for line in text.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 10 || cols[3] != "0A" {
+            continue;
+        }
+        let Some((ip_hex, port_hex)) = cols[1].split_once(':') else {
+            continue;
+        };
+        let Ok(port) = u16::from_str_radix(port_hex, 16) else {
+            continue;
+        };
+        let address = if ip_hex.len() == 8 {
+            let v = u32::from_str_radix(ip_hex, 16).unwrap_or(0);
+            let b = v.to_le_bytes();
+            format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+        } else if ip_hex.len() == 32 {
+            let mut octets = [0u8; 16];
+            for (i, seg) in ip_hex.as_bytes().chunks(8).enumerate() {
+                let hex = std::str::from_utf8(seg).unwrap_or("0");
+                let v = u32::from_str_radix(hex, 16).unwrap_or(0);
+                octets[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            format!("[{}]", std::net::Ipv6Addr::from(octets))
+        } else {
+            continue;
+        };
+        let Ok(inode) = cols[9].parse::<u64>() else {
+            continue;
+        };
+        out.push((address, port, inode));
+    }
+    out
+}
+
+#[cfg(not(target_os = "linux"))]
+fn macos_listeners() -> Result<Vec<TcpListener>> {
+    let out = Command::new("lsof")
+        .args(["-nP", "-iTCP", "-sTCP:LISTEN"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| Error::new(ErrorCode::PortScanFailed, format!("无法读取端口表（lsof）: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::new(
+            ErrorCode::PortScanFailed,
+            "lsof 非零退出，端口表不可用",
+        ));
+    }
+    Ok(parse_lsof_listeners(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// 解析 `lsof -nP -iTCP -sTCP:LISTEN` 输出（跳表头）：`PID` 第 2 列，
+/// `NAME` 形如 `*:8081` / `127.0.0.1:8081` / `[::]:6379`。
+#[cfg(not(target_os = "linux"))]
+fn parse_lsof_listeners(text: &str) -> Vec<TcpListener> {
+    let mut out = Vec::new();
+    for line in text.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 9 {
+            continue;
+        }
+        let Ok(pid) = cols[1].parse::<u32>() else {
+            continue;
+        };
+        let name = cols[8];
+        let Some((addr, port)) = split_addr_port(name) else {
+            continue;
+        };
+        // lsof 通配符 `*` 归一化为 0.0.0.0（与 Windows netstat 口径一致）
+        let addr = if addr == "*" { "0.0.0.0".to_string() } else { addr };
+        out.push(TcpListener { address: addr, port, pid });
+    }
+    out
 }
 
 /// 服务自身运行态：排除「自己的占用」时使用。
@@ -194,8 +332,23 @@ fn process_name_of(pid: u32) -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn process_name_of(_pid: u32) -> Option<String> {
-    None
+fn process_name_of(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+        text.lines().next().map(str::to_string)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let out = Command::new("ps")
+            .args(["-o", "comm=", "-p", &pid.to_string()])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        text.lines().next().map(|l| l.trim().to_string())
+    }
 }
 
 /// §5.2：从当前端口向上扫，跳过其他服务的 port/ports、系统保留段与已发现监听；
@@ -458,5 +611,38 @@ mod tests {
         let web = s.services.get("web").unwrap();
         assert_eq!(web.env.get("PORT").map(String::as_str), Some("9999"));
         assert!(notes2.iter().any(|n| n.contains("PORT=9999")));
+    }
+
+    // ---- 1.4 Unix 端口表解析（三平台 CI 跑；本机仅对应平台执行）----
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_net_tcp_parses_listen_v4_v6() {
+        // 0100007F:1F91 = 127.0.0.1:8081（LE）；:1F90 = 8080（LE hex）；0A = LISTEN
+        let text = "  sl local_address rem_address   st tx:rx:tr:when retrnsmt uid timeout inode\n   0: 0100007F:1F91 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1\n   1: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 23456 1\n   2: 00000000:1F91 00000000:0000 01 00000000:00000000 00:00000000 00000000     0        0 34567 1\n";
+        let rows = parse_proc_net_tcp(text);
+        assert_eq!(rows.len(), 2, "只解析 LISTEN(0A) 行");
+        assert_eq!(rows[0], ("127.0.0.1".to_string(), 8081u16, 12345u64));
+        assert_eq!(rows[1], ("0.0.0.0".to_string(), 8080u16, 23456u64));
+
+        let v6 = "  sl local_address rem_address   st tx:rx:tr:when retrnsmt uid timeout inode\n   0: 00000000000000000000000000000000:1F91 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 45678 1\n";
+        let rows6 = parse_proc_net_tcp(v6);
+        assert_eq!(rows6.len(), 1);
+        assert_eq!(rows6[0].0, "[::]");
+        assert_eq!(rows6[0].1, 8081);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn lsof_parses_listen_rows() {
+        let text = "COMMAND   PID  USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\njava    4120  user   45u  IPv6  0xabcdef      0t0  TCP *:8081 (LISTEN)\nnode    1234  user   23u  IPv4  0x123456      0t0  TCP 127.0.0.1:5173 (LISTEN)\n";
+        let ls = parse_lsof_listeners(text);
+        assert_eq!(ls.len(), 2);
+        assert_eq!(ls[0].pid, 4120);
+        assert_eq!(ls[0].address, "0.0.0.0", "lsof 通配符 * 归一化");
+        assert_eq!(ls[0].port, 8081);
+        assert_eq!(ls[1].pid, 1234);
+        assert_eq!(ls[1].address, "127.0.0.1");
+        assert_eq!(ls[1].port, 5173);
     }
 }

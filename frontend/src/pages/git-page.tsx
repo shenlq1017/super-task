@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { FolderSearch, GitBranch, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -17,14 +18,7 @@ import { fmtTime, opErrorLabel } from "../lib/status";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
 import { useWorkspace } from "../providers/workspace-provider";
 
-const OP_STATE_LABEL: Record<OpState, string> = {
-  queued: "排队中",
-  running: "进行中",
-  succeeded: "已完成",
-  failed: "失败",
-  cancelled: "已取消",
-};
-
+/** operation 状态文案走 `pages.git.op_*`；颜色本地保留。 */
 const OP_STATE_COLOR: Record<OpState, string> = {
   queued: "var(--t3,#8a8f98)",
   running: "var(--st-accent,#5e6ad2)",
@@ -33,13 +27,13 @@ const OP_STATE_COLOR: Record<OpState, string> = {
   cancelled: "var(--t3,#8a8f98)",
 };
 
-/** 单层目录名校验（clone 目标目录名，与模板页同一套规则）。 */
+/** 单层目录名校验（clone 目标目录名，与模板页同一套规则）。返回 i18n key，null = 合法。 */
 function validateDirectoryName(name: string): string | null {
   const n = name.trim();
-  if (!n) return "请输入目标目录名";
-  if (n === "." || n === "..") return "不允许使用 . 或 ..";
-  if (/[/\\]/.test(n)) return "目录名必须是单层目录，不能包含 / 或 \\";
-  if (n.includes(":")) return "目录名不能包含盘符分隔符 :";
+  if (!n) return "pages.git.dirErrEmpty";
+  if (n === "." || n === "..") return "pages.git.dirErrDot";
+  if (/[/\\]/.test(n)) return "pages.git.dirErrSep";
+  if (n.includes(":")) return "pages.git.dirErrDrive";
   return null;
 }
 
@@ -64,8 +58,9 @@ function StatusRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-/** 长操作进度卡片（与模板页同构：state 中文 + message + 条件进度条）。 */
+/** 长操作进度卡片（与模板页同构：state 本地化 + message + 条件进度条）。 */
 function GitOperationCard({ op }: { op: OperationState }) {
+  const { t } = useTranslation();
   return (
     <Card
       className={cn(
@@ -82,10 +77,10 @@ function GitOperationCard({ op }: { op: OperationState }) {
           <span className="size-2 shrink-0 rounded-full" style={{ background: OP_STATE_COLOR[op.state] }} />
         )}
         <span className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">
-          {op.kind === "git.clone" ? "克隆仓库" : "拉取更新"}
+          {op.kind === "git.clone" ? t("pages.git.cloneTitle") : t("pages.git.pullTitle")}
         </span>
         <Badge variant={op.state === "failed" ? "destructive" : "soon"} className="shrink-0">
-          {OP_STATE_LABEL[op.state]}
+          {t(`pages.git.op_${op.state}`)}
         </Badge>
         <span className="truncate font-mono text-[0.62rem] text-[var(--t3,#8a8f98)]" title={op.operation_id}>
           {op.operation_id}
@@ -114,6 +109,7 @@ function GitOperationCard({ op }: { op: OperationState }) {
 /** 无工作区：clone 入口。 */
 function CloneEntry() {
   const { toast } = useToast();
+  const { t } = useTranslation();
   const openWs = useOpenWorkspace();
   const { get } = useOperations();
 
@@ -134,10 +130,10 @@ function CloneEntry() {
     handledOpRef.current = activeOpId;
     const wsId = operationResultWorkspaceId(op);
     if (wsId) {
-      toast(`仓库已克隆：${wsId.split(/[\\/]/).filter(Boolean).pop() ?? wsId}`, "ok");
+      toast(t("pages.git.clonedTo", { name: wsId.split(/[\\/]/).filter(Boolean).pop() ?? wsId }), "ok");
       void openWs(wsId);
     }
-  }, [op, activeOpId, openWs, toast]);
+  }, [op, activeOpId, openWs, toast, t]);
 
   const pickParentDirectory = async () => {
     if (isTauri()) {
@@ -152,7 +148,7 @@ function CloneEntry() {
         // 插件不可用时降级为手动输入
       }
     }
-    const p = window.prompt("输入目标父目录路径", parentPath);
+    const p = window.prompt(t("pages.git.promptParent"), parentPath);
     if (p) setParentPath(p);
   };
 
@@ -163,13 +159,13 @@ function CloneEntry() {
   const submit = async () => {
     if (submitting || opRunning) return;
     if (!url.trim()) {
-      toast("请输入仓库 URL", "warn");
+      toast(t("pages.git.urlRequired"), "warn");
       return;
     }
     const invalid = validateDirectoryName(effectiveDirName);
     setDirNameError(invalid);
     if (invalid || !parentPath.trim()) {
-      if (!parentPath.trim()) toast("请先选择或填写目标父目录", "warn");
+      if (!parentPath.trim()) toast(t("pages.git.parentRequired"), "warn");
       return;
     }
     setSubmitting(true);
@@ -187,32 +183,32 @@ function CloneEntry() {
   return (
     <>
       <Card className="p-4">
-        <div className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">克隆远程仓库为新工作区</div>
+        <div className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{t("pages.git.cloneHeading")}</div>
         <p className="mt-1 text-[0.74rem] text-[var(--t3,#8a8f98)]">
-          克隆完成后会自动扫描项目结构；认证交给 Git Credential Manager，URL 中不要内嵌账号密码。
+          {t("pages.git.cloneDesc")}
         </p>
         <label className="mt-3 flex flex-col gap-1">
-          <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">仓库 URL</span>
-          <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="例如 https://github.com/user/repo.git" />
+          <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.git.repoUrl")}</span>
+          <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={t("pages.git.urlPlaceholder")} />
         </label>
         <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
           <label className="flex flex-col gap-1">
-            <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">目标父目录</span>
+            <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.git.parentDir")}</span>
             <Input
               value={parentPath}
               onChange={(e) => setParentPath(e.target.value)}
-              placeholder="例如 C:\project\github"
+              placeholder={t("pages.git.parentDirPlaceholder")}
             />
           </label>
           <div className="flex items-end">
             <Button variant="outline" size="default" className="gap-1" onClick={() => void pickParentDirectory()}>
-              <FolderSearch /> 选择目录…
+              <FolderSearch /> {t("pages.git.pickDir")}
             </Button>
           </div>
         </div>
         <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           <label className="flex flex-col gap-1">
-            <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">目标目录名（单层）</span>
+            <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.git.dirName")}</span>
             <Input
               value={effectiveDirName}
               onChange={(e) => {
@@ -221,25 +217,25 @@ function CloneEntry() {
                 if (dirNameError) setDirNameError(validateDirectoryName(e.target.value));
               }}
               aria-invalid={!!dirNameError}
-              placeholder="留空则按 URL 推断"
+              placeholder={t("pages.git.dirNamePlaceholder")}
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">分支（可选）</span>
-            <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="默认远端分支" />
+            <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.git.branch")}</span>
+            <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder={t("pages.git.branchPlaceholder")} />
           </label>
         </div>
         {dirNameError ? (
           <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
-            {dirNameError}
+            {t(dirNameError)}
           </div>
         ) : null}
         <div className="mt-4 flex items-center justify-between gap-3">
           <span className="truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={targetPath}>
-            {targetPath ? `目标：${targetPath}` : ""}
+            {targetPath ? t("pages.git.target", { path: targetPath }) : ""}
           </span>
           <Button onClick={() => void submit()} disabled={submitting || opRunning || !url.trim()}>
-            开始克隆
+            {t("pages.git.startClone")}
           </Button>
         </div>
       </Card>
@@ -251,6 +247,7 @@ function CloneEntry() {
 /** 有工作区：git.status 展示 + pull。 */
 function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
   const { toast } = useToast();
+  const { t } = useTranslation();
   const { get } = useOperations();
 
   const [status, setStatus] = useState<GitStatus | null>(null);
@@ -288,9 +285,9 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
   useEffect(() => {
     if (!op || !activeOpId || op.state !== "succeeded" || handledOpRef.current === activeOpId) return;
     handledOpRef.current = activeOpId;
-    toast("拉取完成，已刷新状态", "ok");
+    toast(t("pages.git.pullDone"), "ok");
     void refresh();
-  }, [op, activeOpId, refresh, toast]);
+  }, [op, activeOpId, refresh, toast, t]);
 
   const startPull = async (allowDirty: boolean) => {
     if (opRunning) return;
@@ -308,12 +305,12 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
   const dirty = status?.dirty ?? false;
   const dirtySummary = status
     ? [
-        status.staged > 0 ? `暂存 ${status.staged} 项` : null,
-        status.unstaged > 0 ? `未暂存 ${status.unstaged} 项` : null,
-        status.untracked > 0 ? `未跟踪 ${status.untracked} 项` : null,
+        status.staged > 0 ? t("pages.git.stagedCount", { n: status.staged }) : null,
+        status.unstaged > 0 ? t("pages.git.unstagedCount", { n: status.unstaged }) : null,
+        status.untracked > 0 ? t("pages.git.untrackedCount", { n: status.untracked }) : null,
       ]
         .filter(Boolean)
-        .join("、")
+        .join(t("pages.git.summaryJoin"))
     : "";
 
   if (error && !status) {
@@ -330,7 +327,7 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
   if (!status) {
     return (
       <div className="flex items-center justify-center gap-2 py-12 text-[0.8rem] text-[var(--t3,#8a8f98)]" role="status">
-        <Loader2 className="size-4 animate-spin" /> 正在检测仓库状态…
+        <Loader2 className="size-4 animate-spin" /> {t("pages.git.checkingRepo")}
       </div>
     );
   }
@@ -339,9 +336,9 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
     return (
       <Card className="p-6 text-center" role="status">
         <GitBranch className="mx-auto size-8 text-[var(--line-strong,#d0d6e0)]" />
-        <div className="mt-2 text-[0.9rem] font-semibold text-[var(--t1,#222326)]">当前工作区不是 Git 仓库</div>
+        <div className="mt-2 text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{t("pages.git.notRepo")}</div>
         <div className="mt-1 text-[0.78rem] text-[var(--t3,#8a8f98)]">
-          目录里没有检测到 .git。可以先在 IDE 或终端执行 git init，再回到本页刷新。
+          {t("pages.git.notRepoDesc")}
         </div>
       </Card>
     );
@@ -353,24 +350,24 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <GitBranch className="size-4 shrink-0 text-[var(--st-accent,#5e6ad2)]" />
-            <span className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">仓库状态</span>
+            <span className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{t("pages.git.repoStatus")}</span>
             {status.detached || !status.branch ? (
               <Badge variant="outline" className="shrink-0">detached HEAD</Badge>
             ) : (
               <Badge variant="soon" className="shrink-0">{status.branch}</Badge>
             )}
             {dirty ? (
-              <Badge variant="destructive" className="shrink-0">有未提交修改</Badge>
+              <Badge variant="destructive" className="shrink-0">{t("pages.git.dirtyBadge")}</Badge>
             ) : (
-              <Badge variant="secondary" className="shrink-0">工作区干净</Badge>
+              <Badge variant="secondary" className="shrink-0">{t("pages.git.cleanBadge")}</Badge>
             )}
           </div>
           <div className="flex items-center gap-2">
             {lastRefresh ? (
-              <span className="font-mono text-[0.66rem] text-[var(--t3,#8a8f98)]">刷新于 {fmtTime(lastRefresh)}</span>
+              <span className="font-mono text-[0.66rem] text-[var(--t3,#8a8f98)]">{t("pages.git.refreshedAt", { time: fmtTime(lastRefresh) })}</span>
             ) : null}
             <Button variant="soft" size="sm" className="gap-1" onClick={() => void refresh()} disabled={loading}>
-              <RefreshCw className={cn(loading && "animate-spin")} /> 刷新
+              <RefreshCw className={cn(loading && "animate-spin")} /> {t("common.refresh")}
             </Button>
           </div>
         </div>
@@ -379,40 +376,40 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
 
         <div className="grid grid-cols-1 md:grid-cols-2">
           <div>
-            <StatusRow label="分支">
+            <StatusRow label={t("pages.git.branchLabel")}>
               {status.detached || !status.branch ? (
-                <span className="text-[var(--t2,#62666d)]">游离检出（不跟踪任何分支）</span>
+                <span className="text-[var(--t2,#62666d)]">{t("pages.git.detached")}</span>
               ) : (
                 <span className="font-mono text-[0.78rem]">{status.branch}</span>
               )}
             </StatusRow>
-            <StatusRow label="远端">
+            <StatusRow label={t("pages.git.remoteLabel")}>
               {status.remote ? (
                 <span className="font-mono text-[0.78rem]">{status.remote}</span>
               ) : (
-                <span className="text-[var(--t3,#8a8f98)]">未配置</span>
+                <span className="text-[var(--t3,#8a8f98)]">{t("pages.git.remoteNone")}</span>
               )}
             </StatusRow>
-            <StatusRow label="领先 / 落后">
+            <StatusRow label={t("pages.git.aheadBehind")}>
               <span className="font-mono text-[0.78rem]">
                 ↑ {status.ahead} · ↓ {status.behind}
               </span>
               {status.ahead === 0 && status.behind === 0 ? (
-                <span className="ml-2 text-[0.72rem] text-[var(--t3,#8a8f98)]">与远端一致</span>
+                <span className="ml-2 text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.git.inSync")}</span>
               ) : null}
             </StatusRow>
           </div>
           <div>
-            <StatusRow label="变更">
+            <StatusRow label={t("pages.git.changesLabel")}>
               <span className="font-mono text-[0.78rem]">
-                暂存 {status.staged} · 未暂存 {status.unstaged} · 未跟踪 {status.untracked}
+                {t("pages.git.stagedCount", { n: status.staged })} · {t("pages.git.unstagedCount", { n: status.unstaged })} · {t("pages.git.untrackedCount", { n: status.untracked })}
               </span>
             </StatusRow>
-            <StatusRow label="拉取前检查">
+            <StatusRow label={t("pages.git.pullCheck")}>
               {dirty ? (
-                <span className="text-[0.76rem] text-[#B7791F]">有未提交修改，默认禁止拉取</span>
+                <span className="text-[0.76rem] text-[#B7791F]">{t("pages.git.dirtyBlockPull")}</span>
               ) : (
-                <span className="text-[0.76rem] text-[var(--st-ok-deep,#1e7e35)]">可以安全拉取</span>
+                <span className="text-[0.76rem] text-[var(--st-ok-deep,#1e7e35)]">{t("pages.git.safeToPull")}</span>
               )}
             </StatusRow>
           </div>
@@ -422,21 +419,21 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-[0.74rem] text-[var(--t3,#8a8f98)]">
-            {dirty ? "提交或暂存修改后即可正常拉取；也可以选择保留现场强行拉取。" : "拉取会快进到远端最新提交。"}
+            {dirty ? t("pages.git.dirtyPullHint") : t("pages.git.cleanPullHint")}
           </span>
           <div className="flex items-center gap-2">
             {dirty ? (
               <>
-                <Button variant="outline" size="sm" disabled={opRunning} title="有未提交修改，普通拉取被禁止">
-                  拉取
+                <Button variant="outline" size="sm" disabled={opRunning} title={t("pages.git.pullDisabledTitle")}>
+                  {t("pages.git.pull")}
                 </Button>
                 <Button variant="secondary" size="sm" className="gap-1" disabled={opRunning} onClick={() => setConfirmDirtyPull(true)}>
-                  仍然拉取…
+                  {t("pages.git.forcePull")}
                 </Button>
               </>
             ) : (
               <Button size="sm" disabled={opRunning} onClick={() => void startPull(false)}>
-                拉取
+                {t("pages.git.pull")}
               </Button>
             )}
           </div>
@@ -453,10 +450,10 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
 
       <ConfirmDialog
         open={confirmDirtyPull}
-        title="仍然拉取？"
-        description={`当前工作区有未提交修改（${dirtySummary || "有本地改动"}）。\n带 allow_dirty 拉取可能产生冲突；冲突后 SuperTask 会保留现场，需要你用 IDE 手动处理，不会自动恢复。`}
-        confirmText="仍然拉取"
-        cancelText="取消"
+        title={t("pages.git.forcePullConfirmTitle")}
+        description={t("pages.git.forcePullConfirmDesc", { summary: dirtySummary || t("pages.git.localChanges") })}
+        confirmText={t("pages.git.forcePullShort")}
+        cancelText={t("common.cancel")}
         destructive
         onConfirm={() => {
           setConfirmDirtyPull(false);
@@ -470,6 +467,7 @@ function WorkspaceGitView({ workspaceId }: { workspaceId: string }) {
 
 export function GitPage() {
   const ws = useWorkspace();
+  const { t } = useTranslation();
   const workspaceId = ws.state.workspaceId;
 
   return (
@@ -480,8 +478,8 @@ export function GitPage() {
             <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1,#222326)]">Git</h2>
             <p className="mt-0.5 text-[0.78rem] text-[var(--t3,#8a8f98)]">
               {workspaceId
-                ? "查看当前工作区的仓库状态并拉取远端更新；提交、推送、冲突处理请使用你惯用的 IDE 或 Git 工具。"
-                : "当前没有打开的工作区。可以先克隆一个远程仓库，克隆完成后自动打开为新工作区。"}
+                ? t("pages.git.pageDescWithWs")
+                : t("pages.git.pageDescNoWs")}
             </p>
           </div>
 

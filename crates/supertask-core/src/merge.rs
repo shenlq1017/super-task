@@ -7,7 +7,8 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::spec::{ServiceSpec, SuperTaskFile};
 
 /// 扫描器负责的字段。`update` 只覆盖这些字段，其余一律保留 current。
-const SCANNER_OWNED_FIELDS: &[&str] = &["kind", "module", "dir", "package_manager"];
+/// 1.4 §5.4：字段所有权扩展 `build_tool`（gradle 草稿带 `build_tool: gradle`）。
+const SCANNER_OWNED_FIELDS: &[&str] = &["kind", "module", "dir", "package_manager", "build_tool"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -134,6 +135,7 @@ pub fn apply(
                         "module" => cur.module = disc.module.clone(),
                         "dir" => cur.dir = disc.dir.clone(),
                         "package_manager" => cur.package_manager = disc.package_manager,
+                        "build_tool" => cur.build_tool = disc.build_tool.clone(),
                         _ => unreachable!("SCANNER_OWNED_FIELDS 白名单"),
                     }
                 }
@@ -172,6 +174,9 @@ fn field_diffs(discovered: &ServiceSpec, current: &ServiceSpec) -> Vec<String> {
     }
     if discovered.package_manager != current.package_manager {
         diffs.push("package_manager".into());
+    }
+    if discovered.build_tool != current.build_tool {
+        diffs.push("build_tool".into());
     }
     diffs
 }
@@ -689,6 +694,35 @@ mod tests {
             out.services.get("redis-2").unwrap().service.as_deref(),
             Some("mysql")
         );
+    }
+
+    #[test]
+    fn build_tool_field_ownership_14() {
+        // 1.4 §5.4：build_tool 是扫描器负责字段
+        let current = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    build_tool: maven\n    port: 8080\n",
+        );
+        let discovered = parse(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    build_tool: gradle\n    port: 8081\n",
+        );
+        let p = preview(&current, &discovered, vec![]);
+        let m = item(&p, "api");
+        assert_eq!(m.status, MergeStatus::MatchDiff);
+        assert_eq!(m.field_diffs, vec!["build_tool".to_string()]);
+
+        // fields 过滤：只选 build_tool → 只覆盖它，用户字段保留
+        let out = apply(
+            &current,
+            &discovered,
+            &[MergeChoice {
+                id: "api".into(),
+                action: MergeAction::Update,
+                fields: Some(vec!["build_tool".into()]),
+            }],
+        )
+        .unwrap();
+        assert_eq!(out.services["api"].build_tool.as_deref(), Some("gradle"));
+        assert_eq!(out.services["api"].port, Some(8080));
     }
 
     #[test]

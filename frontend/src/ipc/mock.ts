@@ -13,6 +13,8 @@ import type {
   ServiceRuntimeView,
   ForeignService,
   SuperTaskFile,
+  TaskfileImportItem,
+  TaskfilePreviewOut,
   TemplateSummary,
   ToolchainProbe,
   ToolchainProbeOut,
@@ -436,6 +438,7 @@ const DEFAULT_PREFS: Prefs = {
   closeToTray: true,
   startOnLogin: false,
   updateCheck: true,
+  locale: "auto",
 };
 
 function readMockPrefs(): Prefs {
@@ -739,6 +742,64 @@ function mockScanPreview(): ScanPreviewOut {
   };
 }
 
+/**
+ * 1.4 Taskfile 导入 mock（ipc.md §10.8）：含插值 / internal / deps / id 冲突样例，
+ * 与 demoSpec.scripts.build 冲突验证 id_conflict 默认 keep 分支。
+ */
+function mockTaskfilePreview(): TaskfilePreviewOut {
+  const items: TaskfileImportItem[] = [
+    {
+      task: "bootstrap",
+      script_id: "bootstrap",
+      cmds_count: 2,
+      selected: true,
+      warnings: [],
+      internal: false,
+      id_conflict: false,
+    },
+    {
+      task: "build",
+      script_id: "build",
+      cmds_count: 1,
+      selected: false,
+      warnings: ["目标已存在同名脚本 id，默认保留现有脚本；勾选将覆盖"],
+      internal: false,
+      id_conflict: true,
+    },
+    {
+      task: "deploy-web",
+      script_id: "deploy-web",
+      cmds_count: 1,
+      selected: false,
+      warnings: ["包含插值变量 TARGET, API_KEY，未解析；勾选后按原文导入"],
+      internal: false,
+      id_conflict: false,
+    },
+    {
+      task: "helper",
+      script_id: "helper",
+      cmds_count: 1,
+      selected: false,
+      warnings: ["internal 任务不导入"],
+      internal: true,
+      id_conflict: false,
+    },
+    {
+      task: "lint-all",
+      script_id: "lint-all",
+      cmds_count: 1,
+      selected: true,
+      warnings: ["deps 忽略（scripts.depends_on 预留）", "platforms 约束忽略，导入后的脚本无平台限制"],
+      internal: false,
+      id_conflict: false,
+    },
+  ];
+  return {
+    tasks: items,
+    warnings: ["includes 不支持且未跟随：1 个子 Taskfile 已跳过，需要的任务请手工补录"],
+  };
+}
+
 /** Browser / `vite` without WebView: same shapes as Tauri, no real spawn. */
 export async function mockInvoke(command: string, args?: Record<string, unknown>): Promise<unknown> {
   if (command === "session.hello") {
@@ -779,6 +840,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
       probe: {
         java: { found: true, version: "17.0.10", path: "/usr/lib/jvm/java-17" },
         maven: { found: true, version: "3.9.6", path: "/opt/maven" },
+        gradle: { found: false, version: null, path: null },
         node: { found: true, version: "22.4.0", path: "/usr/local/bin/node" },
         npm: { found: true, version: "10.7.0", path: "/usr/local/bin/npm" },
         pnpm: emptyProbe,
@@ -882,6 +944,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     state.probe ??= {
       java: { found: true, version: "17.0.10", path: "/usr/lib/jvm/java-17" },
       maven: { found: true, version: "3.9.6", path: "/opt/maven" },
+      gradle: { found: false, version: null, path: null },
       node: { found: false, version: null, path: null },
       npm: { found: true, version: "10.7.0", path: "/usr/local/bin/npm" },
       pnpm: emptyProbe,
@@ -1406,6 +1469,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     if (typeof args?.closeToTray === "boolean") prefs.closeToTray = args.closeToTray;
     if (typeof args?.startOnLogin === "boolean") prefs.startOnLogin = args.startOnLogin;
     if (typeof args?.updateCheck === "boolean") prefs.updateCheck = args.updateCheck;
+    if (typeof args?.locale === "string") prefs.locale = args.locale;
     writeMockPrefs(prefs);
     return { ok: true };
   }
@@ -1582,6 +1646,50 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     const text = toYaml(state.spec);
     const out: YamlSaveOut = { spec: state.spec, hash: hashOf(text), warnings: [] };
     return out;
+  }
+
+  // -------------------------------------------------------------------------
+  // 1.4：Taskfile 导入（ipc.md §10.8）
+  // -------------------------------------------------------------------------
+
+  if (command === "import.taskfilePreview") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    return mockTaskfilePreview();
+  }
+
+  if (command === "import.taskfileApply") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    const selected = (args?.selected as string[]) ?? [];
+    // YAML_CONFLICT 分支：localStorage st:mockTaskfileConflict=1 模拟外部修改；
+    // 或 base_hash 与当前 spec 不一致（真实语义对齐 core）。
+    let forcedConflict = false;
+    try {
+      forcedConflict = localStorage.getItem("st:mockTaskfileConflict") === "1";
+      if (forcedConflict) localStorage.removeItem("st:mockTaskfileConflict");
+    } catch {
+      /* ignore */
+    }
+    const currentHash = hashOf(toYaml(state.spec));
+    if (forcedConflict || (args?.baseHash as string) !== currentHash) {
+      throw { protocol: PROTOCOL, code: "YAML_CONFLICT", message: "supertask.yaml 已被外部修改，请重新加载后重试", retryable: false };
+    }
+    const preview = mockTaskfilePreview();
+    for (const item of preview.tasks) {
+      if (!selected.includes(item.script_id)) continue;
+      if (item.internal) continue; // internal 不可导入
+      state.spec.scripts[item.script_id] = {
+        desc: item.task === "bootstrap" ? "安装依赖并初始化" : `导入自 Taskfile：${item.task}`,
+        cmds: [`${item.script_id} mock cmd 1`, `${item.script_id} mock cmd 2`].slice(0, item.cmds_count),
+        cwd: null,
+        env: {},
+        timeout_secs: 1800,
+        depends_on: [],
+      };
+    }
+    const text = toYaml(state.spec);
+    return { spec: state.spec, hash: hashOf(text), warnings: ["已导入一次性迁移脚本（mock）"] };
   }
 
   // -------------------------------------------------------------------------

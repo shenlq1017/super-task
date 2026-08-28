@@ -1,6 +1,7 @@
 import { createContext, use, useEffect, useState, type ReactNode } from "react";
 import { invoke } from "../ipc/invoke";
 import { cmd, PROTOCOL, type AppLoadOut, type Feature, type HelloOut } from "../ipc/protocol";
+import { applyLocalePreference } from "../i18n";
 
 type SessionState = {
   hello: HelloOut | null;
@@ -52,6 +53,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void reload();
   }, []);
+
+  // app.load 后按 prefs.locale 校正语言（字段可能缺省，按 "auto" 处理）
+  useEffect(() => {
+    if (app) applyLocalePreference(app.prefs?.locale ?? "auto");
+  }, [app]);
 
   const value: SessionContextValue = {
     state: { hello, app, error },

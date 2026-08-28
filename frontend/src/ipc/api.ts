@@ -21,6 +21,7 @@ import {
   type TemplateSource,
   type ToolchainInstallOpts,
   type ToolchainProbeOut,
+  type TaskfilePreviewOut,
   type WorkspaceOpenOut,
   type YamlSaveOut,
   type YamlView,
@@ -359,6 +360,18 @@ export const apiScanPreview = (workspaceId: string) =>
 
 export const apiScanApply = (workspaceId: string, choices: MergeChoice[], baseHash: string) =>
   invoke<YamlSaveOut>(cmd.WORKSPACE_SCAN_APPLY, { workspaceId, choices, baseHash });
+
+// ---------------------------------------------------------------------------
+// Taskfile 导入（1.4，ipc.md §10.8）
+// ---------------------------------------------------------------------------
+
+/** Taskfile v3 导入预览（纯内存计算；缺失 TASKFILE_NOT_FOUND / 版本不支持 TASKFILE_INVALID）。 */
+export const apiTaskfilePreview = (workspaceId: string) =>
+  invoke<TaskfilePreviewOut>(cmd.IMPORT_TASKFILE_PREVIEW, { workspaceId });
+
+/** 应用所选任务；只增改所选 scripts.*，base_hash 冲突 → YAML_CONFLICT。 */
+export const apiTaskfileApply = (workspaceId: string, selected: string[], baseHash: string) =>
+  invoke<YamlSaveOut>(cmd.IMPORT_TASKFILE_APPLY, { workspaceId, selected, baseHash });
 
 // ---------------------------------------------------------------------------
 // 应用数据 / 更新（1.1，ipc.md §10.5–10.6）

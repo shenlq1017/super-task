@@ -311,6 +311,8 @@ pub fn run() {
             commands::workspace_open_ide,
             commands::workspace_scan_preview,
             commands::workspace_scan_apply,
+            commands::import_taskfile_preview,
+            commands::import_taskfile_apply,
             commands::system_discover,
             commands::system_kill_process,
             commands::yaml_get,

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -118,6 +119,7 @@ function LineLimitSelect({
   fullscreen: boolean;
   onChange: (n: number) => void;
 }) {
+  const { t } = useTranslation();
   const [customMode, setCustomMode] = useState(() => !isPresetLimit(value));
   const [customDraft, setCustomDraft] = useState(String(value));
 
@@ -150,8 +152,8 @@ function LineLimitSelect({
           onChange(clampLimit(Number(v)));
         }}
       >
-        <SelectTrigger size="sm" className={triggerClass} aria-label="显示行数上限">
-          <SelectValue placeholder="行数" />
+        <SelectTrigger size="sm" className={triggerClass} aria-label={t("logs.lineLimitAria")}>
+          <SelectValue placeholder={t("logs.lineLimitPlaceholder")} />
         </SelectTrigger>
         <SelectContent
           position="popper"
@@ -163,11 +165,11 @@ function LineLimitSelect({
         >
           {LINE_LIMIT_PRESETS.map((n) => (
             <SelectItem key={n} value={String(n)} className="cursor-pointer">
-              {n} 行
+              {t("common.linesUnit", { n })}
             </SelectItem>
           ))}
           <SelectItem value="custom" className="cursor-pointer">
-            自定义…
+            {t("logs.customLimit")}
           </SelectItem>
         </SelectContent>
       </Select>
@@ -182,7 +184,7 @@ function LineLimitSelect({
           onKeyDown={(e) => {
             if (e.key === "Enter") commitCustom();
           }}
-          aria-label="自定义行数"
+          aria-label={t("logs.customLimitAria")}
           className={cn(
             "h-7 w-16 px-1.5 text-center font-mono text-[0.68rem]",
             fullscreen && "border-[#3A3F4B] bg-[#23262E] text-[#C9CFD6] focus-visible:border-[#5E6AD2] focus-visible:ring-[#5E6AD2]/20",
@@ -205,6 +207,7 @@ function LogFilterInput({
   fullscreen: boolean;
   onChange: (v: string) => void;
 }) {
+  const { t } = useTranslation();
   const inputCls = fullscreen
     ? "h-7 w-40 border-[#3A3F4B] bg-[#23262E] pl-7 pr-6 font-mono text-[0.68rem] text-[#C9CFD6] placeholder:text-[#5C6470] focus-visible:border-[#5E6AD2] focus-visible:ring-[#5E6AD2]/20"
     : "h-7 w-40 border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] pl-7 pr-6 font-mono text-[0.68rem] text-[var(--t1,#222326)] placeholder:text-[var(--t3,#8a8f98)] focus-visible:border-[var(--st-accent,#5e6ad2)] focus-visible:ring-[2px] focus-visible:ring-[var(--st-accent-tint,#eef0fb)]";
@@ -227,8 +230,8 @@ function LogFilterInput({
             onChange("");
           }
         }}
-        placeholder="筛选本视图日志…"
-        aria-label="筛选本视图日志"
+        placeholder={t("logs.filterPlaceholder")}
+        aria-label={t("logs.filterPlaceholder")}
         className={inputCls}
       />
       {value ? (
@@ -244,8 +247,8 @@ function LogFilterInput({
       {value ? (
         <button
           type="button"
-          title="清除筛选"
-          aria-label="清除筛选"
+          title={t("logs.clearFilter")}
+          aria-label={t("logs.clearFilter")}
           onClick={() => onChange("")}
           className={cn(
             "absolute right-1 inline-flex size-5 cursor-pointer items-center justify-center rounded transition-colors duration-150",
@@ -310,6 +313,7 @@ function LogToolbar({
   onDownload: () => void;
   onFullscreenToggle: () => void;
 }) {
+  const { t } = useTranslation();
   const displayControls = (
     <>
       <LogFilterInput value={textFilter} matchCount={matchCount} fullscreen={fullscreen} onChange={onTextFilterChange} />
@@ -317,26 +321,26 @@ function LogToolbar({
       <ToolBtn
         active={wrap}
         icon={wrap ? <WrapText className="size-3.5" /> : <AlignLeft className="size-3.5" />}
-        title={wrap ? "切换为单行模式" : "切换为自动换行"}
+        title={wrap ? t("logs.toSingleLine") : t("logs.toWrap")}
         onClick={onWrapToggle}
       />
       <ToolBtn
         active={showTime}
         icon={<Clock className="size-3.5" />}
-        title={showTime ? "隐藏时间戳" : "显示时间戳"}
+        title={showTime ? t("logs.hideTime") : t("logs.showTime")}
         onClick={onShowTimeToggle}
       />
       <ToolBtn
         active={errorsOnly}
         icon={<Filter className="size-3.5" />}
-        title={errorsOnly ? "显示全部日志" : "仅显示 stderr / system"}
+        title={errorsOnly ? t("logs.showAllStreams") : t("logs.errorsOnly")}
         onClick={onErrorsOnlyToggle}
       />
       <ToolBtn
         active={follow}
         icon={follow ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
-        label={follow ? "跟随" : "暂停"}
-        title={follow ? "暂停跟随底部" : "跟随底部"}
+        label={follow ? t("logs.follow") : t("logs.pause")}
+        title={follow ? t("logs.pauseFollowHint") : t("logs.followHint")}
         onClick={onFollowToggle}
       />
     </>
@@ -346,13 +350,13 @@ function LogToolbar({
     <>
       <ToolBtn
         icon={<Copy className="size-3.5" />}
-        title="复制选中行（或双击日志行）"
+        title={t("logs.copySelectedHint")}
         disabled={!canCopy}
         onClick={onCopy}
       />
       <ToolBtn
         icon={<Download className="size-3.5" />}
-        title="下载当前视图日志"
+        title={t("logs.downloadView")}
         disabled={!canDownload}
         busy={downloading}
         onClick={onDownload}
@@ -360,13 +364,13 @@ function LogToolbar({
       <ToolBtn
         danger
         icon={<Trash2 className="size-3.5" />}
-        title="清除本视图日志"
+        title={t("logs.clearView")}
         disabled={!canClear}
         onClick={onClear}
       />
       <ToolBtn
         icon={fullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
-        title={fullscreen ? "退出全屏" : "全屏查看"}
+        title={fullscreen ? t("logs.exitFullscreen") : t("logs.fullscreen")}
         onClick={onFullscreenToggle}
       />
     </>
@@ -418,6 +422,7 @@ function LogBody({
   onJumpBottom: () => void;
   scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
+  const { t } = useTranslation();
   useLayoutEffect(() => {
     if (follow && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -435,7 +440,9 @@ function LogBody({
       >
         {lines.length === 0 ? (
           <div className="flex h-full min-h-[8rem] items-center justify-center text-[0.75rem] text-[#5C6470]">
-            {filterQuery ? `本视图没有匹配「${filterQuery.trim()}」的日志行` : "暂无日志输出"}
+            {filterQuery
+              ? t("logs.noMatchInView", { query: filterQuery.trim() })
+              : t("logs.noOutput")}
           </div>
         ) : (
           <div className="flex flex-col">
@@ -462,11 +469,11 @@ function LogBody({
         <button
           type="button"
           onClick={onJumpBottom}
-          title="回到底部并恢复跟随"
+          title={t("logs.jumpBottomHint")}
           className="absolute bottom-3 right-3 inline-flex cursor-pointer items-center gap-1 rounded-full border border-[#3A3F4B] bg-[#23262E] px-3 py-1.5 text-[0.72rem] font-medium text-[#D5DAE1] shadow-lg transition-colors duration-150 hover:border-[#5E6AD2] hover:bg-[#2A2E38]"
         >
           <ArrowDownToLine className="size-3.5" />
-          回到底部
+          {t("logs.jumpBottom")}
         </button>
       ) : null}
     </div>
@@ -482,6 +489,7 @@ export function LogView({
   className?: string;
   height?: string;
 }) {
+  const { t } = useTranslation();
   const { state, actions } = useLogs();
   const { toast } = useToast();
   const [follow, setFollow] = useState(true);
@@ -516,7 +524,7 @@ export function LogView({
     return streamFiltered.length > limit ? streamFiltered.slice(streamFiltered.length - limit) : streamFiltered;
   }, [streamFiltered, lineLimit]);
 
-  const sourceLabel = source ? `${source.kind}:${source.id}` : "全部服务";
+  const sourceLabel = source ? `${source.kind}:${source.id}` : t("logs.allServices");
 
   useEffect(() => {
     setSelectedSeq(null);
@@ -561,13 +569,13 @@ export function LogView({
       if (ok) {
         setCopiedSeq(seq);
         window.setTimeout(() => setCopiedSeq((cur) => (cur === seq ? null : cur)), 2500);
-        if (!silent) toast("已复制到剪贴板", "ok");
+        if (!silent) toast(t("common.copiedToClipboard"), "ok");
       } else if (!silent) {
-        toast("复制失败，请手动选择文本后 Ctrl+C", "warn");
+        toast(t("common.copyFailedHint"), "warn");
       }
       return ok;
     },
-    [lines, showTime, toast],
+    [lines, showTime, toast, t],
   );
 
   const copySelected = useCallback(() => {
@@ -597,9 +605,9 @@ export function LogView({
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const name = source ? `${source.id}-${stamp}.log` : `all-services-${stamp}.log`;
       const result = await downloadTextFile(name, text);
-      if (result === "saved") toast("日志已保存", "ok");
-      else if (result === "cancelled") toast("已取消保存", "info");
-      else toast("下载失败，请重试", "err");
+      if (result === "saved") toast(t("operations.logSaved"), "ok");
+      else if (result === "cancelled") toast(t("operations.logSaveCancelled"), "info");
+      else toast(t("operations.logDownloadFailed"), "err");
     } finally {
       setDownloading(false);
     }

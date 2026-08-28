@@ -17,6 +17,8 @@ pub struct ToolProbe {
 pub struct ToolchainProbe {
     pub java: ToolProbe,
     pub maven: ToolProbe,
+    /// 1.4 §5.4：仅信息展示（wrapper 是唯一推荐执行方式），不提供安装入口。
+    pub gradle: ToolProbe,
     pub node: ToolProbe,
     pub npm: ToolProbe,
     pub pnpm: ToolProbe,
@@ -31,9 +33,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 pub fn probe_toolchain() -> ToolchainProbe {
     // Probe every tool on its own thread so the total time is bounded by the
     // slowest single tool, not the sum of them.
-    let (java, maven, node, npm, pnpm, yarn) = std::thread::scope(|s| {
+    let (java, maven, gradle, node, npm, pnpm, yarn) = std::thread::scope(|s| {
         let java = s.spawn(|| probe_one(&["java.exe", "java"], &["-version"]));
         let maven = s.spawn(|| probe_one(&["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"], &["-v"]));
+        let gradle = s.spawn(|| {
+            probe_one(&["gradle.bat", "gradle.exe", "gradle"], &["--version"])
+        });
         let node = s.spawn(|| probe_one(&["node.exe", "node"], &["-v"]));
         let npm = s.spawn(|| probe_one(&["npm.cmd", "npm.exe", "npm"], &["-v"]));
         let pnpm = s.spawn(|| probe_one(&["pnpm.cmd", "pnpm.exe", "pnpm"], &["-v"]));
@@ -41,6 +46,7 @@ pub fn probe_toolchain() -> ToolchainProbe {
         (
             java.join().unwrap_or_default(),
             maven.join().unwrap_or_default(),
+            gradle.join().unwrap_or_default(),
             node.join().unwrap_or_default(),
             npm.join().unwrap_or_default(),
             pnpm.join().unwrap_or_default(),
@@ -50,6 +56,7 @@ pub fn probe_toolchain() -> ToolchainProbe {
     ToolchainProbe {
         java,
         maven,
+        gradle,
         node,
         npm,
         pnpm,
@@ -62,10 +69,66 @@ pub fn resolve_program(name: &str) -> Result<PathBuf> {
     if let Some(p) = find_on_path(name) {
         return Ok(p);
     }
+    // 1.4 §4.3：PATH 未命中时补平台已知位置候选（只读，不写 shell 配置、不改 PATH）
+    for dir in platform_known_dirs() {
+        let p = dir.join(name);
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
     Err(Error::new(
         ErrorCode::MissingTool,
         format!("未找到 {name}。请安装并确保在 PATH 中，或在「环境」页一键安装。"),
     ))
+}
+
+/// 平台已知位置（仅 Unix；Windows 只认 PATH，行为零变化）。
+#[cfg(not(windows))]
+fn platform_known_dirs() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        out.push(PathBuf::from("/opt/homebrew/bin"));
+        out.push(PathBuf::from("/usr/local/bin"));
+        // sdkman：~/.sdkman/candidates/<tool>/<version>/bin（任一已装版本）
+        if let Some(home) = std::env::var_os("HOME") {
+            let cands = PathBuf::from(&home).join(".sdkman/candidates");
+            if let Ok(rd) = std::fs::read_dir(&cands) {
+                for tool in rd.flatten() {
+                    if let Ok(vs) = std::fs::read_dir(tool.path()) {
+                        for v in vs.flatten() {
+                            out.push(v.path().join("bin"));
+                        }
+                    }
+                }
+            }
+            // nvm：~/.nvm/versions/node/<version>/bin
+            let nvm = PathBuf::from(&home).join(".nvm/versions/node");
+            if let Ok(vs) = std::fs::read_dir(&nvm) {
+                for v in vs.flatten() {
+                    out.push(v.path().join("bin"));
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            out.push(PathBuf::from(&home).join(".local/share/mise/shims"));
+        }
+        // 系统包管理器装的 JVM：/usr/lib/jvm/<dir>/bin
+        if let Ok(rd) = std::fs::read_dir("/usr/lib/jvm") {
+            for v in rd.flatten() {
+                out.push(v.path().join("bin"));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+fn platform_known_dirs() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -175,12 +238,17 @@ fn extract_version(line: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
-pub fn require_tools_for_kind(kind: &str, pkg: Option<&str>) -> Result<()> {
+/// kind 启动前置工具检查。`build_tool`（1.4 §5.1）只对 spring-boot 有意义：
+/// gradle 服务不需要 mvn（wrapper/gradle 的存在性由 `GRADLE_WRAPPER_MISSING` 路径负责）。
+pub fn require_tools_for_kind(kind: &str, pkg: Option<&str>, build_tool: Option<&str>) -> Result<()> {
     let p = probe_toolchain();
     match kind {
         "spring-boot" => {
             if !p.java.found {
                 return Err(Error::new(ErrorCode::MissingTool, "未找到 java。请安装 JDK 并确保在 PATH 中。"));
+            }
+            if build_tool == Some("gradle") {
+                return Ok(());
             }
             if !p.maven.found {
                 return Err(Error::new(ErrorCode::MissingTool, "未找到 mvn。请安装 Maven 并确保在 PATH 中，或在「环境」页一键安装。"));

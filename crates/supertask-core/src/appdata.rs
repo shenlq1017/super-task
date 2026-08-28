@@ -13,8 +13,8 @@ use serde_yaml::Value;
 
 use crate::error::{Error, ErrorCode, Result};
 
-/// 文件格式版本（1.2 起为 2）。
-const VERSION: u32 = 2;
+/// 文件格式版本（1.4 起为 3）。
+const VERSION: u32 = 3;
 /// 最近工作区条数上限。
 const RECENTS_CAP: usize = 20;
 
@@ -59,6 +59,9 @@ pub struct AppData {
     pub stale: Vec<String>,
     #[serde(default = "default_auto")]
     pub toolchain_manager: String,
+    /// 1.4 §6.1：`auto`（跟随系统）| `zh-CN` | `zh-TW` | `en-US` | `ja-JP`。
+    #[serde(default = "default_auto")]
+    pub locale: String,
     pub network: AppNetwork,
     #[serde(default = "default_true")]
     pub log_notifications: bool,
@@ -84,6 +87,7 @@ impl Default for AppData {
             update_check: true,
             stale: Vec::new(),
             toolchain_manager: default_auto(),
+            locale: default_auto(),
             network: AppNetwork::default(),
             log_notifications: true,
             system_notifications: true,
@@ -299,9 +303,10 @@ mod tests {
         )
         .unwrap();
         let data = load_at(&path);
-        assert_eq!(data.version, 2);
+        assert_eq!(data.version, 3);
         assert_eq!(data.recents, vec!["C:/work/a".to_string()]);
         assert_eq!(data.toolchain_manager, "auto");
+        assert_eq!(data.locale, "auto");
         assert_eq!(data.network.proxy_mode, "off");
         assert!(data.log_notifications);
         assert!(data.system_notifications);
@@ -313,7 +318,7 @@ mod tests {
         let disk = fs::read_to_string(&path).unwrap();
         assert!(disk.contains("customFutureKey"));
         let reloaded = load_at(&path);
-        assert_eq!(reloaded.version, 2);
+        assert_eq!(reloaded.version, 3);
         assert_eq!(
             reloaded
                 .extra
@@ -332,7 +337,7 @@ mod tests {
         let tmp = tmp_path(&path);
         fs::create_dir_all(&tmp).unwrap();
         let data = load_at(&path);
-        assert_eq!(data.version, 2);
+        assert_eq!(data.version, 3);
         assert_eq!(data.recents, vec!["C:/work/a".to_string()]);
         let disk = fs::read_to_string(&path).unwrap();
         assert!(disk.contains("version: 1"), "old file must stay: {disk}");

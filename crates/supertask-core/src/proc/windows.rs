@@ -1,4 +1,5 @@
-//! Windows Job Object. Kill-on-close so Maven/npm child JVMs die with the job.
+//! Windows 进程树实现：Job Object。Kill-on-close so Maven/npm child JVMs die with the job.
+//! 1.4 由 `job.rs` 整体迁入，行为与错误码不变（Windows 零回归是硬约束）。
 
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
@@ -12,6 +13,7 @@ use windows::Win32::System::JobObjects::{
 };
 
 use crate::error::{Error, ErrorCode, Result};
+use crate::proc::ProcessTree;
 
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -21,15 +23,15 @@ extern "system" {
     fn NtResumeProcess(process: HANDLE) -> i32;
 }
 
-pub struct Job {
+pub struct WindowsJob {
     handle: HANDLE,
 }
 
 // Kernel handle; all access is serialized by Engine's mutex.
-unsafe impl Send for Job {}
-unsafe impl Sync for Job {}
+unsafe impl Send for WindowsJob {}
+unsafe impl Sync for WindowsJob {}
 
-impl Job {
+impl WindowsJob {
     pub fn create() -> Result<Self> {
         unsafe {
             let handle = CreateJobObjectW(None, None).map_err(|e| {
@@ -107,11 +109,6 @@ impl Job {
             .collect()
     }
 
-    /// Job 里是否还有活着的进程（detach 后接管时判断服务是否仍在运行）。
-    pub fn has_live_process(&self) -> bool {
-        !self.pids().is_empty()
-    }
-
     /// Job 累计 CPU 时间（内核+用户，毫秒）。1.2 §9.3 指标用：
     /// 差分两次采样即得窗口 CPU。查询失败返回 None（不判服务异常）。
     pub fn total_cpu_ms(&self) -> Option<u64> {
@@ -137,7 +134,6 @@ impl Job {
 
     /// Job 内进程工作集之和。单个进程查询失败跳过（部分可用），全部失败 None。
     pub fn working_set_bytes(&self) -> Option<u64> {
-        use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::ProcessStatus::{
             GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
         };
@@ -166,7 +162,7 @@ impl Job {
     }
 }
 
-impl Drop for Job {
+impl Drop for WindowsJob {
     fn drop(&mut self) {
         unsafe {
             let _ = CloseHandle(self.handle);
@@ -174,17 +170,35 @@ impl Drop for Job {
     }
 }
 
-/// Spawn with CREATE_SUSPENDED, assign to job, then resume.
-/// Ceiling: NtResumeProcess is undocumented but is the practical way to resume
-/// a std::process::Child created suspended; upgrade is CreateProcess + hThread.
-pub fn spawn_in_job(cmd: &mut Command, job: &Job) -> Result<Child> {
-    cmd.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
-    let child = cmd
-        .spawn()
-        .map_err(|e| Error::new(ErrorCode::Spawn, format!("进程无法启动: {e}")))?;
-    job.assign_child(&child)?;
-    job.resume_child(&child)?;
-    Ok(child)
+impl ProcessTree for WindowsJob {
+    /// Spawn with CREATE_SUSPENDED, assign to job, then resume.
+    /// Ceiling: NtResumeProcess is undocumented but is the practical way to resume
+    /// a std::process::Child created suspended; upgrade is CreateProcess + hThread.
+    fn spawn(&self, cmd: &mut Command) -> Result<Child> {
+        cmd.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
+        let child = cmd
+            .spawn()
+            .map_err(|e| Error::new(ErrorCode::Spawn, format!("进程无法启动: {e}")))?;
+        self.assign_child(&child)?;
+        self.resume_child(&child)?;
+        Ok(child)
+    }
+
+    fn terminate(&self) -> Result<()> {
+        WindowsJob::terminate(self)
+    }
+
+    fn pids(&self) -> Vec<u32> {
+        WindowsJob::pids(self)
+    }
+
+    fn total_cpu_ms(&self) -> Option<u64> {
+        WindowsJob::total_cpu_ms(self)
+    }
+
+    fn working_set_bytes(&self) -> Option<u64> {
+        WindowsJob::working_set_bytes(self)
+    }
 }
 
 #[cfg(test)]
@@ -195,12 +209,12 @@ mod tests {
 
     #[test]
     fn ping_dies_with_job() {
-        let job = Job::create().expect("job");
+        let job = WindowsJob::create().expect("job");
         let mut cmd = Command::new("ping");
         cmd.args(["-t", "127.0.0.1"])
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut child = spawn_in_job(&mut cmd, &job).expect("spawn");
+        let mut child = job.spawn(&mut cmd).expect("spawn");
         std::thread::sleep(Duration::from_millis(200));
         assert!(!job.pids().is_empty(), "job 内应有存活 pid");
         job.terminate().expect("term");
