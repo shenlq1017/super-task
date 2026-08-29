@@ -155,6 +155,60 @@ pub fn search_logs(
     Ok(SearchResult { items, truncated, files_scanned })
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TailHit {
+    pub kind: String,
+    pub id: String,
+    pub file: String,
+    pub line_no: usize,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TailResult {
+    pub items: Vec<TailHit>,
+    /// 实际行数超过请求行数时为 true（items 只保留最后 lines 行）。
+    pub truncated: bool,
+    pub files_scanned: usize,
+}
+
+/// 1.5 CLI/MCP：历史日志尾部（只读 `.supertask/logs`，不要求持有工作区锁）。
+/// 与 search 同一文件遍历顺序（活动文件在前、轮转从新到旧），收集全部行后取末尾。
+pub fn tail_logs(root: &Path, source: Option<&LogSource>, lines: usize) -> Result<TailResult> {
+    let lines = lines.max(1).min(MAX_SEARCH_LIMIT);
+    let sources: Vec<LogSource> = match source {
+        Some(s) => vec![LogSource { kind: s.kind.clone(), id: s.id.clone() }],
+        None => all_sources(root),
+    };
+    let mut items: Vec<TailHit> = Vec::new();
+    let mut files_scanned = 0usize;
+    for src in &sources {
+        for file in source_files(root, src) {
+            let Ok(text) = fs::read_to_string(&file) else { continue };
+            files_scanned += 1;
+            let fname = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            for (idx, line) in text.lines().enumerate() {
+                items.push(TailHit {
+                    kind: match src.kind {
+                        LogSourceKind::Script => "script".into(),
+                        LogSourceKind::System => "system".into(),
+                        LogSourceKind::Service => "service".into(),
+                    },
+                    id: src.id.clone(),
+                    file: fname.clone(),
+                    line_no: idx + 1,
+                    text: line.to_string(),
+                });
+            }
+        }
+    }
+    let truncated = items.len() > lines;
+    if truncated {
+        items.drain(..items.len() - lines);
+    }
+    Ok(TailResult { items, truncated, files_scanned })
+}
+
 /// §8.4 导出。format: text | jsonl；目标已存在 → 拒绝（不覆盖）。
 /// 返回导出行数。范围与 search 相同（query 可为 None = 全部）。
 pub fn export_logs(

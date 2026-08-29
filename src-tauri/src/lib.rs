@@ -70,6 +70,7 @@ fn protocol_err() -> IpcError {
         code: ErrorCode::Protocol,
         message: "protocol 不匹配，请升级 SuperTask".into(),
         retryable: false,
+        details: None,
     }
 }
 
@@ -336,6 +337,8 @@ pub fn run() {
             commands::templates_list,
             commands::templates_create,
             commands::templates_preview,
+            commands::workspace_export_package,
+            commands::workspace_import_package,
             commands::git_clone,
             commands::git_status,
             commands::git_pull,

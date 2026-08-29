@@ -17,6 +17,21 @@ use crate::proc::ProcessTree;
 /// SIGTERM → SIGKILL 的宽限窗口（规格 §4.1：固定值，不受 `grace_secs` 影响）。
 const KILL_GRACE: Duration = Duration::from_secs(5);
 
+/// 任意 pid 是否存活（1.5 工作区锁 stale 判定专用；`kill(pid, 0)` 只探测不发信号）。
+/// EPERM = 进程存在但无权发信号，仍视为存活。
+pub fn pid_alive(pid: u32) -> bool {
+    use nix::errno::Errno;
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    if pid == 0 {
+        return false;
+    }
+    matches!(
+        kill(Pid::from_raw(pid as i32), None),
+        Ok(()) | Err(Errno::EPERM)
+    )
+}
+
 pub struct UnixProcessGroup {
     /// `setpgid(0,0)` 后 pgid == 直系子进程 pid；spawn 成功前为 None。
     pgid: Mutex<Option<i32>>,

@@ -50,3 +50,14 @@ pub fn create_tree() -> Result<std::sync::Arc<dyn ProcessTree>> {
 pub fn create_tree() -> Result<std::sync::Arc<dyn ProcessTree>> {
     Ok(std::sync::Arc::new(unix::UnixProcessGroup::new()))
 }
+
+/// 任意 pid 是否存活（1.5 工作区锁 stale 判定；按编译平台分发，只读探测）。
+#[cfg(windows)]
+pub fn pid_alive(pid: u32) -> bool {
+    windows::pid_alive(pid)
+}
+
+#[cfg(unix)]
+pub fn pid_alive(pid: u32) -> bool {
+    unix::pid_alive(pid)
+}

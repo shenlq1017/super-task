@@ -97,6 +97,14 @@ pub enum ErrorCode {
     GradleWrapperMissing,
     TaskfileNotFound,
     TaskfileInvalid,
+    // ---- 1.5 ----
+    WorkspaceLocked,
+    /// 1.5 CLI `up --wait` 健康等待超时（CLI 层语义，码表与 IPC 同源）
+    HealthTimeout,
+    PkgNotFound,
+    PkgInvalid,
+    PkgVersion,
+    PkgTargetExists,
 }
 
 #[derive(Debug, Error)]
@@ -226,6 +234,12 @@ mod tests {
             (ErrorCode::ComposePortMismatch, "COMPOSE_PORT_MISMATCH"),
             (ErrorCode::DockerBuildUnknown, "DOCKER_BUILD_UNKNOWN"),
             (ErrorCode::ImageBuildFailed, "IMAGE_BUILD_FAILED"),
+            (ErrorCode::WorkspaceLocked, "WORKSPACE_LOCKED"),
+            (ErrorCode::HealthTimeout, "HEALTH_TIMEOUT"),
+            (ErrorCode::PkgNotFound, "PKG_NOT_FOUND"),
+            (ErrorCode::PkgInvalid, "PKG_INVALID"),
+            (ErrorCode::PkgVersion, "PKG_VERSION"),
+            (ErrorCode::PkgTargetExists, "PKG_TARGET_EXISTS"),
         ];
         for (code, expected) in pairs {
             let value = serde_yaml::to_value(code).expect("serialize ErrorCode");

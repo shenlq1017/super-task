@@ -244,6 +244,8 @@ pub struct Engine {
     probe_cache: Mutex<Option<crate::docker::DockerProbe>>,
     /// 1.3 §3.2：镜像构建长操作（queued → running → succeeded/failed/cancelled）
     operations: crate::operation::OperationHub,
+    /// 1.5 §3.1：工作区锁持有者标签（前端身份：desktop/cli/mcp）
+    holder: crate::lock::LockHolder,
 }
 
 impl Engine {
@@ -254,6 +256,14 @@ impl Engine {
     /// 注入自定义 DockerRunner（测试用 fake；生产走 [`Engine::new`]）。
     pub fn with_docker_runner(runner: Arc<dyn DockerRunner>) -> Self {
         Self::create(SpawnerKind::Real, runner)
+    }
+
+    /// 1.5：以指定 holder 身份持有工作区锁（CLI/MCP 壳用；桌面缺省 Desktop）。
+    pub fn with_holder(holder: crate::lock::LockHolder) -> Self {
+        Self {
+            holder,
+            ..Self::new()
+        }
     }
 
     #[cfg(test)]
@@ -301,13 +311,37 @@ impl Engine {
             docker,
             probe_cache: Mutex::new(None),
             operations: crate::operation::OperationHub::new(),
+            holder: crate::lock::LockHolder::Desktop,
         }
     }
 
     pub fn open(&self, path: &Path) -> Result<(Vec<ParseWarning>, RuntimeSnapshot)> {
+        // 1.5 §3.1：fail-fast，避免对已打开工作区误释放重入拿到的锁
+        {
+            let g = self.inner.lock().expect("engine lock");
+            if !g.workspace_id.is_empty() {
+                return Err(Error::new(
+                    ErrorCode::AlreadyInProgress,
+                    "已打开工作区，请先 close",
+                ));
+            }
+        }
         let root = sandbox::strip_verbatim(fs::canonicalize(path).map_err(|e| {
             Error::new(ErrorCode::CwdMissing, format!("无法打开目录: {e}"))
         })?);
+        // 工作区所有权锁：打开即占；失败路径必须释放，避免本进程自己挡自己
+        crate::lock::acquire(&root, self.holder)?;
+        match self.open_locked(&root) {
+            Ok(ok) => Ok(ok),
+            Err(e) => {
+                let _ = crate::lock::release(&root);
+                Err(e)
+            }
+        }
+    }
+
+    fn open_locked(&self, root: &Path) -> Result<(Vec<ParseWarning>, RuntimeSnapshot)> {
+        let root = root.to_path_buf();
         let (yaml_path, text, file, mut warnings) = load_yaml_at(&root)?;
         let workspace_id = root.to_string_lossy().into_owned();
         let mut slots = HashMap::new();
@@ -558,7 +592,10 @@ impl Engine {
         g.script = None;
         g.script_file = None;
         g.yaml_path = PathBuf::new();
-        g.root = PathBuf::new();
+        let root = std::mem::take(&mut g.root);
+        drop(g);
+        // 1.5 §3.1：close 释放工作区锁
+        let _ = crate::lock::release(&root);
         Ok(())
     }
 
@@ -602,6 +639,8 @@ impl Engine {
             let root_norm = norm_root(&root_norm_path);
             detached_put(root_norm, detached);
         }
+        // 1.5 §3.1：detach（切工作区）释放工作区锁
+        let _ = crate::lock::release(&root_norm_path);
         Ok(())
     }
 
@@ -2007,16 +2046,9 @@ fn emit_runtime(g: &Inner) {
     let _ = g.events.try_send(EngineEvent::Runtime(snap));
 }
 
-/// loopback:port 是否已有服务在监听（250ms 上限，open 时批量调用要快）。
-/// 双栈：Node/Vite 默认常只监听 [::1]，仅探 IPv4 会把外部运行的服务误判为未启动。
+/// loopback:port 是否已有服务在监听（实现移交 ports::is_serving，CLI status 只读复用）。
 fn port_is_serving(port: u16) -> bool {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-    [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)]
-        .iter()
-        .any(|ip| {
-            TcpStream::connect_timeout(&SocketAddr::new(*ip, port), Duration::from_millis(250))
-                .is_ok()
-        })
+    crate::ports::is_serving(port)
 }
 
 /// 按 LISTEN 端口找到外部进程 pid 并 `taskkill /T /F`（等效杀整棵树）。
@@ -4129,6 +4161,50 @@ services:
 "#;
         eng.save_text(added, &again.hash).unwrap();
         assert!(eng.snapshot().unwrap().services.contains_key("extra"));
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn open_close_acquires_and_releases_workspace_lock() {
+        let root = write_ws_yaml(ping_yaml());
+        let eng = Engine::new();
+        eng.open(&root).unwrap();
+        let info = crate::lock::query(&root).expect("lock exists after open");
+        assert_eq!(info.pid, std::process::id());
+        assert_eq!(info.holder, crate::lock::LockHolder::Desktop);
+        eng.close().unwrap();
+        assert!(
+            crate::lock::query(&root).is_none(),
+            "lock released on close"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn open_failed_workspace_releases_lock() {
+        let root = write_ws_yaml("version: 1\nservices: {}\n");
+        // services 为空等校验失败场景可能合法，改用不存在的 yaml 根目录
+        let empty = std::env::temp_dir().join(format!("st-eng-lock-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&empty);
+        fs::create_dir_all(&empty).unwrap();
+        let eng = Engine::new();
+        assert!(eng.open(&empty).is_err());
+        assert!(
+            crate::lock::query(&empty).is_none(),
+            "failed open must not leave a lock behind"
+        );
+        let _ = fs::remove_dir_all(&empty);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn holder_label_follows_engine_identity() {
+        let root = write_ws_yaml(ping_yaml());
+        let eng = Engine::with_holder(crate::lock::LockHolder::Cli);
+        eng.open(&root).unwrap();
+        let info = crate::lock::query(&root).expect("lock exists");
+        assert_eq!(info.holder, crate::lock::LockHolder::Cli);
         eng.close().unwrap();
         let _ = fs::remove_dir_all(&root);
     }

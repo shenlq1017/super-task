@@ -21,6 +21,11 @@ include_dir = "0.7"
 # Windows 子进程混输 GBK（cmd 批处理/包装脚本 echo 中文）时的行解码兜底
 encoding_rs = "0.8"
 
+# 1.5 §6 导出包 zip 读写（Deflate）。实现偏差（已在实现计划复用核查记档）：
+# zip 依赖进 core——桌面 exportPackage/importPackage 与 CLI 共用同一实现，
+# 字节流接口拆两份写入器反而让壳层各带一份格式代码。
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
 [target.'cfg(unix)'.dependencies]
 # 1.4 proc 平台层：进程组 setpgid/killpg、Linux PDEATHSIG（复用标准封装，不裸写 libc）
 nix = { version = "0.29", default-features = false, features = ["process", "signal", "user"] }

@@ -18,6 +18,31 @@ use crate::proc::ProcessTree;
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// 任意 pid 是否存活（1.5 工作区锁 stale 判定专用；只读探测，不发信号、不结束进程）。
+/// OpenProcess 被拒（ERROR_ACCESS_DENIED，如受保护进程）视为存活——
+/// 与 Unix 侧 EPERM 同口径；仅「参数无效」类失败判为不存在。
+/// 打开成功还需 GetExitCodeProcess 排除「已退出但句柄未关」。
+pub fn pid_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, E_ACCESSDENIED, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Err(e) => e.code() == E_ACCESSDENIED,
+            Ok(handle) => {
+                let mut exit_code: u32 = 0;
+                let ok = GetExitCodeProcess(handle, &mut exit_code);
+                let _ = CloseHandle(handle);
+                ok.is_ok() && exit_code == STILL_ACTIVE.0 as u32
+            }
+        }
+    }
+}
+
 #[link(name = "ntdll")]
 extern "system" {
     fn NtResumeProcess(process: HANDLE) -> i32;

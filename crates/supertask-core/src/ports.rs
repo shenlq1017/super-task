@@ -5,11 +5,24 @@
 //! 绝不把「无法检查」当作「端口可用」。
 
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use indexmap::IndexMap;
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::spec::SuperTaskFile;
+
+/// loopback:port 是否已有服务在监听（250ms 上限；open / CLI status 批量调用要快）。
+/// 双栈：Node/Vite 默认常只监听 [::1]，仅探 IPv4 会把外部运行的服务误判为未启动。
+pub fn is_serving(port: u16) -> bool {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+    [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)]
+        .iter()
+        .any(|ip| {
+            TcpStream::connect_timeout(&SocketAddr::new(*ip, port), Duration::from_millis(250))
+                .is_ok()
+        })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpListener {

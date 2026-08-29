@@ -1811,3 +1811,59 @@ pub fn spawn_event_bridge(app: AppHandle, engine: Arc<Engine>, hub: HubHandle) {
         })
         .expect("spawn event bridge");
 }
+
+/// 1.5 §8：导出当前工作区为离线迁移包（zip）。只读操作，不额外取锁。
+#[tauri::command(rename = "workspace.exportPackage")]
+pub fn workspace_export_package(
+    state: EngineState<'_>,
+    workspace_id: String,
+    dest_path: String,
+    with_secrets: bool,
+) -> Result<supertask_core::ipc::ExportPackageOut, IpcError> {
+    let current = state.workspace_id().map_err(ipc_err)?;
+    if workspace_id != current {
+        return Err(err(
+            ErrorCode::NoWorkspace,
+            format!("workspace_id 不匹配当前工作区: {workspace_id}"),
+        ));
+    }
+    let root = std::path::PathBuf::from(&current);
+    let out = supertask_core::pkg::export_package(
+        &root,
+        std::path::Path::new(&dest_path),
+        with_secrets,
+    )
+    .map_err(ipc_err)?;
+    Ok(supertask_core::ipc::ExportPackageOut {
+        path: out.path.display().to_string(),
+        entries: out
+            .entries
+            .iter()
+            .map(|e| supertask_core::ipc::PkgEntryView { path: e.path.clone(), bytes: e.bytes })
+            .collect(),
+        warnings: out.warnings,
+    })
+}
+
+/// 1.5 §8：导入导出包（只落盘，不打开不启动）。dest_dir 缺省 cwd。
+#[tauri::command(rename = "workspace.importPackage")]
+pub fn workspace_import_package(
+    pkg_path: String,
+    dest_dir: Option<String>,
+) -> Result<supertask_core::ipc::ImportPackageOut, IpcError> {
+    let dest = match dest_dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::env::current_dir().map_err(|e| {
+            err(ErrorCode::NoWorkspace, format!("无法读取 cwd: {e}"))
+        })?,
+    };
+    let out = supertask_core::pkg::import_package(
+        std::path::Path::new(&pkg_path),
+        &dest,
+    )
+    .map_err(ipc_err)?;
+    Ok(supertask_core::ipc::ImportPackageOut {
+        root: out.root.display().to_string(),
+        warnings: out.warnings,
+    })
+}

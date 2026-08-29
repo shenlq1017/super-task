@@ -19,6 +19,9 @@ pub use v12::*;
 mod v13;
 pub use v13::*;
 
+mod v15;
+pub use v15::*;
+
 /// Stable invoke names. Tauri layer must register these (or map 1:1).
 pub mod cmd {
     pub const SESSION_HELLO: &str = "session.hello";
@@ -89,6 +92,10 @@ pub struct IpcError {
     pub code: ErrorCode,
     pub message: String,
     pub retryable: bool,
+    /// 1.5：结构化错误细节（如 WORKSPACE_LOCKED 的 holder/pid）。additive 字段，
+    /// 缺省不序列化；protocol 1 不变，旧前端忽略未知字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_yaml::Value>,
 }
 
 impl From<&Error> for IpcError {
@@ -97,13 +104,14 @@ impl From<&Error> for IpcError {
             code,
             message,
             retryable,
-            ..
+            details,
         } = e;
         Self {
             protocol: PROTOCOL,
             code: *code,
             message: message.clone(),
             retryable: *retryable,
+            details: details.clone(),
         }
     }
 }
