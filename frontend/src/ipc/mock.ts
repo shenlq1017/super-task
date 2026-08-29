@@ -1557,6 +1557,45 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   }
 
   // -------------------------------------------------------------------------
+  // 1.5：导出包（ipc.md §10.9）——浏览器 mock 语义对齐，不做真 zip
+  // -------------------------------------------------------------------------
+
+  if (command === "workspace.exportPackage") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    const destPath = (args?.destPath as string) ?? "";
+    const withSecrets = args?.withSecrets === true;
+    if (!workspaceId) {
+      throw { protocol: PROTOCOL, code: "NO_WORKSPACE", message: "未打开工作区", retryable: false };
+    }
+    if (!destPath.trim()) {
+      throw { protocol: PROTOCOL, code: "CWD_MISSING", message: "请选择导出路径", retryable: false };
+    }
+    return {
+      path: destPath,
+      entries: [
+        { path: "supertask.yaml", bytes: 1024 },
+        ...(withSecrets ? [{ path: ".env.local", bytes: 64 }] : []),
+      ],
+      warnings: [],
+    };
+  }
+
+  if (command === "workspace.importPackage") {
+    const pkgPath = (args?.pkgPath as string) ?? "";
+    const destDir = (args?.destDir as string) ?? "";
+    if (!pkgPath.trim() || !pkgPath.endsWith(".zip")) {
+      throw { protocol: PROTOCOL, code: "PKG_NOT_FOUND", message: "导出包不存在或不可读", retryable: false };
+    }
+    if (!destDir.trim()) {
+      throw { protocol: PROTOCOL, code: "CWD_MISSING", message: "请选择目标目录", retryable: false };
+    }
+    if (pkgPath.includes("conflict")) {
+      throw { protocol: PROTOCOL, code: "PKG_TARGET_EXISTS", message: "目标目录已有 supertask.yaml，不覆盖", retryable: false };
+    }
+    return { root: destDir, warnings: [] };
+  }
+
+  // -------------------------------------------------------------------------
   // 1.1：Git（ipc.md §10.2）
   // -------------------------------------------------------------------------
 

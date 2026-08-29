@@ -3,18 +3,56 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { useToast } from "@/components/ui/toast";
 import { useWorkspace } from "../providers/workspace-provider";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
 import { isTauri } from "../ipc/invoke";
+import { apiWorkspaceImportPackage } from "../ipc/api";
+import { IpcFailure } from "../ipc/protocol";
+import { errorDisplayText } from "@/lib/error-messages";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FolderOpen, ScanLine, Plus, FolderSearch } from "lucide-react";
+import { FolderOpen, PackageOpen, ScanLine, Plus, FolderSearch } from "lucide-react";
 
 export function WelcomePage() {
   const ws = useWorkspace();
   const openWs = useOpenWorkspace();
   const { t } = useTranslation();
+  const { toast } = useToast();
   const [path, setPath] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // 1.5 §11：从导出包导入（选包 → 选目标目录 → 只落盘 → 打开返回的 root）
+  const importPkg = async () => {
+    setBusy(true);
+    try {
+      let pkgPath: string | null = null;
+      if (!isTauri()) {
+        pkgPath = window.prompt(t("pages.welcome.importPkgPrompt"));
+      } else {
+        const sel = await openDialog({
+          multiple: false,
+          filters: [{ name: "SuperTask 导出包", extensions: ["zip"] }],
+        });
+        pkgPath = typeof sel === "string" ? sel : null;
+      }
+      if (!pkgPath) return;
+      let destDir: string | null = null;
+      if (!isTauri()) {
+        destDir = window.prompt(t("pages.welcome.importDestPrompt"));
+      } else {
+        const sel = await openDialog({ directory: true, multiple: false });
+        destDir = typeof sel === "string" ? sel : null;
+      }
+      if (!destDir) return;
+      const out = await apiWorkspaceImportPackage({ pkgPath, destDir });
+      toast(t("pages.welcome.importedToast"), "ok");
+      await openWs(out.root);
+    } catch (e) {
+      toast(e instanceof IpcFailure ? errorDisplayText(e.code, e.message) : String(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const scanCreate = async () => {
     if (!path.trim()) return;
@@ -75,6 +113,16 @@ export function WelcomePage() {
             </Button>
             <span className="text-[0.65rem] text-[var(--t3,#8a8f98)]">{t("pages.welcome.scanHint")}</span>
           </div>
+        </Card>
+
+        <Card className="mt-4 p-4">
+          <div className="mb-1 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">
+            <PackageOpen className="size-4" /> {t("pages.welcome.importPkg")}
+          </div>
+          <p className="mb-3 text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.welcome.importPkgHint")}</p>
+          <Button variant="soft" size="sm" className="gap-1" onClick={importPkg} disabled={busy}>
+            <PackageOpen /> {t("pages.welcome.importPkgBtn")}
+          </Button>
         </Card>
 
         {ws.state.recents.length > 0 ? (

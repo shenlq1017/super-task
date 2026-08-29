@@ -884,10 +884,11 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
     ...(isCompose ? [{ k: "container" as DetailTab, label: t("nav.docker"), icon: Container }] : []),
   ];
   const locked = [
-    // 版本以界面设计文档（真源）为准：终端 = 1.5 PTY；
+    // 终端 PTY 从未进入路线图任何版本（2026-08-26 界面设计文档标注「1.5」与
+    // 路线图/1.5 规格「能搬家：导出包+CLI+MCP」冲突，以路线图为准）→ 标注待排期；
     // 容器 Tab 1.3 已对 compose 服务上线，不再列入锁定项；
     // 代理 = 1.6 网关。指标 1.2 已上线为正式 Tab。
-    { label: t("pages.run.lockTerminal"), v: "1.5" },
+    { label: t("pages.run.lockTerminal"), v: t("pages.run.unscheduled") },
     { label: t("pages.run.lockProxy"), v: "1.6" },
   ];
 

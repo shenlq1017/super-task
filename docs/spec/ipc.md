@@ -579,3 +579,20 @@ TaskfileImportItem = {
 
 错误：工作区无 Taskfile → `TASKFILE_NOT_FOUND`；版本/语法错误 → `TASKFILE_INVALID`（details 含行号时带上）；`base_hash` 冲突 → `YAML_CONFLICT`。`selected` 不在预览内 → `NOT_FOUND`。解析是纯 YAML 读取 + 文本级检查，不执行任何命令。
 
+
+### 10.9 导出包（1.5，feature spec §6/§8）
+
+```text
+workspace.exportPackage
+  input:  { workspace_id, dest_path, with_secrets }
+  output: { path, entries: [{ path, bytes }], warnings: string[] }
+
+workspace.importPackage
+  input:  { pkg_path, dest_dir? }        # dest_dir 缺省 cwd（CLI 语义）
+  output: { root, warnings: string[] }
+```
+
+- export 作用于桌面当前工作区（`workspace_id` 不匹配当前 → `NO_WORKSPACE`）；只读操作，不额外取锁。默认排除 `secrets.file` 与全部 `env_file` 声明文件（去重）、`.supertask/`、`.git`；`with_secrets=true` 才逐个入包，UI 需先经风险确认（§9.2）。
+- import 只落盘零执行；成功后桌面用返回的 `root` 直接打开工作区。校验链：文件缺失/不可读 → `PKG_NOT_FOUND`；zip/manifest 解析失败、条目哈希不符、路径不安全（zip-slip）→ `PKG_INVALID`；`format` 高于支持版本 → `PKG_VERSION`；目标目录已有 `supertask.yaml` → `PKG_TARGET_EXISTS`（不覆盖，无 force）。
+- 包格式：zip（Deflate），`manifest.json { format:1, name, created_at, source_os, app_version, entries:[{path, sha256, bytes}] }` + `supertask.yaml`（原样字节）+ 可选密钥文件；路径一律 `/` 分隔、UTF-8。`format` 只增不破，为 2.0 一键迁移载荷雏形。
+- 桌面打开工作区遇 `WORKSPACE_LOCKED`（多入口互斥，feature spec §3.1）：`workspace.open` 以该错误码失败，错误信封新增 additive 可选 `details` 字段（如 `{ holder, pid }`）；protocol 保持 1，旧前端忽略未知字段。

@@ -17,6 +17,8 @@ import {
   type ServiceRuntimeView,
   type SuperTaskFile,
   type TemplatesListOut,
+  type WorkspaceExportPackageOut,
+  type WorkspaceImportPackageOut,
   type TemplatesPreviewOut,
   type TemplateSource,
   type ToolchainInstallOpts,
@@ -321,6 +323,29 @@ export const apiTemplatesPreview = (args: {
     ...(args.blocks ? { blocks: args.blocks } : {}),
     ...(args.ports && Object.keys(args.ports).length > 0 ? { ports: args.ports } : {}),
     ...(args.params && Object.keys(args.params).length > 0 ? { params: args.params } : {}),
+  });
+
+// ---------------------------------------------------------------------------
+// 导出包（1.5，ipc.md §10.9）
+// ---------------------------------------------------------------------------
+
+/** 导出当前工作区为离线迁移包（zip；只读，不取锁）。 */
+export const apiWorkspaceExportPackage = (args: {
+  workspaceId: string;
+  destPath: string;
+  withSecrets: boolean;
+}) =>
+  invoke<WorkspaceExportPackageOut>(cmd.WORKSPACE_EXPORT_PACKAGE, {
+    workspaceId: args.workspaceId,
+    destPath: args.destPath,
+    withSecrets: args.withSecrets,
+  });
+
+/** 导入导出包（只落盘；成功后用返回的 root 打开工作区）。 */
+export const apiWorkspaceImportPackage = (args: { pkgPath: string; destDir: string }) =>
+  invoke<WorkspaceImportPackageOut>(cmd.WORKSPACE_IMPORT_PACKAGE, {
+    pkgPath: args.pkgPath,
+    destDir: args.destDir,
   });
 
 // ---------------------------------------------------------------------------

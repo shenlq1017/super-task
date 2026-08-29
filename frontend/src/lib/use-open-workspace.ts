@@ -33,6 +33,13 @@ export function useOpenWorkspace() {
         } catch (e2) {
           toast(formatIpcFailure(e2), "err");
         }
+      } else if (e instanceof IpcFailure && e.code === "WORKSPACE_LOCKED") {
+        // 1.5 §11：呈现 holder/pid 与重试指引（details 由后端错误信封携带）
+        const d = (e.details ?? {}) as { holder?: string; pid?: number };
+        toast(
+          t("errors.WORKSPACE_LOCKED_detail", { holder: d.holder ?? "?", pid: d.pid ?? "?" }),
+          "err",
+        );
       } else {
         toast(formatIpcFailure(e), "err");
       }

@@ -58,6 +58,9 @@ export const cmd = {
   TEMPLATES_LIST: "templates.list",
   TEMPLATES_CREATE: "templates.create",
   TEMPLATES_PREVIEW: "templates.preview",
+  // 1.5（ipc.md §10.9）：导出包
+  WORKSPACE_EXPORT_PACKAGE: "workspace.exportPackage",
+  WORKSPACE_IMPORT_PACKAGE: "workspace.importPackage",
   GIT_CLONE: "git.clone",
   GIT_STATUS: "git.status",
   GIT_PULL: "git.pull",
@@ -241,17 +244,21 @@ export type IpcError = {
   code: string;
   message: string;
   retryable: boolean;
+  /** 1.5 additive：结构化错误细节（如 WORKSPACE_LOCKED 的 holder/pid），缺省缺字段。 */
+  details?: unknown;
 };
 
 export class IpcFailure extends Error {
   readonly code: string;
   readonly retryable: boolean;
+  readonly details?: unknown;
 
   constructor(err: IpcError) {
     super(err.message);
     this.name = "IpcFailure";
     this.code = err.code;
     this.retryable = err.retryable;
+    this.details = err.details;
   }
 }
 
@@ -535,6 +542,22 @@ export type TemplatesListOut = { templates: TemplateSummary[] };
 export type TemplatesPreviewOut = {
   services: Record<string, Record<string, unknown>>;
   files: string[];
+  warnings: string[];
+};
+
+// 1.5（ipc.md §10.9）：导出包
+// ---------------------------------------------------------------------------
+
+/** `workspace.exportPackage` 输出：zip 路径 + 内容条目 + 警告。 */
+export type WorkspaceExportPackageOut = {
+  path: string;
+  entries: { path: string; bytes: number }[];
+  warnings: string[];
+};
+
+/** `workspace.importPackage` 输出：导入后的工作区根 + 警告。 */
+export type WorkspaceImportPackageOut = {
+  root: string;
   warnings: string[];
 };
 

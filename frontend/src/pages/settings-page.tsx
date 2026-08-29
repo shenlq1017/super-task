@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2 } from "lucide-react";
+import { Loader2, PackageOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -8,7 +8,8 @@ import { cn } from "@/lib/utils";
 import { useSession } from "../providers/session-provider";
 import { useRuntime } from "../providers/runtime-provider";
 import { useOperations } from "../providers/operation-provider";
-import { apiSavePrefs, apiUpdateCheck, apiUpdateInstall } from "../ipc/api";
+import { useWorkspace } from "../providers/workspace-provider";
+import { apiSavePrefs, apiUpdateCheck, apiUpdateInstall, apiWorkspaceExportPackage } from "../ipc/api";
 import { IpcFailure } from "../ipc/protocol";
 import type { UpdateCheckResult } from "../ipc/protocol";
 import { opErrorLabel } from "../lib/status";
@@ -16,6 +17,8 @@ import { errorDisplayText } from "@/lib/error-messages";
 import { useToast } from "@/components/ui/toast";
 import { applyLocalePreference } from "@/i18n";
 import { isSupportedLocale, resolveLocale, SUPPORTED_LOCALES } from "@/i18n/resolve-locale";
+import { isTauri } from "../ipc/invoke";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 /** 偏好开关行：与既有 checkbox 样式一致，说明文案放第二行。 */
 function PrefRow({
@@ -224,7 +227,101 @@ function UpdateCard() {
   );
 }
 
-export function SettingsPage() {
+/** 1.5 §11：导出工作区包（zip）。只读操作；含密钥需显式确认（§9.2）。 */
+function ExportPkgCard() {
+  const { state } = useWorkspace();
+  const workspaceId = state.workspaceId;
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const [withSecrets, setWithSecrets] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const doExport = async (destPath: string) => {
+    setBusy(true);
+    try {
+      const out = await apiWorkspaceExportPackage({
+        workspaceId: workspaceId ?? "",
+        destPath,
+        withSecrets,
+      });
+      toast(t("pages.settings.exportDoneToast", { n: out.entries.length }), "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? errorDisplayText(e.code, e.message) : String(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onExport = async () => {
+    if (!workspaceId) {
+      toast(t("pages.settings.exportNoWs"), "err");
+      return;
+    }
+    if (withSecrets) {
+      setConfirmOpen(true);
+      return;
+    }
+    if (!isTauri()) {
+      const p = window.prompt(t("pages.settings.exportPathPrompt"));
+      if (p) await doExport(p);
+      return;
+    }
+    const sel = await saveDialog({
+      title: t("pages.settings.exportPkg"),
+      defaultPath: "supertask-export.zip",
+      filters: [{ name: "SuperTask 导出包", extensions: ["zip"] }],
+    });
+    if (typeof sel === "string" && sel) await doExport(sel);
+  };
+
+  return (
+    <Card className="p-4">
+      <h3 className="mb-3 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">
+        <PackageOpen className="size-4" /> {t("pages.settings.exportPkg")}
+      </h3>
+      <p className="mb-2 text-[0.75rem] leading-relaxed text-[var(--t3,#8a8f98)]">
+        {t("pages.settings.exportPkgHint")}
+      </p>
+      <PrefRow
+        label={t("pages.settings.exportWithSecrets")}
+        desc={t("pages.settings.exportWithSecretsDesc")}
+        checked={withSecrets}
+        onChange={setWithSecrets}
+      />
+      <div className="mt-2">
+        <Button variant="soft" size="sm" onClick={onExport} disabled={busy} className="gap-1">
+          <PackageOpen /> {t("pages.settings.exportBtn")}
+        </Button>
+      </div>
+      <ConfirmDialog
+        open={confirmOpen}
+        title={t("pages.settings.exportConfirmTitle")}
+        description={t("pages.settings.exportConfirmDesc")}
+        destructive
+        onConfirm={() => {
+          setConfirmOpen(false);
+          if (!isTauri()) {
+            const p = window.prompt(t("pages.settings.exportPathPrompt"));
+            if (p) void doExport(p);
+            return;
+          }
+          void (async () => {
+            const sel = await saveDialog({
+              title: t("pages.settings.exportPkg"),
+              defaultPath: "supertask-export.zip",
+              filters: [{ name: "SuperTask 导出包", extensions: ["zip"] }],
+            });
+            if (typeof sel === "string" && sel) await doExport(sel);
+          })();
+        }}
+        onCancel={() => setConfirmOpen(false)}
+      />
+    </Card>
+  );
+}
+
+function SettingsPageInner() {
   const { state } = useSession();
   const { toast } = useToast();
   const { t } = useTranslation();
@@ -365,6 +462,8 @@ export function SettingsPage() {
             ) : null}
           </Card>
 
+          <ExportPkgCard />
+
           <UpdateCard />
 
           <Card className="p-4">
@@ -386,4 +485,8 @@ export function SettingsPage() {
       </div>
     </div>
   );
+}
+
+export function SettingsPage() {
+  return <SettingsPageInner />;
 }
