@@ -32,8 +32,13 @@ impl LogBatcher {
     }
 
     pub fn poll_flush(&mut self, now_ms: u64) -> Option<Vec<LogLine>> {
-        if should_flush_batch(self.buf.len(), self.first_ts_ms, now_ms, self.max_items, self.max_wait_ms)
-        {
+        if should_flush_batch(
+            self.buf.len(),
+            self.first_ts_ms,
+            now_ms,
+            self.max_items,
+            self.max_wait_ms,
+        ) {
             Some(self.take())
         } else {
             None

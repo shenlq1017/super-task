@@ -9,3 +9,4 @@ dist
 .tauri-init
 src-tauri/gen
 
+examples/**/target/

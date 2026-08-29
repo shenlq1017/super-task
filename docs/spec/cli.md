@@ -23,8 +23,11 @@
 | `supertask script run <id>` / `script cancel` | ✅ | 运行（等待结束，返回退出码）/取消；cmds 只来自 YAML |
 | `supertask export [-o FILE] [--with-secrets]` | ❌ | 导出 zip（manifest + supertask.yaml；`--with-secrets` 含声明密钥文件明文） |
 | `supertask import <pkg> [--dest DIR]` | ❌ | 只落盘不启动；目标已有 yaml 拒绝 |
-| `supertask doctor` | ❌ | 工具链 + docker + 网关三引擎（nginx/caddy/apache）探测摘要 |
+| `supertask doctor` | ❌ | 工具链（含 1.7 python/go）+ docker + 网关三引擎（nginx/caddy/apache）探测摘要 |
 | `supertask mcp` | 惰性 | stdio MCP 服务器（见下） |
+| `supertask cloud status` | ❌ | 登录态/设备/冲突数/配额（共享 appdata 会话；未登录 → `CLOUD_NOT_LOGGED_IN` + 人话提示） |
+| `supertask cloud sync` | ❌ | 2.0 首版为只读预览（云端实体/本地跟踪/冲突计数）；落盘同步在桌面端执行 |
+| `supertask cloud logout` | ❌ | 清会话（保留本地数据与同步状态） |
 | `supertask version` | ❌ | 版本与协议 |
 
 全局参数：`--json`（机器可读 `{ok, data | error:{code,message,details}}`，错误码与 IPC 同表）、`--no-color`（保留开关，当前输出为纯文本）。
@@ -62,6 +65,18 @@
 
 - CLI bin 与桌面 dev 产物同名 `supertask.exe`；桌面 dev 进程运行时用 `CARGO_TARGET_DIR=target-cli cargo build -p supertask-cli` 隔离构建（安装版为 `SuperTask.exe`，不受影响）。
 - 带色输出预留 `--no-color`；后续按实现计划用 `anstyle` + `anstream`。
+
+## 云（2.0）
+
+CLI 云命令与桌面共享 `%APPDATA%/SuperTask/cloud/session.json`、`state.json` 以及 `app.json` 中的 `cloud_endpoint`。CLI 不处理密码，登录只在桌面端进行；未登录时返回 `CLOUD_NOT_LOGGED_IN`，文本模式提示「请在桌面端登录」。
+
+- `supertask cloud status`：只读读取共享会话和同步状态，并尝试读取当前端点配额；不取工作区锁。`--json` 返回与 IPC 对齐的登录态、设备、冲突数、最近同步时间和配额字段。
+- `supertask cloud sync`：**当前实现是只读预览**，读取云端实体数、本地跟踪数和冲突数，不写工作区、模板、设置或同步 state；落盘同步请在桌面端执行。文本输出会明确这项限制，`--json` 包含 `note`。
+- `supertask cloud logout`：删除本机会话文件，保留本地数据和同步状态；当前没有服务端 logout REST 调用。
+- CLI 端点跟随 `app.json` 的 `cloud_endpoint`，缺省使用客户端占位端点；当前没有 `supertask cloud endpoint` 子命令，端点由桌面端 `cloud.endpoint.set` IPC 设置后供 CLI 读取。
+- CLI 仍使用 `HttpCloudProvider`；客户端 HTTP 401 已按一次 refresh/一次重放语义接线，但 CLI `cloud sync` 仍是只读预览，不能称为完整落盘同步。
+
+`--json` 错误码与 IPC 同表；云端点、token、密码和实体敏感内容不得写入 CLI 输出。
 
 ## 网关（1.6）
 

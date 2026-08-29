@@ -28,11 +28,7 @@ pub fn plan_build_entry(root: &Path, b: &DockerBuild) -> Result<Vec<String>> {
 }
 
 /// compose 服务构建 → argv（不含程序名 `docker`）。
-pub fn plan_compose_build(
-    file: &Path,
-    project: Option<&str>,
-    service: &str,
-) -> Vec<String> {
+pub fn plan_compose_build(file: &Path, project: Option<&str>, service: &str) -> Vec<String> {
     let mut args = compose_base_args(file, project);
     args.push("build".into());
     args.push(service.into());
@@ -107,9 +103,15 @@ mod tests {
         assert_eq!(args[0], "build");
         // -f 与绝对 dockerfile 路径
         assert_eq!(args[1], "-f");
-        assert!(args[2].ends_with("user-service\\Dockerfile") || args[2].ends_with("user-service/Dockerfile"));
+        assert!(
+            args[2].ends_with("user-service\\Dockerfile")
+                || args[2].ends_with("user-service/Dockerfile")
+        );
         // -t 标签按 YAML 顺序
-        assert_eq!(&args[3..7], &["-t", "mall-user:local", "-t", "mall-user:1.0"]);
+        assert_eq!(
+            &args[3..7],
+            &["-t", "mall-user:local", "-t", "mall-user:1.0"]
+        );
         // context 兜底在最后
         let last = args.last().unwrap();
         assert!(last.ends_with("user-service"));

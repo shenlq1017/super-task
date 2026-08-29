@@ -26,6 +26,16 @@ encoding_rs = "0.8"
 # 字节流接口拆两份写入器反而让壳层各带一份格式代码。
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
+# 2.0 云（v2.0 规格复用核查）：ureq 阻塞式 HTTP（reqwest 重/需 tokio 全家）；
+# argon2 + chacha20poly1305（RustCrypto 系活跃维护；自研 KDF/密码学禁止）。
+# DPAPI（CryptProtectData）经既有 windows crate——需 Win32_Security_Cryptography feature，
+# 实现期核查后决定加 feature 或回退受限 ACL（spec §5 允许回退+文档标注）。
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+# OS 熵（RustCrypto 全系既有传递依赖，显式声明供 vault salt/nonce）
+getrandom = "0.2"
+
 [target.'cfg(unix)'.dependencies]
 # 1.4 proc 平台层：进程组 setpgid/killpg、Linux PDEATHSIG（复用标准封装，不裸写 libc）
 nix = { version = "0.29", default-features = false, features = ["process", "signal", "user"] }
@@ -49,4 +59,5 @@ windows = { version = "0.58", features = [
   "Win32_System_ProcessStatus",
   "Win32_System_Threading",
   "Win32_Security",
+  "Win32_Security_Cryptography",
 ] }

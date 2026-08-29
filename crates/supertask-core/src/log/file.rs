@@ -54,7 +54,10 @@ impl LogFile {
                 self.truncate_tail()?;
             }
         }
-        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         writeln!(f, "{line}")?;
         self.written += line.len() as u64 + 1;
         Ok(())
@@ -66,7 +69,10 @@ impl LogFile {
         if stem.is_empty() {
             return Err(std::io::Error::new(std::io::ErrorKind::Other, "no stem"));
         }
-        let dir = self.path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let dir = self
+            .path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
         // 先删最旧腾位
         let oldest = dir.join(format!("{stem}.{}", self.max_files));
         if oldest.exists() {
@@ -111,8 +117,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("svc.log");
         // max_bytes 有 1024 下限（钳制），用 1024 计算轮转
-        let mut lf =
-            LogFile::open_with_files(path.clone(), Some(1024), Some(64), Some(3)).unwrap();
+        let mut lf = LogFile::open_with_files(path.clone(), Some(1024), Some(64), Some(3)).unwrap();
         let line = format!("line-xxx {}", "x".repeat(60)); // ~69 字节/行
         for _ in 0..60 {
             lf.append_line(&line).unwrap();

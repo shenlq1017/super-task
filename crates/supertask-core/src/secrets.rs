@@ -74,11 +74,7 @@ pub fn secret_file_rel(spec: &SuperTaskFile) -> Option<String> {
     if !backend.is_file() {
         return None;
     }
-    Some(
-        sec.file
-            .clone()
-            .unwrap_or_else(|| ".env.local".to_string()),
-    )
+    Some(sec.file.clone().unwrap_or_else(|| ".env.local".to_string()))
 }
 
 fn secret_file_path(spec: &SuperTaskFile, root: &Path) -> Result<Option<PathBuf>> {
@@ -143,10 +139,7 @@ fn read_dotenv_file(path: &Path) -> (Vec<(String, String)>, bool) {
         return (Vec::new(), false);
     };
     match parse_dotenv(&text) {
-        Ok(entries) => (
-            entries.into_iter().map(|(_, k, v)| (k, v)).collect(),
-            true,
-        ),
+        Ok(entries) => (entries.into_iter().map(|(_, k, v)| (k, v)).collect(), true),
         Err(_) => (Vec::new(), false),
     }
 }
@@ -175,7 +168,10 @@ fn rel_to_root(root: &Path, file: &Path) -> String {
 /// 写入单个 key（存在则原位替换，不存在则追加）。临时文件 + 替换；失败保留原文件。
 pub fn set_key(spec: &SuperTaskFile, root: &Path, key: &str, value: &str) -> Result<()> {
     if !is_valid_secret_key(key) {
-        return Err(Error::new(ErrorCode::SpecInvalid, format!("非法 key {key:?}")));
+        return Err(Error::new(
+            ErrorCode::SpecInvalid,
+            format!("非法 key {key:?}"),
+        ));
     }
     if value.contains('\n') || value.contains('\r') {
         return Err(Error::new(
@@ -232,11 +228,18 @@ pub fn delete_key(spec: &SuperTaskFile, root: &Path, key: &str) -> Result<()> {
         ));
     }
     let text = std::fs::read_to_string(&path).map_err(|e| {
-        Error::new(ErrorCode::SecretFileMissing, format!("无法读取 secret 文件: {e}"))
+        Error::new(
+            ErrorCode::SecretFileMissing,
+            format!("无法读取 secret 文件: {e}"),
+        )
     })?;
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
-        let is_target = line.trim().split_once('=').map(|(k, _)| k.trim() == key).unwrap_or(false);
+        let is_target = line
+            .trim()
+            .split_once('=')
+            .map(|(k, _)| k.trim() == key)
+            .unwrap_or(false);
         if !is_target {
             out.push_str(line);
             out.push('\n');
@@ -247,17 +250,18 @@ pub fn delete_key(spec: &SuperTaskFile, root: &Path, key: &str) -> Result<()> {
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| {
-            Error::new(ErrorCode::TemplateWrite, format!("无法创建目录: {e}"))
-        })?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Error::new(ErrorCode::TemplateWrite, format!("无法创建目录: {e}")))?;
     }
     let tmp = path.with_extension("tmp-st");
-    std::fs::write(&tmp, bytes).map_err(|e| {
-        Error::new(ErrorCode::TemplateWrite, format!("写入临时文件失败: {e}"))
-    })?;
+    std::fs::write(&tmp, bytes)
+        .map_err(|e| Error::new(ErrorCode::TemplateWrite, format!("写入临时文件失败: {e}")))?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        Error::new(ErrorCode::TemplateWrite, format!("替换 secret 文件失败: {e}"))
+        Error::new(
+            ErrorCode::TemplateWrite,
+            format!("替换 secret 文件失败: {e}"),
+        )
     })?;
     Ok(())
 }
@@ -275,8 +279,9 @@ pub fn load_file_layers(
     let mut warnings = Vec::new();
     if let Some(path) = secret_file_path(spec, root)? {
         if path.exists() {
-            let text = std::fs::read_to_string(&path)
-                .map_err(|e| Error::new(ErrorCode::SecretParse, format!("无法读取 secret 文件: {e}")))?;
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                Error::new(ErrorCode::SecretParse, format!("无法读取 secret 文件: {e}"))
+            })?;
             for (_, k, v) in parse_dotenv(&text)? {
                 env.insert(k, v);
             }
@@ -310,7 +315,11 @@ pub fn load_file_layers(
 }
 
 /// secrets.validate：required key 是否可解析（文件或用户环境）；env_file 语法检查。
-pub fn validate(spec: &SuperTaskFile, root: &Path, service: Option<&str>) -> Result<crate::ipc::SecretsValidateOutput> {
+pub fn validate(
+    spec: &SuperTaskFile,
+    root: &Path,
+    service: Option<&str>,
+) -> Result<crate::ipc::SecretsValidateOutput> {
     let git = ProcessRunner::default();
     let mut missing = Vec::new();
     let mut warnings = Vec::new();
@@ -335,7 +344,11 @@ pub fn validate(spec: &SuperTaskFile, root: &Path, service: Option<&str>) -> Res
             .get_key_value(id)
             .map(|(k, v)| vec![(k, &v.env_file)])
             .unwrap_or_default(),
-        None => spec.services.iter().map(|(k, v)| (k, &v.env_file)).collect(),
+        None => spec
+            .services
+            .iter()
+            .map(|(k, v)| (k, &v.env_file))
+            .collect(),
     };
     for (id, files) in scope {
         for rel in files {
@@ -350,7 +363,9 @@ pub fn validate(spec: &SuperTaskFile, root: &Path, service: Option<&str>) -> Res
                 warnings.push(format!("{id}: {rel} 解析失败: {e}"));
             }
             if is_git_tracked(&git, root, &p) {
-                warnings.push(format!("{id}: {rel} 已被 Git 跟踪，请尽快移出版本库（git rm --cached）"));
+                warnings.push(format!(
+                    "{id}: {rel} 已被 Git 跟踪，请尽快移出版本库（git rm --cached）"
+                ));
             }
         }
     }
@@ -441,7 +456,9 @@ mod tests {
         let y = "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8080\n    env_file:\n      - .env.local\n      - missing.env\nsecrets:\n  backend: file\n  file: .env.local\n";
         let spec = spec_with_secrets(y);
         assert_eq!(
-            load_file_layers(&spec, &dir, Some("api")).unwrap_err().code(),
+            load_file_layers(&spec, &dir, Some("api"))
+                .unwrap_err()
+                .code(),
             ErrorCode::SecretFileMissing
         );
         // 去掉缺失文件后可加载且顺序正确（后文件覆盖）
@@ -476,7 +493,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("st-sec-st-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(".env.local"), "DB_PASSWORD=hunter\n").unwrap();
-        let y = ws_yaml("secrets:\n  backend: file\n  file: .env.local\n  required:\n    - JWT_SECRET\n");
+        let y = ws_yaml(
+            "secrets:\n  backend: file\n  file: .env.local\n  required:\n    - JWT_SECRET\n",
+        );
         let spec = spec_with_secrets(&y);
         let out = status(&spec, &dir).unwrap();
         assert_eq!(out.file.as_deref(), Some(".env.local"));

@@ -220,7 +220,11 @@ mod tests {
     fn write_lock(root: &Path, pid: u32, holder: LockHolder) {
         let dir = root.join(".supertask");
         fs::create_dir_all(&dir).unwrap();
-        let info = LockInfo { pid, holder, started_at_ms: 0 };
+        let info = LockInfo {
+            pid,
+            holder,
+            started_at_ms: 0,
+        };
         fs::write(lock_path(root), serde_json::to_vec(&info).unwrap()).unwrap();
     }
 
@@ -295,7 +299,11 @@ mod tests {
 
     #[test]
     fn lock_info_json_round_trip() {
-        let info = LockInfo { pid: 42, holder: LockHolder::Mcp, started_at_ms: 1_700_000_000_000 };
+        let info = LockInfo {
+            pid: 42,
+            holder: LockHolder::Mcp,
+            started_at_ms: 1_700_000_000_000,
+        };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"holder\":\"mcp\""), "{json}");
         let back: LockInfo = serde_json::from_str(&json).unwrap();
@@ -310,10 +318,8 @@ mod tests {
 
     /// 测试临时根目录（tests/temp 下，按用例名隔离；进程内创建，无外部进程依赖）。
     fn tempfile_root(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "supertask-lock-test-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("supertask-lock-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

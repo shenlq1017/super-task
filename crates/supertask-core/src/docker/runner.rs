@@ -148,7 +148,10 @@ fn run_capped(cmd: &mut Command, timeout: Duration) -> io::Result<DockerOutput> 
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "docker 命令执行超时"));
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "docker 命令执行超时",
+            ));
         }
     };
 
@@ -179,13 +182,14 @@ fn spawn_reader(
                 match pipe.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let take = budget.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b: usize| {
-                            if b == 0 {
-                                None
-                            } else {
-                                Some(b.saturating_sub(n))
-                            }
-                        });
+                        let take =
+                            budget.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b: usize| {
+                                if b == 0 {
+                                    None
+                                } else {
+                                    Some(b.saturating_sub(n))
+                                }
+                            });
                         match take {
                             Ok(prev) => {
                                 let keep = prev.min(n);
@@ -267,15 +271,17 @@ impl FakeDockerRunner {
     }
 
     /// 脚本化一次流式输出（自定义退出码，模拟构建失败）。
-    pub fn push_stream_full(&self, code: i32, stdout: impl Into<String>, stderr: impl Into<String>) {
-        self.stream_script
-            .lock()
-            .unwrap()
-            .push(Ok(FakeStream {
-                code,
-                stdout: stdout.into().into_bytes(),
-                stderr: stderr.into().into_bytes(),
-            }));
+    pub fn push_stream_full(
+        &self,
+        code: i32,
+        stdout: impl Into<String>,
+        stderr: impl Into<String>,
+    ) {
+        self.stream_script.lock().unwrap().push(Ok(FakeStream {
+            code,
+            stdout: stdout.into().into_bytes(),
+            stderr: stderr.into().into_bytes(),
+        }));
     }
 
     pub fn calls(&self) -> Vec<DockerSpawn> {
@@ -318,7 +324,11 @@ impl DockerRunner for FakeDockerRunner {
             Some(Ok(s)) => s,
             Some(Err(e)) => return Err(e),
             // 默认空流：立即 EOF、退出码 0（模拟容器停止后 --follow 自然结束）
-            None => FakeStream { code: 0, stdout: Vec::new(), stderr: Vec::new() },
+            None => FakeStream {
+                code: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
         };
         let code = scripted.code;
         Ok(DockerStream {

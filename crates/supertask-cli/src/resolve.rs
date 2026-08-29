@@ -11,9 +11,8 @@ const SPEC_FILE: &str = "supertask.yaml";
 /// 解析并校验工作区根（返回已 canonicalize 的目录，且必须含 supertask.yaml）。
 pub fn resolve(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     let root = match explicit {
-        Some(p) => fs::canonicalize(p).map_err(|e| {
-            Error::new(ErrorCode::NoWorkspace, format!("工作区目录无效: {e}"))
-        })?,
+        Some(p) => fs::canonicalize(p)
+            .map_err(|e| Error::new(ErrorCode::NoWorkspace, format!("工作区目录无效: {e}")))?,
         None => search_upward()?,
     };
     if !root.join(SPEC_FILE).is_file() {

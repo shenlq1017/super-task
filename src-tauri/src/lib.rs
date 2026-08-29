@@ -17,6 +17,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WindowEvent};
 
+pub mod cloud;
 mod commands;
 mod state;
 
@@ -116,7 +117,12 @@ fn app_load(appdata: tauri::State<'_, AppDataHandle>) -> Result<AppLoadOut, IpcE
                 changed |= data.stale.len() != before;
             }
         }
-        (PrefsView::from_appdata(&data), data.recents.clone(), data.stale.clone(), changed)
+        (
+            PrefsView::from_appdata(&data),
+            data.recents.clone(),
+            data.stale.clone(),
+            changed,
+        )
     };
     if changed {
         // 回写失败不阻塞 load（下次启动会再次检测）
@@ -256,9 +262,15 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 1.7 §8.2：服务崩溃系统通知（失焦时）
+        .plugin(tauri_plugin_notification::init())
         .manage(engine.clone())
         .manage(hub.clone())
-        .manage(appdata)
+        .manage(appdata.clone())
+        .manage({
+            let data = appdata.lock().expect("appdata lock");
+            cloud::CloudHandle::new(&data)
+        })
         .manage(state::new_exiting())
         .manage(pending_update)
         // 关闭到托盘（§8.1/§8.3）：CloseRequested 一律 prevent_close；
@@ -309,6 +321,15 @@ pub fn run() {
             commands::workspace_scan_draft,
             commands::workspace_open_explorer,
             commands::workspace_init,
+            commands::cloud_login,
+            commands::cloud_logout,
+            commands::cloud_status,
+            commands::cloud_sync,
+            commands::cloud_resolve,
+            commands::cloud_migrate_plan,
+            commands::cloud_migrate_apply,
+            commands::cloud_telemetry_set,
+            commands::cloud_endpoint_set,
             commands::workspace_open_ide,
             commands::workspace_scan_preview,
             commands::workspace_scan_apply,
@@ -347,9 +368,6 @@ pub fn run() {
             commands::docker_images,
             commands::docker_build,
             commands::docker_build_cancel,
-            commands::gateway_apply,
-            commands::cloud_login,
-            commands::cloud_sync,
             commands::ai_complete,
             commands::toolchain_install,
             commands::toolchain_upgrade,

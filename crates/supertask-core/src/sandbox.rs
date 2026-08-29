@@ -9,7 +9,10 @@ pub fn assert_rel_safe(rel: &str) -> Result<PathBuf> {
     }
     let p = Path::new(rel);
     if p.is_absolute() {
-        return Err(Error::new(ErrorCode::PathEscape, format!("禁止绝对路径: {rel}")));
+        return Err(Error::new(
+            ErrorCode::PathEscape,
+            format!("禁止绝对路径: {rel}"),
+        ));
     }
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -25,7 +28,10 @@ pub fn assert_rel_safe(rel: &str) -> Result<PathBuf> {
                 }
             }
             Component::Prefix(_) | Component::RootDir => {
-                return Err(Error::new(ErrorCode::PathEscape, format!("非法路径: {rel}")));
+                return Err(Error::new(
+                    ErrorCode::PathEscape,
+                    format!("非法路径: {rel}"),
+                ));
             }
         }
     }
@@ -72,7 +78,13 @@ pub fn is_loopback_url(url: &str) -> bool {
     else {
         return false;
     };
-    let host = rest.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+    let host = rest
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
     matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1")
 }
 

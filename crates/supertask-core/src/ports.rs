@@ -16,12 +16,14 @@ use crate::spec::SuperTaskFile;
 /// 双栈：Node/Vite 默认常只监听 [::1]，仅探 IPv4 会把外部运行的服务误判为未启动。
 pub fn is_serving(port: u16) -> bool {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-    [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)]
-        .iter()
-        .any(|ip| {
-            TcpStream::connect_timeout(&SocketAddr::new(*ip, port), Duration::from_millis(250))
-                .is_ok()
-        })
+    [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ]
+    .iter()
+    .any(|ip| {
+        TcpStream::connect_timeout(&SocketAddr::new(*ip, port), Duration::from_millis(250)).is_ok()
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +39,10 @@ pub fn parse_netstat_listeners(text: &str) -> Vec<TcpListener> {
     for line in text.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
         // Windows 中文/英文输出列数一致：Proto, 本地地址, 远程地址, 状态, PID
-        if cols.len() < 5 || !cols[0].eq_ignore_ascii_case("tcp") || !cols[3].eq_ignore_ascii_case("listening") {
+        if cols.len() < 5
+            || !cols[0].eq_ignore_ascii_case("tcp")
+            || !cols[3].eq_ignore_ascii_case("listening")
+        {
             continue;
         }
         let Some((addr, port)) = split_addr_port(cols[1]) else {
@@ -46,7 +51,11 @@ pub fn parse_netstat_listeners(text: &str) -> Vec<TcpListener> {
         let Ok(pid) = cols[4].parse::<u32>() else {
             continue;
         };
-        out.push(TcpListener { address: addr, port, pid });
+        out.push(TcpListener {
+            address: addr,
+            port,
+            pid,
+        });
     }
     out
 }
@@ -65,17 +74,25 @@ fn split_addr_port(s: &str) -> Option<(String, u16)> {
 
 fn run_netstat() -> Result<String> {
     let mut cmd = Command::new("netstat");
-    cmd.args(["-ano", "-p", "tcp"]).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(["-ano", "-p", "tcp"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let out = cmd.output().map_err(|e| {
-        Error::new(ErrorCode::PortScanFailed, format!("无法读取端口表（netstat）: {e}"))
+        Error::new(
+            ErrorCode::PortScanFailed,
+            format!("无法读取端口表（netstat）: {e}"),
+        )
     })?;
     if !out.status.success() {
-        return Err(Error::new(ErrorCode::PortScanFailed, "netstat 非零退出，端口表不可用"));
+        return Err(Error::new(
+            ErrorCode::PortScanFailed,
+            "netstat 非零退出，端口表不可用",
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -111,10 +128,18 @@ fn linux_listeners() -> Result<Vec<TcpListener>> {
     fn read_small(path: &str) -> std::io::Result<String> {
         Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
     }
-    let v4 = read_small("/proc/net/tcp")
-        .map_err(|e| Error::new(ErrorCode::PortScanFailed, format!("无法读取 /proc/net/tcp: {e}")))?;
-    let v6 = read_small("/proc/net/tcp6")
-        .map_err(|e| Error::new(ErrorCode::PortScanFailed, format!("无法读取 /proc/net/tcp6: {e}")))?;
+    let v4 = read_small("/proc/net/tcp").map_err(|e| {
+        Error::new(
+            ErrorCode::PortScanFailed,
+            format!("无法读取 /proc/net/tcp: {e}"),
+        )
+    })?;
+    let v6 = read_small("/proc/net/tcp6").map_err(|e| {
+        Error::new(
+            ErrorCode::PortScanFailed,
+            format!("无法读取 /proc/net/tcp6: {e}"),
+        )
+    })?;
     let mut rows = parse_proc_net_tcp(&v4);
     rows.extend(parse_proc_net_tcp(&v6));
 
@@ -188,7 +213,12 @@ fn macos_listeners() -> Result<Vec<TcpListener>> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .map_err(|e| Error::new(ErrorCode::PortScanFailed, format!("无法读取端口表（lsof）: {e}")))?;
+        .map_err(|e| {
+            Error::new(
+                ErrorCode::PortScanFailed,
+                format!("无法读取端口表（lsof）: {e}"),
+            )
+        })?;
     if !out.status.success() {
         return Err(Error::new(
             ErrorCode::PortScanFailed,
@@ -216,8 +246,16 @@ fn parse_lsof_listeners(text: &str) -> Vec<TcpListener> {
             continue;
         };
         // lsof 通配符 `*` 归一化为 0.0.0.0（与 Windows netstat 口径一致）
-        let addr = if addr == "*" { "0.0.0.0".to_string() } else { addr };
-        out.push(TcpListener { address: addr, port, pid });
+        let addr = if addr == "*" {
+            "0.0.0.0".to_string()
+        } else {
+            addr
+        };
+        out.push(TcpListener {
+            address: addr,
+            port,
+            pid,
+        });
     }
     out
 }
@@ -366,11 +404,7 @@ fn process_name_of(pid: u32) -> Option<String> {
 
 /// §5.2：从当前端口向上扫，跳过其他服务的 port/ports、系统保留段与已发现监听；
 /// 最多检查 128 个候选、返回最多 5 个。
-pub fn suggest(
-    spec: &SuperTaskFile,
-    id: &str,
-    listeners: &[TcpListener],
-) -> Result<Vec<u16>> {
+pub fn suggest(spec: &SuperTaskFile, id: &str, listeners: &[TcpListener]) -> Result<Vec<u16>> {
     let svc = spec
         .services
         .get(id)
@@ -419,17 +453,16 @@ pub fn suggest(
 }
 
 /// §5.3 配置写回规则（纯函数，改前克隆）。返回需要提示给用户的说明。
-pub fn apply_port_assign(
-    spec: &mut SuperTaskFile,
-    id: &str,
-    new_port: u16,
-) -> Result<Vec<String>> {
+pub fn apply_port_assign(spec: &mut SuperTaskFile, id: &str, new_port: u16) -> Result<Vec<String>> {
     let svc = spec
         .services
         .get_mut(id)
         .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
     let Some(old_port) = svc.port else {
-        return Err(Error::new(ErrorCode::SpecInvalid, format!("{id} 没有配置 port")));
+        return Err(Error::new(
+            ErrorCode::SpecInvalid,
+            format!("{id} 没有配置 port"),
+        ));
     };
     let mut notes = Vec::new();
     svc.port = Some(new_port);
@@ -445,7 +478,9 @@ pub fn apply_port_assign(
             if v == &old_port.to_string() {
                 *v = new_port.to_string();
             } else {
-                notes.push(format!("显式环境变量 {key}={v} 未改（与端口不一致，保留原值）"));
+                notes.push(format!(
+                    "显式环境变量 {key}={v} 未改（与端口不一致，保留原值）"
+                ));
             }
         }
     }
@@ -471,7 +506,8 @@ pub fn apply_port_assign(
 pub fn port_env_key(kind: &str) -> Option<&'static str> {
     match kind {
         "spring-boot" => Some("SERVER_PORT"),
-        "node" => Some("PORT"),
+        // 1.7 §4.4：python/go 与 node 同口径；generic 无生态约定不注入
+        "node" | "python" | "go" => Some("PORT"),
         _ => None,
     }
 }
@@ -495,7 +531,14 @@ mod tests {
     fn netstat_parse_v4_v6_and_states() {
         let ls = parse_netstat_listeners(NETSTAT);
         assert_eq!(ls.len(), 3);
-        assert_eq!(ls[0], TcpListener { address: "127.0.0.1".into(), port: 8081, pid: 4120 });
+        assert_eq!(
+            ls[0],
+            TcpListener {
+                address: "127.0.0.1".into(),
+                port: 8081,
+                pid: 4120
+            }
+        );
         assert_eq!(ls[1].port, 5432);
         assert_eq!(ls[2].address, "[::]".to_string());
         assert_eq!(ls[2].port, 6379);
@@ -509,7 +552,13 @@ mod tests {
         managed.insert(1234u32);
         // db 自己以 1234 监听 6379（托管运行中的常态）；api 未运行
         let mut own = std::collections::HashMap::new();
-        own.insert("db".to_string(), OwnRuntime { pids: vec![1234], running: true });
+        own.insert(
+            "db".to_string(),
+            OwnRuntime {
+                pids: vec![1234],
+                running: true,
+            },
+        );
         own.insert("api".to_string(), OwnRuntime::default());
         let items = inspect(&s, &parse_netstat_listeners(NETSTAT), &managed, &own);
         assert_eq!(items.len(), 2);
@@ -532,10 +581,24 @@ mod tests {
         managed.insert(2000u32);
         managed.insert(2001u32);
         let mut own = std::collections::HashMap::new();
-        own.insert("api".to_string(), OwnRuntime { pids: vec![2000, 2001], running: true });
+        own.insert(
+            "api".to_string(),
+            OwnRuntime {
+                pids: vec![2000, 2001],
+                running: true,
+            },
+        );
         let listeners = vec![
-            TcpListener { address: "127.0.0.1".into(), port: 8081, pid: 2001 },
-            TcpListener { address: "0.0.0.0".into(), port: 9000, pid: 4120 },
+            TcpListener {
+                address: "127.0.0.1".into(),
+                port: 8081,
+                pid: 2001,
+            },
+            TcpListener {
+                address: "0.0.0.0".into(),
+                port: 9000,
+                pid: 4120,
+            },
         ];
         let items = inspect(&s, &listeners, &managed, &own);
         let api = items.iter().find(|i| i.id == "api").unwrap();
@@ -551,10 +614,24 @@ mod tests {
         managed.insert(2000u32);
         managed.insert(2001u32);
         let mut own = std::collections::HashMap::new();
-        own.insert("api".to_string(), OwnRuntime { pids: vec![2000, 2001], running: true });
+        own.insert(
+            "api".to_string(),
+            OwnRuntime {
+                pids: vec![2000, 2001],
+                running: true,
+            },
+        );
         let listeners = vec![
-            TcpListener { address: "127.0.0.1".into(), port: 8081, pid: 2001 },
-            TcpListener { address: "0.0.0.0".into(), port: 9000, pid: 4120 },
+            TcpListener {
+                address: "127.0.0.1".into(),
+                port: 8081,
+                pid: 2001,
+            },
+            TcpListener {
+                address: "0.0.0.0".into(),
+                port: 9000,
+                pid: 4120,
+            },
         ];
         // 候选端口 = 自身当前监听端口（java 持有）→ 豁免，不算占用
         let own_port = inspect_single(&s, "api", 8081, &listeners, &managed, &own).unwrap();
@@ -571,8 +648,19 @@ mod tests {
         let y = "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8081\n";
         let s = spec(y);
         let mut own = std::collections::HashMap::new();
-        own.insert("api".to_string(), OwnRuntime { pids: vec![], running: true });
-        let items = inspect(&s, &parse_netstat_listeners(NETSTAT), &std::collections::HashSet::new(), &own);
+        own.insert(
+            "api".to_string(),
+            OwnRuntime {
+                pids: vec![],
+                running: true,
+            },
+        );
+        let items = inspect(
+            &s,
+            &parse_netstat_listeners(NETSTAT),
+            &std::collections::HashSet::new(),
+            &own,
+        );
         let api = items.iter().find(|i| i.id == "api").unwrap();
         assert!(!api.in_use, "外部接管实例的自身监听同样排除");
     }
@@ -585,8 +673,18 @@ mod tests {
         let mut managed = std::collections::HashSet::new();
         managed.insert(1234u32);
         let mut own = std::collections::HashMap::new();
-        own.insert("api".to_string(), OwnRuntime { pids: vec![7], running: true });
-        let listeners = vec![TcpListener { address: "0.0.0.0".into(), port: 9000, pid: 1234 }];
+        own.insert(
+            "api".to_string(),
+            OwnRuntime {
+                pids: vec![7],
+                running: true,
+            },
+        );
+        let listeners = vec![TcpListener {
+            address: "0.0.0.0".into(),
+            port: 9000,
+            pid: 1234,
+        }];
         let items = inspect(&s, &listeners, &managed, &own);
         let api = items.iter().find(|i| i.id == "api").unwrap();
         assert!(api.in_use && api.managed && api.pid == Some(1234));

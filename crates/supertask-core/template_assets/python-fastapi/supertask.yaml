@@ -1,0 +1,19 @@
+# SuperTask 官方模板：Python FastAPI
+# kind: python + entry；.venv/venv 存在时引擎自动优先 venv 解释器
+# 首次运行前请先执行 bootstrap 脚本安装依赖（或自行创建 venv 后安装）
+version: 1
+kind: workspace
+name: python-fastapi
+description: FastAPI 应用（kind: python，PORT 环境变量注入）
+root: "."
+services:
+  api:
+    kind: python
+    dir: "."
+    entry: main.py
+    port: 8000
+scripts:
+  bootstrap:
+    desc: 安装依赖（建议先 python -m venv .venv）
+    cmds:
+      - pip install -r requirements.txt

@@ -53,7 +53,7 @@ import type {
   ToolProbe,
   YamlView,
 } from "../ipc/protocol";
-import { opErrorLabel } from "@/lib/status";
+import { opErrorLabel, GATEWAY_STATE_TINT, GATEWAY_STATE_DOT } from "@/lib/status";
 
 /* ---------------- helpers ---------------- */
 
@@ -80,32 +80,12 @@ function confEquals(a: GatewayConf | null, b: GatewayConf | null): boolean {
   return JSON.stringify(a ?? emptyConf()) === JSON.stringify(b ?? emptyConf());
 }
 
-const STATE_TINT: Record<RtState, string> = {
-  running: "bg-[#e9f7ed] text-[#1e7e35]",
-  starting: "bg-[#fff8e1] text-[#9a6700]",
-  unhealthy: "bg-[#fdecec] text-[#dc2626]",
-  stopping: "bg-[#fff8e1] text-[#9a6700]",
-  exited: "bg-[#fdecec] text-[#dc2626]",
-  stopped: "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]",
-  building: "bg-[#fff8e1] text-[#9a6700]",
-};
-
-const STATE_DOT: Record<RtState, string> = {
-  running: "bg-[#27a644]",
-  starting: "bg-[#d9a514]",
-  unhealthy: "bg-[#dc2626]",
-  stopping: "bg-[#d9a514]",
-  exited: "bg-[#dc2626]",
-  stopped: "bg-[#8a8f98]",
-  building: "bg-[#d9a514]",
-};
-
 function StateChip({ state }: { state: RtState | null }) {
   const { t } = useTranslation();
   if (!state) return null;
   return (
-    <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold", STATE_TINT[state])}>
-      <span className={cn("size-1.5 rounded-full", STATE_DOT[state])} />
+    <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold", GATEWAY_STATE_TINT[state])}>
+      <span className={cn("size-1.5 rounded-full", GATEWAY_STATE_DOT[state])} />
       {t(`pages.gateway.state_${state}`)}
     </span>
   );

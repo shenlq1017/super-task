@@ -118,9 +118,9 @@ pub fn resolve(
     conf: &GatewayConf,
     host_for_port: &dyn Fn(u16) -> String,
 ) -> Result<ResolvedGateway> {
-    let kind = conf.kind.ok_or_else(|| {
-        Error::new(ErrorCode::GatewayNotConfigured, "gateway 段未配置 kind")
-    })?;
+    let kind = conf
+        .kind
+        .ok_or_else(|| Error::new(ErrorCode::GatewayNotConfigured, "gateway 段未配置 kind"))?;
     let mut groups: Vec<GatewayServerGroup> = Vec::new();
     for (i, route) in conf.routes.iter().enumerate() {
         let upstream = resolve_upstream_of(file, route, i)?;
@@ -153,7 +153,11 @@ pub fn resolve(
     })
 }
 
-fn resolve_upstream_of(file: &SuperTaskFile, route: &GatewayRoute, index: usize) -> Result<UpstreamAddr> {
+fn resolve_upstream_of(
+    file: &SuperTaskFile,
+    route: &GatewayRoute,
+    index: usize,
+) -> Result<UpstreamAddr> {
     if let Some(up) = &route.upstream {
         return parse_upstream(up);
     }
@@ -247,7 +251,10 @@ mod tests {
 
     #[test]
     fn resolve_missing_target_fails() {
-        let file = ws(SERVICES, "  kind: nginx\n  routes:\n    - path: /\n      target: ghost\n");
+        let file = ws(
+            SERVICES,
+            "  kind: nginx\n  routes:\n    - path: /\n      target: ghost\n",
+        );
         let conf = file.gateway.clone().unwrap();
         let e = resolve(&file, &conf, &|_| "127.0.0.1".into()).unwrap_err();
         assert_eq!(e.code(), ErrorCode::GatewayRouteInvalid);
@@ -256,7 +263,10 @@ mod tests {
 
     #[test]
     fn resolve_explicit_upstream_wins() {
-        let file = ws(SERVICES, "  kind: caddy\n  routes:\n    - path: /x\n      upstream: 127.0.0.1:9000\n");
+        let file = ws(
+            SERVICES,
+            "  kind: caddy\n  routes:\n    - path: /x\n      upstream: 127.0.0.1:9000\n",
+        );
         let conf = file.gateway.clone().unwrap();
         let ir = resolve(&file, &conf, &|_| "127.0.0.1".into()).unwrap();
         assert_eq!(ir.groups[0].locations[0].upstream.port, 9000);

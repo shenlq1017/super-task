@@ -73,10 +73,16 @@ fn all_sources(root: &Path) -> Vec<LogSource> {
             .collect();
         ids.sort();
         for id in ids {
-            out.push(LogSource { kind: LogSourceKind::Service, id });
+            out.push(LogSource {
+                kind: LogSourceKind::Service,
+                id,
+            });
         }
         if base.join("gateway.log").exists() {
-            out.push(LogSource { kind: LogSourceKind::Gateway, id: "gateway".into() });
+            out.push(LogSource {
+                kind: LogSourceKind::Gateway,
+                id: "gateway".into(),
+            });
         }
     }
     if let Ok(entries) = fs::read_dir(base.join("scripts")) {
@@ -89,11 +95,17 @@ fn all_sources(root: &Path) -> Vec<LogSource> {
             .collect();
         ids.sort();
         for id in ids {
-            out.push(LogSource { kind: LogSourceKind::Script, id });
+            out.push(LogSource {
+                kind: LogSourceKind::Script,
+                id,
+            });
         }
     }
     if base.join("system.log").exists() {
-        out.push(LogSource { kind: LogSourceKind::System, id: "system".into() });
+        out.push(LogSource {
+            kind: LogSourceKind::System,
+            id: "system".into(),
+        });
     }
     out
 }
@@ -114,10 +126,17 @@ pub fn search_logs(
         ));
     }
     let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT).min(MAX_SEARCH_LIMIT);
-    let needle = if case_sensitive { query.to_string() } else { query.to_lowercase() };
+    let needle = if case_sensitive {
+        query.to_string()
+    } else {
+        query.to_lowercase()
+    };
 
     let sources: Vec<LogSource> = match source {
-        Some(s) => vec![LogSource { kind: s.kind.clone(), id: s.id.clone() }],
+        Some(s) => vec![LogSource {
+            kind: s.kind.clone(),
+            id: s.id.clone(),
+        }],
         None => all_sources(root),
     };
     let mut items = Vec::new();
@@ -125,9 +144,15 @@ pub fn search_logs(
     let mut files_scanned = 0usize;
     'outer: for src in sources {
         for file in source_files(root, &src) {
-            let Ok(text) = fs::read_to_string(&file) else { continue };
+            let Ok(text) = fs::read_to_string(&file) else {
+                continue;
+            };
             files_scanned += 1;
-            let fname = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let fname = file
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             for (idx, line) in text.lines().enumerate() {
                 let matched = if case_sensitive {
                     line.contains(&needle)
@@ -157,7 +182,11 @@ pub fn search_logs(
             }
         }
     }
-    Ok(SearchResult { items, truncated, files_scanned })
+    Ok(SearchResult {
+        items,
+        truncated,
+        files_scanned,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -182,16 +211,25 @@ pub struct TailResult {
 pub fn tail_logs(root: &Path, source: Option<&LogSource>, lines: usize) -> Result<TailResult> {
     let lines = lines.max(1).min(MAX_SEARCH_LIMIT);
     let sources: Vec<LogSource> = match source {
-        Some(s) => vec![LogSource { kind: s.kind.clone(), id: s.id.clone() }],
+        Some(s) => vec![LogSource {
+            kind: s.kind.clone(),
+            id: s.id.clone(),
+        }],
         None => all_sources(root),
     };
     let mut items: Vec<TailHit> = Vec::new();
     let mut files_scanned = 0usize;
     for src in &sources {
         for file in source_files(root, src) {
-            let Ok(text) = fs::read_to_string(&file) else { continue };
+            let Ok(text) = fs::read_to_string(&file) else {
+                continue;
+            };
             files_scanned += 1;
-            let fname = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let fname = file
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             for (idx, line) in text.lines().enumerate() {
                 items.push(TailHit {
                     kind: match src.kind {
@@ -212,7 +250,11 @@ pub fn tail_logs(root: &Path, source: Option<&LogSource>, lines: usize) -> Resul
     if truncated {
         items.drain(..items.len() - lines);
     }
-    Ok(TailResult { items, truncated, files_scanned })
+    Ok(TailResult {
+        items,
+        truncated,
+        files_scanned,
+    })
 }
 
 /// §8.4 导出。format: text | jsonl；目标已存在 → 拒绝（不覆盖）。
@@ -249,20 +291,31 @@ pub fn export_logs(
         }
     }
     let result = match query {
-        Some(q) if !q.is_empty() => search_logs(root, source, q, case_sensitive, Some(MAX_SEARCH_LIMIT))?,
+        Some(q) if !q.is_empty() => {
+            search_logs(root, source, q, case_sensitive, Some(MAX_SEARCH_LIMIT))?
+        }
         _ => {
             // 无 query：导出范围内全部行
             let sources: Vec<LogSource> = match source {
-                Some(s) => vec![LogSource { kind: s.kind.clone(), id: s.id.clone() }],
+                Some(s) => vec![LogSource {
+                    kind: s.kind.clone(),
+                    id: s.id.clone(),
+                }],
                 None => all_sources(root),
             };
             let mut items = Vec::new();
             let mut files_scanned = 0usize;
             for src in sources {
                 for file in source_files(root, &src) {
-                    let Ok(text) = fs::read_to_string(&file) else { continue };
+                    let Ok(text) = fs::read_to_string(&file) else {
+                        continue;
+                    };
                     files_scanned += 1;
-                    let fname = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    let fname = file
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
                     for (idx, line) in text.lines().enumerate() {
                         items.push(SearchHit {
                             kind: match src.kind {
@@ -280,7 +333,11 @@ pub fn export_logs(
                     }
                 }
             }
-            SearchResult { items, truncated: false, files_scanned }
+            SearchResult {
+                items,
+                truncated: false,
+                files_scanned,
+            }
         }
     };
     let mut f = fs::File::create(dest)
@@ -350,7 +407,10 @@ fn rotated_files(dir: &Path, stem: &str) -> Vec<(PathBuf, u64)> {
 
 /// §8.2 保留清理：先删超龄，再按每源 max_files 删最旧，最后按总大小删最旧。
 /// 活动 `.log` 与 `system.log` 永不直接删除。
-pub fn run_retention(root: &Path, retention: Option<&LogRetentionSpec>) -> Result<RetentionSummary> {
+pub fn run_retention(
+    root: &Path,
+    retention: Option<&LogRetentionSpec>,
+) -> Result<RetentionSummary> {
     let max_files = retention.and_then(|r| r.max_files).unwrap_or(5).max(1);
     let max_age_days = retention.and_then(|r| r.max_age_days);
     let max_total = retention.and_then(|r| r.max_total_bytes);
@@ -363,12 +423,13 @@ pub fn run_retention(root: &Path, retention: Option<&LogRetentionSpec>) -> Resul
 
     // 收集 (path, size, mtime, is_active, age_expired)
     let mut all: Vec<(PathBuf, u64, std::time::SystemTime, bool)> = Vec::new();
-    let push_entry = |p: PathBuf, active: bool, all: &mut Vec<(PathBuf, u64, std::time::SystemTime, bool)>| {
-        if let Ok(meta) = fs::metadata(&p) {
-            let mtime = meta.modified().unwrap_or(now);
-            all.push((p, meta.len(), mtime, active));
-        }
-    };
+    let push_entry =
+        |p: PathBuf, active: bool, all: &mut Vec<(PathBuf, u64, std::time::SystemTime, bool)>| {
+            if let Ok(meta) = fs::metadata(&p) {
+                let mtime = meta.modified().unwrap_or(now);
+                all.push((p, meta.len(), mtime, active));
+            }
+        };
     if let Ok(entries) = fs::read_dir(&logs_dir) {
         for e in entries.filter_map(|e| e.ok()) {
             let p = e.path();
@@ -507,9 +568,17 @@ mod tests {
     #[test]
     fn search_filters_by_query_and_source_order() {
         let root = temp_root("a");
-        fs::write(root.join(".supertask/logs/api.log"), "INFO start\nERROR boom\nINFO ok\n").unwrap();
+        fs::write(
+            root.join(".supertask/logs/api.log"),
+            "INFO start\nERROR boom\nINFO ok\n",
+        )
+        .unwrap();
         fs::write(root.join(".supertask/logs/api.log.1"), "ERROR old-boom\n").unwrap();
-        fs::write(root.join(".supertask/logs/scripts/build.log"), "error lowercase\n").unwrap();
+        fs::write(
+            root.join(".supertask/logs/scripts/build.log"),
+            "error lowercase\n",
+        )
+        .unwrap();
         fs::write(root.join(".supertask/logs/system.log"), "SYS error\n").unwrap();
 
         // 全源搜 error（小写不敏感）：活动→轮转顺序，服务在 system/script 前
@@ -520,7 +589,10 @@ mod tests {
         assert!(!r.truncated);
 
         // 指定源 + 大小写敏感
-        let src = LogSource { kind: LogSourceKind::Service, id: "api".into() };
+        let src = LogSource {
+            kind: LogSourceKind::Service,
+            id: "api".into(),
+        };
         let r2 = search_logs(&root, Some(&src), "ERROR", true, None).unwrap();
         assert_eq!(r2.items.len(), 2);
         assert_eq!(r2.items[1].line_no, 1);
@@ -532,7 +604,9 @@ mod tests {
         // query 超长
         let long = "x".repeat(257);
         assert_eq!(
-            search_logs(&root, None, &long, false, None).unwrap_err().code(),
+            search_logs(&root, None, &long, false, None)
+                .unwrap_err()
+                .code(),
             ErrorCode::LogQueryInvalid
         );
         fs::remove_dir_all(&root).ok();
@@ -558,7 +632,9 @@ mod tests {
         assert!(body.contains("\"line_no\":1"));
         assert!(body.contains("api.log"));
         assert_eq!(
-            export_logs(&root, None, None, false, "csv", &dest).unwrap_err().code(),
+            export_logs(&root, None, None, false, "csv", &dest)
+                .unwrap_err()
+                .code(),
             ErrorCode::LogQueryInvalid
         );
         fs::remove_dir_all(&root).ok();
@@ -569,7 +645,11 @@ mod tests {
         let root = temp_root("c");
         fs::write(root.join(".supertask/logs/api.log"), "active\n").unwrap();
         for n in 1..=4 {
-            fs::write(root.join(format!(".supertask/logs/api.log.{n}")), "x".repeat(1000)).unwrap();
+            fs::write(
+                root.join(format!(".supertask/logs/api.log.{n}")),
+                "x".repeat(1000),
+            )
+            .unwrap();
         }
         fs::write(root.join(".supertask/logs/system.log"), "sys\n").unwrap();
         let retention = LogRetentionSpec {
@@ -595,7 +675,10 @@ mod tests {
         };
         let s2 = run_retention(&root, Some(&retention2)).unwrap();
         assert!(s2.deleted_files >= 1);
-        assert!(root.join(".supertask/logs/api.log").exists(), "活动文件永不被清理删除");
+        assert!(
+            root.join(".supertask/logs/api.log").exists(),
+            "活动文件永不被清理删除"
+        );
         fs::remove_dir_all(&root).ok();
     }
 

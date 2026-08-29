@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 
 use crate::error::{Error, ErrorCode, Result};
+use crate::sandbox;
 use crate::spec::{PackageManager, ServiceSpec, SuperTaskFile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +196,10 @@ pub fn plan_service_in(file: &SuperTaskFile, id: &str, root: Option<&Path>) -> R
             plan_spring(svc, env, bt)
         }
         "node" => plan_node(svc, env),
+        // 1.7 §4.2：python/go/generic；root=None（测试上下文）只认显式字段、跳过 fs 检查
+        "python" => plan_python(svc, env, root),
+        "go" => plan_go(svc, env, root),
+        "generic" => plan_generic(svc, env, root),
         _ => unreachable!(),
     }
 }
@@ -209,7 +214,8 @@ fn merge_env(ws: &IndexMap<String, String>, svc: &ServiceSpec) -> IndexMap<Strin
             "spring-boot" if !env.contains_key("SERVER_PORT") => {
                 env.insert("SERVER_PORT".into(), port.to_string());
             }
-            "node" if !env.contains_key("PORT") => {
+            // 1.7 §4.4：python/go 与 node 同口径注入 PORT；generic 无生态约定不注入
+            "node" | "python" | "go" if !env.contains_key("PORT") => {
                 env.insert("PORT".into(), port.to_string());
             }
             _ => {}
@@ -292,6 +298,206 @@ fn plan_node(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<Command
     })
 }
 
+// ---------------------------------------------------------------------------
+// 1.7 §4.2：python / go / generic
+// ---------------------------------------------------------------------------
+
+fn go_program_name() -> &'static str {
+    if cfg!(windows) {
+        "go.exe"
+    } else {
+        "go"
+    }
+}
+
+fn python_program_name() -> &'static str {
+    if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python3"
+    }
+}
+
+fn venv_relative_python() -> &'static str {
+    if cfg!(windows) {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    }
+}
+
+/// 1.7 §4.2：python 解释器解析 `dir/.venv → dir/venv → root/.venv → root/venv → PATH`。
+/// `.venv` 与 `venv` 并存取 `.venv`。root=None（测试上下文）只走 PATH。
+fn resolve_python_interpreter(dir: &str, root: Option<&Path>) -> String {
+    let Some(r) = root else {
+        return python_program_name().into();
+    };
+    let dir_abs = sandbox::confine(r, dir).unwrap_or_else(|_| r.to_path_buf());
+    let rel = venv_relative_python();
+    for (venv, _) in [(".venv", true), ("venv", false)] {
+        let p = dir_abs.join(venv).join(rel);
+        if p.is_file() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    python_program_name().into()
+}
+
+/// `kind: python`：`python <entry>` 或 `python -m <module>` + extra_args；工作目录 dir。
+fn plan_python(
+    svc: &ServiceSpec,
+    env: IndexMap<String, String>,
+    root: Option<&Path>,
+) -> Result<CommandSpec> {
+    let dir = svc.dir.clone().unwrap();
+    let program = resolve_python_interpreter(&dir, root);
+    if let (Some(r), Some(entry)) = (root, svc.entry.as_deref()) {
+        let base = sandbox::confine(r, &dir)?;
+        let p = sandbox::confine(&base, entry)?;
+        if !p.is_file() {
+            return Err(Error::new(
+                ErrorCode::EntryNotFound,
+                format!("入口文件不存在: {entry}（相对 dir {dir}）"),
+            ));
+        }
+    }
+    let mut args = match (svc.entry.as_deref(), svc.module.as_deref()) {
+        (Some(e), _) => vec![e.to_string()],
+        (None, Some(m)) => vec!["-m".into(), m.to_string()],
+        // validate 已保证 entry XOR module；此处兜底
+        (None, None) => {
+            return Err(Error::new(
+                ErrorCode::SpecInvalid,
+                "python 需要 entry 或 module",
+            ))
+        }
+    };
+    args.extend(svc.extra_args.iter().cloned());
+    Ok(CommandSpec {
+        program,
+        args,
+        cwd_rel: dir,
+        env,
+    })
+}
+
+/// `kind: go`：`go run <package>` + extra_args（extra_args 传给被运行程序）；
+/// package 缺省 "."；非 `.` 开头的裸路径归一为 `./<package>`；工作目录 dir（缺省 "."）。
+fn plan_go(
+    svc: &ServiceSpec,
+    env: IndexMap<String, String>,
+    root: Option<&Path>,
+) -> Result<CommandSpec> {
+    let dir = svc.dir.clone().unwrap_or_else(|| ".".into());
+    let package = svc.package.clone().unwrap_or_else(|| ".".into());
+    if let Some(r) = root {
+        let bare = package.trim_start_matches("./");
+        if !bare.is_empty() && bare != "." {
+            let base = sandbox::confine(r, &dir)?;
+            let p = sandbox::confine(&base, bare)?;
+            if !p.is_dir() {
+                return Err(Error::new(
+                    ErrorCode::PackageNotFound,
+                    format!("package 目录不存在: {package}（相对 dir {dir}）"),
+                ));
+            }
+        }
+    }
+    let pkg_arg = if package.starts_with('.') {
+        package
+    } else {
+        format!("./{package}")
+    };
+    let mut args = vec!["run".into(), pkg_arg];
+    args.extend(svc.extra_args.iter().cloned());
+    Ok(CommandSpec {
+        program: go_program_name().into(),
+        args,
+        cwd_rel: dir,
+        env,
+    })
+}
+
+/// `kind: generic`：`<program> [args…]` + extra_args；program 含路径分隔符时为
+/// 工作区内相对路径（相对 dir，validate 已拒绝对 `..`/绝对路径），规划期解析为
+/// 绝对路径并检查存在性；纯名字走 PATH（PATHEXT）。UI 不提供拼 cmdline 入口。
+fn plan_generic(
+    svc: &ServiceSpec,
+    env: IndexMap<String, String>,
+    root: Option<&Path>,
+) -> Result<CommandSpec> {
+    let program_spec = svc.program.clone().unwrap();
+    let dir = svc.dir.clone().unwrap_or_else(|| ".".into());
+    let program = if program_spec.contains('/') || program_spec.contains('\\') {
+        match root {
+            Some(r) => {
+                let base = sandbox::confine(r, &dir)?;
+                let p = sandbox::confine(&base, &program_spec)?;
+                if !p.is_file() {
+                    return Err(Error::new(
+                        ErrorCode::MissingTool,
+                        format!("未找到程序 {program_spec}（相对 {dir}）"),
+                    ));
+                }
+                p.to_string_lossy().into_owned()
+            }
+            // 测试上下文：原样透传，由 resolve_program 兜底
+            None => program_spec,
+        }
+    } else {
+        program_spec
+    };
+    let mut args = svc.args.clone();
+    args.extend(svc.extra_args.iter().cloned());
+    Ok(CommandSpec {
+        program,
+        args,
+        cwd_rel: dir,
+        env,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 1.7 §5（Phase 2.0）：显式 `toolchain.manager: mise` 时的 env_delta 接线。
+// resolver 产出的 `env_delta`（mise 工具的 PATH 前置）此前无消费方——在启动
+// env 组装末尾合并，让 mise 装出的工具在 shims 不在 PATH 时也能被启动链解析。
+// 解析失败静默回退 PATH 直解（1.0–1.6 行为不变）。
+// ---------------------------------------------------------------------------
+
+fn kind_primary_tool(kind: &str) -> Option<crate::toolchain::ToolKind> {
+    match kind {
+        "spring-boot" => Some(crate::toolchain::ToolKind::Java),
+        "node" => Some(crate::toolchain::ToolKind::Node),
+        "python" => Some(crate::toolchain::ToolKind::Python),
+        "go" => Some(crate::toolchain::ToolKind::Go),
+        _ => None,
+    }
+}
+
+/// 仅当 spec 显式 `toolchain.manager: mise` 时生效：`mise which <tool>` 解析
+/// 当前 kind 的主工具并合并 PATH env_delta。失败静默（PATH 兜底）。
+pub fn apply_pinned_mise_env(
+    toolchain: Option<&crate::spec::ToolchainSpec>,
+    kind: &str,
+    root: &Path,
+    env: &mut IndexMap<String, String>,
+) {
+    use crate::toolchain::{resolver, runner::ProcessRunner, ProviderKind};
+    let Some(tc) = toolchain else { return };
+    if tc.manager != Some(crate::spec::ToolchainManager::Mise) {
+        return;
+    }
+    let Some(tool) = kind_primary_tool(kind) else {
+        return;
+    };
+    let runner = ProcessRunner;
+    if let Ok(resolved) = resolver::resolve_tool(&runner, ProviderKind::Mise, tool, root) {
+        for (k, v) in &resolved.env_delta {
+            env.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 /// 1.2 §11.2：`mvn [-pl module] package -DskipTests` + build_args（不默认 -am）。
 pub fn plan_jar_build(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<CommandSpec> {
     plan_jar_build_in(svc, env, None)
@@ -361,9 +567,283 @@ pub fn log_file_rel(kind: &str, id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use crate::error::ErrorCode;
     use crate::spec::parse_yaml;
+    use std::fs;
+
+    // ---- 1.7：python / go / generic ----
+
+    fn tmp_ws(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("st-launcher-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn make_venv(dir: &Path, venv: &str) {
+        let rel = if cfg!(windows) {
+            "Scripts/python.exe"
+        } else {
+            "bin/python"
+        };
+        let p = dir.join(venv).join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, b"").unwrap();
+    }
+
+    #[test]
+    fn python_entry_mode_and_venv_priority() {
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: python
+    dir: backend
+    entry: main.py
+    port: 8000
+"#,
+        )
+        .unwrap();
+        // 无 root（root=None）：PATH 兜底
+        let c = plan_service(&f, "api").unwrap();
+        assert_eq!(c.program, python_program_name());
+        assert_eq!(c.args, ["main.py"]);
+        assert_eq!(c.cwd_rel, "backend");
+        assert_eq!(c.env.get("PORT").map(String::as_str), Some("8000"));
+        // venv 优先：dir/.venv → 绝对路径（entry 文件需存在）
+        let root = tmp_ws("py-venv");
+        let dir = root.join("backend");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("main.py"), b"").unwrap();
+        make_venv(&dir, ".venv");
+        let c = plan_service_in(&f, "api", Some(&root)).unwrap();
+        assert!(c.program.contains(".venv"), "program={}", c.program);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_module_mode_and_coexist_prefers_dot_venv() {
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: python
+    dir: .
+    module: uvicorn
+    extra_args: ["app:app", "--port", "8000"]
+"#,
+        )
+        .unwrap();
+        let root = tmp_ws("py-module");
+        make_venv(&root, ".venv");
+        make_venv(&root, "venv");
+        let c = plan_service_in(&f, "api", Some(&root)).unwrap();
+        assert_eq!(c.args, ["-m", "uvicorn", "app:app", "--port", "8000"]);
+        assert!(c.program.contains(".venv"), "program={}", c.program);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_entry_not_found_is_hard_error_at_launch() {
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: python
+    dir: backend
+    entry: missing.py
+"#,
+        )
+        .unwrap();
+        let root = tmp_ws("py-missing");
+        let e = plan_service_in(&f, "api", Some(&root)).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::EntryNotFound);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn go_defaults_and_package_normalization() {
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: go
+    port: 8080
+    extra_args: ["-conf", "dev.yaml"]
+"#,
+        )
+        .unwrap();
+        let c = plan_service(&f, "api").unwrap();
+        assert_eq!(c.program, go_program_name());
+        assert_eq!(c.args, ["run", ".", "-conf", "dev.yaml"]);
+        assert_eq!(c.cwd_rel, ".");
+        assert_eq!(c.env.get("PORT").map(String::as_str), Some("8080"));
+        // 裸路径归一为 ./
+        let (f2, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: go
+    package: cmd/server
+"#,
+        )
+        .unwrap();
+        let c = plan_service(&f2, "api").unwrap();
+        assert_eq!(c.args, ["run", "./cmd/server"]);
+        // 存在性检查：目录存在通过
+        let root = tmp_ws("go-ok");
+        fs::create_dir_all(root.join("cmd/server")).unwrap();
+        assert!(plan_service_in(&f2, "api", Some(&root)).is_ok());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn go_package_not_found() {
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: go
+    dir: srv
+    package: ./cmd/missing
+"#,
+        )
+        .unwrap();
+        let root = tmp_ws("go-missing");
+        let e = plan_service_in(&f, "api", Some(&root)).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::PackageNotFound);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generic_path_name_and_relative_program() {
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  worker:
+    kind: generic
+    program: deno
+    args: ["run", "--allow-net", "main.ts"]
+    port: 4800
+  tool:
+    kind: generic
+    program: bin/tool.exe
+"#,
+        )
+        .unwrap();
+        let c = plan_service(&f, "worker").unwrap();
+        assert_eq!(c.program, "deno");
+        assert_eq!(c.args, ["run", "--allow-net", "main.ts"]);
+        assert_eq!(c.cwd_rel, ".");
+        // generic 不注入 PORT
+        assert!(!c.env.contains_key("PORT"));
+        // 相对路径 program：规划期解析为绝对路径（存在性检查）
+        let root = tmp_ws("generic-rel");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin/tool.exe"), b"").unwrap();
+        let c = plan_service_in(&f, "tool", Some(&root)).unwrap();
+        assert!(Path::new(&c.program).is_absolute());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generic_missing_program_file() {
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  tool:
+    kind: generic
+    program: bin/absent.exe
+"#,
+        )
+        .unwrap();
+        let root = tmp_ws("generic-missing");
+        let e = plan_service_in(&f, "tool", Some(&root)).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::MissingTool);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn v17_validation_matrix() {
+        let cases: [(&str, bool); 9] = [
+            // python：dir 必填
+            ("python-no-dir", false),
+            // python：entry XOR module
+            ("python-both", false),
+            ("python-neither", false),
+            // python 合法
+            ("python-ok", true),
+            // go 合法；外来字段拒绝
+            ("go-ok", true),
+            ("go-entry", false),
+            // generic：program 必填；args 合法
+            ("generic-no-program", false),
+            ("generic-ok", true),
+            // generic program 含 .. 拒绝
+            ("generic-escape", false),
+        ];
+        let yamls: [(&str, &str); 9] = [
+            ("python-no-dir", "version: 1\nservices:\n  s:\n    kind: python\n    entry: main.py\n"),
+            ("python-both", "version: 1\nservices:\n  s:\n    kind: python\n    dir: .\n    entry: main.py\n    module: app\n"),
+            ("python-neither", "version: 1\nservices:\n  s:\n    kind: python\n    dir: .\n"),
+            ("python-ok", "version: 1\nservices:\n  s:\n    kind: python\n    dir: backend\n    entry: main.py\n    port: 8000\n"),
+            ("go-ok", "version: 1\nservices:\n  s:\n    kind: go\n    package: ./cmd/x\n    port: 8080\n"),
+            ("go-entry", "version: 1\nservices:\n  s:\n    kind: go\n    entry: main.py\n"),
+            ("generic-no-program", "version: 1\nservices:\n  s:\n    kind: generic\n    args: [a]\n"),
+            ("generic-ok", "version: 1\nservices:\n  s:\n    kind: generic\n    program: deno\n    args: [run, main.ts]\n    port: 4800\n"),
+            ("generic-escape", "version: 1\nservices:\n  s:\n    kind: generic\n    program: ../evil.exe\n"),
+        ];
+        for (id, ok) in cases {
+            let yaml = yamls.iter().find(|(k, _)| *k == id).unwrap().1;
+            let r = parse_yaml(yaml);
+            assert_eq!(
+                r.is_ok(),
+                ok,
+                "case {id}: {:?}",
+                r.err().map(|e| e.message().to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn v17_defaults_apply() {
+        let (mut f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  py:
+    kind: python
+    dir: .
+    entry: main.py
+  g:
+    kind: go
+  gen:
+    kind: generic
+    program: x
+  genport:
+    kind: generic
+    program: x
+    port: 1234
+"#,
+        )
+        .unwrap();
+        f.apply_defaults();
+        assert_eq!(f.services["py"].grace_secs, Some(15));
+        assert_eq!(f.services["g"].grace_secs, Some(60));
+        assert_eq!(f.services["gen"].grace_secs, Some(15));
+        // 无 port 的 generic：health 缺省 none（不设 tcp）
+        assert!(f.services["gen"].health.is_none());
+        // 有 port：默认 tcp
+        assert!(f.services["genport"].health.is_some());
+    }
 
     #[test]
     fn spring_argv() {
@@ -510,7 +990,8 @@ services:
 
     #[test]
     fn gradle_jar_run_is_still_java() {
-        let f = gradle_yaml("    build_tool: gradle\n    module: m\n    port: 8080\n    launch: jar");
+        let f =
+            gradle_yaml("    build_tool: gradle\n    module: m\n    port: 8080\n    launch: jar");
         let c = plan_jar_run(&f.services["api"], Default::default());
         assert_eq!(c.program, "java.exe");
         assert_eq!(c.args, vec!["-jar"]);
@@ -529,8 +1010,14 @@ services:
         fs::write(root.join("m/pom.xml"), "").unwrap();
         fs::write(root.join("both/pom.xml"), "").unwrap();
         fs::write(root.join("both/build.gradle"), "").unwrap();
-        assert_eq!(detect_build_tool(&root.join("g")).unwrap(), BuildTool::Gradle);
-        assert_eq!(detect_build_tool(&root.join("m")).unwrap(), BuildTool::Maven);
+        assert_eq!(
+            detect_build_tool(&root.join("g")).unwrap(),
+            BuildTool::Gradle
+        );
+        assert_eq!(
+            detect_build_tool(&root.join("m")).unwrap(),
+            BuildTool::Maven
+        );
         // §5.1：两者并存 → BUILD_TOOL_AMBIGUOUS；都没有 → 工具缺失
         assert_eq!(
             detect_build_tool(&root.join("both")).unwrap_err().code(),
@@ -590,8 +1077,7 @@ services:
         let wrapper = root.join("gradlew");
         fs::write(&wrapper, "@echo off").unwrap();
         let (prog, args, warns) =
-            resolve_gradle_launcher(&root, "mod", "gradlew.bat", &[":mod:bootRun".into()])
-                .unwrap();
+            resolve_gradle_launcher(&root, "mod", "gradlew.bat", &[":mod:bootRun".into()]).unwrap();
         assert_eq!(prog, wrapper.display().to_string());
         assert_eq!(args, vec![":mod:bootRun"]);
         assert!(warns.is_empty());

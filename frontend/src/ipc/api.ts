@@ -46,6 +46,15 @@ import {
   type GatewayPreviewOut,
   type GatewayValidateOut,
   type GatewayApplyOut,
+  type CloudStatusOut,
+  type CloudLoginOut,
+  type CloudSyncOut,
+  type CloudResolveChoice,
+  type CloudResolveOut,
+  type CloudMigratePlanOut,
+  type CloudMigrateApplyOut,
+  type CloudTelemetryOut,
+  type CloudEndpointSetOut,
 } from "./protocol";
 
 // ---------------------------------------------------------------------------
@@ -446,6 +455,41 @@ export const apiUpdateCheck = () => invoke<OperationIdOut>(cmd.APP_UPDATE_CHECK,
 
 export const apiUpdateInstall = (version: string) =>
   invoke<OperationIdOut>(cmd.APP_UPDATE_INSTALL, { version });
+
+// ---------------------------------------------------------------------------
+// Cloud（2.0，typed wrappers；页面不得裸 invoke）
+// ---------------------------------------------------------------------------
+
+export const apiCloudStatus = () => invoke<CloudStatusOut>(cmd.CLOUD_STATUS, {});
+
+/** Password is sent only to the IPC boundary and never returned to callers. */
+export const apiCloudLogin = (email: string, password: string) =>
+  invoke<CloudLoginOut>(cmd.CLOUD_LOGIN, { email, password });
+
+export const apiCloudLogout = () => invoke<{ ok: boolean }>(cmd.CLOUD_LOGOUT, {});
+export const apiCloudSync = () => invoke<CloudSyncOut>(cmd.CLOUD_SYNC, {});
+export const apiCloudResolve = (entityId: string, choice: CloudResolveChoice) =>
+  invoke<CloudResolveOut>(cmd.CLOUD_RESOLVE, { entity_id: entityId, choice });
+export const apiCloudMigratePlan = () => invoke<CloudMigratePlanOut>(cmd.CLOUD_MIGRATE_PLAN, {});
+export const apiCloudMigrateApply = (args: {
+  workspaces: { entityId: string; dir: string }[];
+  includeTemplates: boolean;
+  includeSettings: boolean;
+}) =>
+  invoke<CloudMigrateApplyOut>(cmd.CLOUD_MIGRATE_APPLY, {
+    workspaces: args.workspaces.map(({ entityId, dir }) => ({ entity_id: entityId, dir })),
+    include_templates: args.includeTemplates,
+    include_settings: args.includeSettings,
+  });
+export const apiCloudTelemetrySet = (enabled: boolean) =>
+  invoke<CloudTelemetryOut>(cmd.CLOUD_TELEMETRY_SET, { enabled });
+
+/** Persist and switch the endpoint through the backend when available. */
+export const apiCloudSetEndpoint = (endpoint: string) => {
+  const normalized = endpoint.trim().replace(/\/$/, "");
+  if (!normalized) return Promise.reject(new Error("Endpoint is required"));
+  return invoke<CloudEndpointSetOut>(cmd.CLOUD_ENDPOINT_SET, { endpoint: normalized });
+};
 
 // ---------------------------------------------------------------------------
 // Re-exports so callers can construct arg shapes without re-importing protocol

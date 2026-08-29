@@ -1,7 +1,7 @@
 //! detach → 重开同根工作区的接管语义（不 spawn 真进程，用 Ping spawner 验证 slot 状态机）。
 
-use supertask_core::Engine;
 use supertask_core::runtime::RtState;
+use supertask_core::Engine;
 
 fn ws_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("st-detach-{}-{}", tag, std::process::id()));
@@ -26,7 +26,11 @@ fn detach_then_adopt_restores_running_slots() {
 
     let (_, snap) = eng.open(&dir).expect("reopen");
     let svc = snap.services.get("web").expect("web 服务");
-    assert_eq!(svc.state, RtState::Stopped, "没有 detached 进程，应保持 Stopped");
+    assert_eq!(
+        svc.state,
+        RtState::Stopped,
+        "没有 detached 进程，应保持 Stopped"
+    );
     eng.close().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }

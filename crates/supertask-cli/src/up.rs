@@ -48,7 +48,12 @@ pub fn observe(engine: &Engine, ids: &[String]) -> Vec<SvcObs> {
     let Ok(snap) = engine.snapshot() else {
         return ids
             .iter()
-            .map(|id| SvcObs { id: id.clone(), state: RtState::Stopped, health_ok: None, detail: None })
+            .map(|id| SvcObs {
+                id: id.clone(),
+                state: RtState::Stopped,
+                health_ok: None,
+                detail: None,
+            })
             .collect();
     };
     ids.iter()
@@ -57,12 +62,19 @@ pub fn observe(engine: &Engine, ids: &[String]) -> Vec<SvcObs> {
                 id: id.clone(),
                 state: s.state,
                 health_ok: s.health.as_ref().map(|h| h.ok),
-                detail: s
-                    .last_error
-                    .clone()
-                    .or_else(|| s.health.as_ref().filter(|h| !h.ok).map(|h| h.detail.clone())),
+                detail: s.last_error.clone().or_else(|| {
+                    s.health
+                        .as_ref()
+                        .filter(|h| !h.ok)
+                        .map(|h| h.detail.clone())
+                }),
             },
-            None => SvcObs { id: id.clone(), state: RtState::Stopped, health_ok: None, detail: Some("服务不存在".into()) },
+            None => SvcObs {
+                id: id.clone(),
+                state: RtState::Stopped,
+                health_ok: None,
+                detail: Some("服务不存在".into()),
+            },
         })
         .collect()
 }
@@ -92,7 +104,17 @@ where
     let deadline = Instant::now() + timeout;
     loop {
         if STOP.load(Ordering::SeqCst) {
-            return WaitOutcome::Timeout(targets.iter().map(|id| SvcObs { id: id.clone(), state: RtState::Starting, health_ok: None, detail: Some("被信号中断".into()) }).collect());
+            return WaitOutcome::Timeout(
+                targets
+                    .iter()
+                    .map(|id| SvcObs {
+                        id: id.clone(),
+                        state: RtState::Starting,
+                        health_ok: None,
+                        detail: Some("被信号中断".into()),
+                    })
+                    .collect(),
+            );
         }
         let list = obs();
         let bad: Vec<SvcObs> = list
@@ -107,9 +129,7 @@ where
             return WaitOutcome::Reached;
         }
         if Instant::now() >= deadline {
-            return WaitOutcome::Timeout(
-                list.into_iter().filter(|o| !reached(mode, o)).collect(),
-            );
+            return WaitOutcome::Timeout(list.into_iter().filter(|o| !reached(mode, o)).collect());
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -184,7 +204,12 @@ pub fn run_up(
         }
     }
 
-    match wait_until(&targets, wait, Duration::from_secs(wait_timeout_secs), || observe(engine, &targets)) {
+    match wait_until(
+        &targets,
+        wait,
+        Duration::from_secs(wait_timeout_secs),
+        || observe(engine, &targets),
+    ) {
         WaitOutcome::Reached => {}
         WaitOutcome::Failed(bad) => {
             let _ = engine.stop_all();
@@ -201,10 +226,7 @@ pub fn run_up(
             report_pending("健康等待超时", &pending);
             return Err(Error::new(
                 ErrorCode::HealthTimeout,
-                format!(
-                    "健康等待超时（{}s），已停止全部服务",
-                    wait_timeout_secs
-                ),
+                format!("健康等待超时（{}s），已停止全部服务", wait_timeout_secs),
             ));
         }
     }
@@ -299,7 +321,14 @@ pub fn run_restart(root: &Path, ids: &[String]) -> Result<i32, Error> {
     let gateway_running = engine
         .snapshot()
         .ok()
-        .and_then(|s| s.gateway.map(|g| matches!(g.state, RtState::Starting | RtState::Running | RtState::Unhealthy)))
+        .and_then(|s| {
+            s.gateway.map(|g| {
+                matches!(
+                    g.state,
+                    RtState::Starting | RtState::Running | RtState::Unhealthy
+                )
+            })
+        })
         .unwrap_or(false);
     if gateway_running {
         if let Err(e) = engine.gateway_restart() {
@@ -334,7 +363,10 @@ pub fn run_script_run(root: &Path, id: &str) -> Result<i32, Error> {
         let running = engine
             .snapshot()
             .ok()
-            .and_then(|s| s.script.map(|sc| sc.state == supertask_core::engine::ScriptState::Running))
+            .and_then(|s| {
+                s.script
+                    .map(|sc| sc.state == supertask_core::engine::ScriptState::Running)
+            })
             .unwrap_or(false);
         if !running {
             break;
@@ -372,18 +404,26 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     fn obs(id: &str, state: RtState, health_ok: Option<bool>) -> SvcObs {
-        SvcObs { id: id.into(), state, health_ok, detail: None }
+        SvcObs {
+            id: id.into(),
+            state,
+            health_ok,
+            detail: None,
+        }
     }
 
     #[test]
     fn wait_until_reaches_when_all_running_and_healthy() {
-        let seq = [vec![
-            obs("a", RtState::Starting, None),
-            obs("b", RtState::Running, Some(false)),
-        ], vec![
-            obs("a", RtState::Running, Some(true)),
-            obs("b", RtState::Running, Some(true)),
-        ]];
+        let seq = [
+            vec![
+                obs("a", RtState::Starting, None),
+                obs("b", RtState::Running, Some(false)),
+            ],
+            vec![
+                obs("a", RtState::Running, Some(true)),
+                obs("b", RtState::Running, Some(true)),
+            ],
+        ];
         let i = AtomicUsize::new(0);
         let out = wait_until(
             &["a".into(), "b".into()],
@@ -399,12 +439,9 @@ mod tests {
 
     #[test]
     fn wait_until_fails_on_exited_service() {
-        let out = wait_until(
-            &["a".into()],
-            Wait::Healthy,
-            Duration::from_secs(2),
-            || vec![obs("a", RtState::Exited, None)],
-        );
+        let out = wait_until(&["a".into()], Wait::Healthy, Duration::from_secs(2), || {
+            vec![obs("a", RtState::Exited, None)]
+        });
         match out {
             WaitOutcome::Failed(bad) => assert_eq!(bad[0].id, "a"),
             _ => panic!("expected Failed"),
@@ -417,7 +454,12 @@ mod tests {
             &["a".into(), "b".into()],
             Wait::Healthy,
             Duration::from_millis(50),
-            || vec![obs("a", RtState::Running, Some(true)), obs("b", RtState::Starting, None)],
+            || {
+                vec![
+                    obs("a", RtState::Running, Some(true)),
+                    obs("b", RtState::Starting, None),
+                ]
+            },
         );
         match out {
             WaitOutcome::Timeout(pending) => {
@@ -430,23 +472,17 @@ mod tests {
 
     #[test]
     fn wait_started_mode_ignores_missing_health() {
-        let out = wait_until(
-            &["a".into()],
-            Wait::Started,
-            Duration::from_secs(1),
-            || vec![obs("a", RtState::Running, None)],
-        );
+        let out = wait_until(&["a".into()], Wait::Started, Duration::from_secs(1), || {
+            vec![obs("a", RtState::Running, None)]
+        });
         assert!(matches!(out, WaitOutcome::Reached));
     }
 
     #[test]
     fn wait_never_is_immediate() {
-        let out = wait_until(
-            &["a".into()],
-            Wait::Never,
-            Duration::from_secs(1),
-            || vec![obs("a", RtState::Stopped, None)],
-        );
+        let out = wait_until(&["a".into()], Wait::Never, Duration::from_secs(1), || {
+            vec![obs("a", RtState::Stopped, None)]
+        });
         assert!(matches!(out, WaitOutcome::Reached));
     }
 
@@ -470,7 +506,10 @@ mod tests {
         let code = run_up(&ws.root, &[], Wait::Healthy, 60, &wrapper).unwrap();
         assert_eq!(code, 5, "wrapper exit code must pass through");
         // 清场断言：桩服务端口已释放
-        assert!(!supertask_core::ports::is_serving(ws.port), "no stub process may survive up");
+        assert!(
+            !supertask_core::ports::is_serving(ws.port),
+            "no stub process may survive up"
+        );
         node_stub::cleanup(&ws);
     }
 

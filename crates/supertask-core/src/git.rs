@@ -48,7 +48,9 @@ pub struct ProcessRunner {
 
 impl Default for ProcessRunner {
     fn default() -> Self {
-        Self { program: "git".into() }
+        Self {
+            program: "git".into(),
+        }
     }
 }
 
@@ -92,13 +94,22 @@ pub fn status(runner: &dyn GitRunner, workspace_id: &str, root: &Path) -> Result
     }
     let out = run_git(runner, root, &["status", "--porcelain=v2", "--branch"])?;
     if out.code != 0 {
-        return Err(git_failure("status", ErrorCode::GitFailed, &out.stderr, &out.stdout));
+        return Err(git_failure(
+            "status",
+            ErrorCode::GitFailed,
+            &out.stderr,
+            &out.stdout,
+        ));
     }
     let parsed = parse_porcelain_v2(&out.stdout);
 
     // remote：优先 upstream 前缀，否则 `git remote` 首行
     let remote = match &parsed.upstream {
-        Some(up) => up.split('/').next().filter(|s| !s.is_empty()).map(str::to_string),
+        Some(up) => up
+            .split('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         None => None,
     };
     let remote = match remote {
@@ -179,7 +190,9 @@ fn parse_porcelain_v2(text: &str) -> ParsedStatus {
 
 fn count_xy(p: &mut ParsedStatus, xy: &str) {
     let mut chars = xy.chars();
-    let (Some(x), Some(y)) = (chars.next(), chars.next()) else { return };
+    let (Some(x), Some(y)) = (chars.next(), chars.next()) else {
+        return;
+    };
     if x != '.' {
         p.staged += 1;
     }
@@ -192,7 +205,12 @@ fn count_xy(p: &mut ParsedStatus, xy: &str) {
 fn first_remote(runner: &dyn GitRunner, root: &Path) -> Result<Option<String>> {
     let out = run_git(runner, root, &["remote"])?;
     if out.code != 0 {
-        return Err(git_failure("status", ErrorCode::GitFailed, &out.stderr, &out.stdout));
+        return Err(git_failure(
+            "status",
+            ErrorCode::GitFailed,
+            &out.stderr,
+            &out.stdout,
+        ));
     }
     Ok(out
         .stdout
@@ -205,7 +223,12 @@ fn first_remote(runner: &dyn GitRunner, root: &Path) -> Result<Option<String>> {
 // ---------- clone ----------
 
 /// clone 到 target。target 不存在或为空目录均可；非空拒绝且不改动目录。
-pub fn clone(runner: &dyn GitRunner, url: &str, target: &Path, branch: Option<&str>) -> Result<PathBuf> {
+pub fn clone(
+    runner: &dyn GitRunner,
+    url: &str,
+    target: &Path,
+    branch: Option<&str>,
+) -> Result<PathBuf> {
     check_url(url)?;
     if target.exists() {
         let not_empty = if target.is_dir() {
@@ -276,13 +299,21 @@ pub fn pull(
     // pull 前先确认远端存在，报错说人话而不是 git 的裸输出
     let remotes = run_git(runner, root, &["remote"])?;
     if remotes.code != 0 {
-        return Err(git_failure("pull", ErrorCode::GitFailed, &remotes.stderr, &remotes.stdout));
+        return Err(git_failure(
+            "pull",
+            ErrorCode::GitFailed,
+            &remotes.stderr,
+            &remotes.stdout,
+        ));
     }
     let known = remotes.stdout.lines().any(|l| l.trim() == remote_name);
     if !known {
         return Err(Error::new(
             ErrorCode::GitRemote,
-            format!("远端不存在: {remote_name}（可用远端: {}）", remotes.stdout.trim()),
+            format!(
+                "远端不存在: {remote_name}（可用远端: {}）",
+                remotes.stdout.trim()
+            ),
         ));
     }
 
@@ -316,7 +347,10 @@ pub fn check_url(url: &str) -> Result<()> {
         return Err(Error::new(ErrorCode::GitFailed, "clone URL 不能为空"));
     }
     if url.chars().any(char::is_whitespace) {
-        return Err(Error::new(ErrorCode::GitFailed, "clone URL 不能包含空白字符"));
+        return Err(Error::new(
+            ErrorCode::GitFailed,
+            "clone URL 不能包含空白字符",
+        ));
     }
     if let Some(scheme_pos) = url.find("://") {
         let auth_start = scheme_pos + 3;
@@ -374,7 +408,8 @@ fn classify_failure(stderr: &str, stdout: &str) -> ErrorCode {
     let lower = format!("{stderr}\n{stdout}").to_lowercase();
     if lower.contains("authentication failed")
         || lower.contains("could not read username")
-        || (lower.contains("terminal prompts disabled") && (lower.contains("401") || lower.contains("403")))
+        || (lower.contains("terminal prompts disabled")
+            && (lower.contains("401") || lower.contains("403")))
     {
         return ErrorCode::GitAuth;
     }
@@ -395,7 +430,11 @@ fn classify_failure(stderr: &str, stdout: &str) -> ErrorCode {
 
 /// 构造带中文说明 + 脱敏摘要的失败错误。
 fn git_failure(op: &str, code: ErrorCode, stderr: &str, stdout: &str) -> Error {
-    let raw = if stderr.trim().is_empty() { stdout } else { stderr };
+    let raw = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
     let sanitized = sanitize_output(raw);
     let joined = sanitized
         .lines()
@@ -478,7 +517,10 @@ u 1 0 0 0 c1 c2 c3 x
 
     #[test]
     fn sanitize_keeps_scp_and_plain_text() {
-        assert_eq!(sanitize_output("git@github.com:a/b.git"), "git@github.com:a/b.git");
+        assert_eq!(
+            sanitize_output("git@github.com:a/b.git"),
+            "git@github.com:a/b.git"
+        );
         assert_eq!(sanitize_output("no urls here"), "no urls here");
         assert_eq!(
             sanitize_output("see https://github.com/a/b.git for docs"),
@@ -514,7 +556,10 @@ u 1 0 0 0 c1 c2 c3 x
             ErrorCode::GitAuth
         );
         assert_eq!(
-            classify_failure("fatal: could not read Username for 'https://x': terminal prompts disabled", ""),
+            classify_failure(
+                "fatal: could not read Username for 'https://x': terminal prompts disabled",
+                ""
+            ),
             ErrorCode::GitAuth
         );
         assert_eq!(
@@ -533,7 +578,10 @@ u 1 0 0 0 c1 c2 c3 x
             classify_failure("ssh: Could not resolve hostname none.invalid", ""),
             ErrorCode::GitRemote
         );
-        assert_eq!(classify_failure("fatal: something else", ""), ErrorCode::GitFailed);
+        assert_eq!(
+            classify_failure("fatal: something else", ""),
+            ErrorCode::GitFailed
+        );
     }
 
     #[test]

@@ -74,6 +74,7 @@ Spring：**1.0 只 `spring-boot:run`；1.x 再 `package` + 跑 jar。**
 1.4  平台：macOS、Linux、Gradle、i18n
 1.5  可搬：导出包、CLI、MCP
 1.6  网关：nginx/apache/caddy 模板
+1.7  横向：Python/Go/generic kind、镜像接线、分组、通知、入口归位
 2.0  云：账号、同步、一键迁移
 2.1  智能：AI、README 导入
 2.2  生态：插件、WSL、更多语言
@@ -131,23 +132,36 @@ Spring：**1.0 只 `spring-boot:run`；1.x 再 `package` + 跑 jar。**
 - 可选 Caddy 一键本机 HTTPS（开发用）  
 - 服务端口 → 反代路由可视化  
 
+### 1.7 — 能扩（横向，2026-08-29 拍板提前）
+
+- Python / Go / generic 三服务 kind（端到端：探测/安装/扫描/启动/网关/CLI/MCP）  
+- 镜像与代理运行时接线（npm registry / pip index / GOPROXY / maven settings.xml）  
+- 服务分组 UI、崩溃通知（清 1.2 欠账 A1–A3）  
+- 工作区包入口归位 `/workspaces`、导航五组重排  
+- 细则：[2026-08-29-v1-7-feature-spec.md](2026-08-29-v1-7-feature-spec.md)
+
 ### 2.0 — 能上云
 
 - 账号登录  
 - 工作区/模板/密钥策略同步（密钥默认不同步，要明确勾选）  
 - 一键迁移：导出包 + 目标机拉账号 + 对工具链差量安装  
+- 发布工程收口（签名 / updater 真端点 / 安装包，清 inv-4 C1–C2）；遥测默认关（opt-in 最小事件集）  
+- 细则：[2026-08-29-v2-0-feature-spec.md](2026-08-29-v2-0-feature-spec.md)（规划稿）  
 
 ### 2.1 — 能读文档
 
-- 读 README/脚本，生成 `supertask.yaml` 草稿（人确认后写入）  
-- AI：解释日志、改端口、补健康检查；默认走用户自己的 API Key  
+- 读 README/脚本，生成 `supertask.yaml` 草稿（人确认后写入；**确定性规则引擎**，非 LLM）  
+- AI：解释日志、改端口、补健康检查；默认走用户自己的 API Key（OpenAI 兼容端点；只建议不自动应用）  
+- 细则：[2026-08-29-v2-1-feature-spec.md](2026-08-29-v2-1-feature-spec.md)（规划稿；与 2.0 无硬依赖，排序为产品决策）  
 
 ### 2.2 — 能长
 
-- 插件（自定义 kind）  
-- Python / Go 服务 kind  
-- WSL2  
-- 仍不自研 Nix；需要可复现时导出 devcontainer / mise.toml  
+- 插件（自定义 kind）：**数据化 manifest 插件**（argv/字段/探测/扫描描述式，零代码执行），可经云同步分享  
+- WSL2：`runtime: wsl`（实验开关，默认关）  
+- 仍不自研 Nix；需要可复现时导出 devcontainer / mise.toml（纯函数渲染 + CLI `export --format`）  
+- 细则：[2026-08-29-v2-2-feature-spec.md](2026-08-29-v2-2-feature-spec.md)（规划稿）  
+
+（Python / Go 服务 kind 已于 2026-08-29 拍板提前至 **1.7** 落地；「更多语言」由 1.7 的 `generic` kind 兜底。）
 
 ## 原则
 

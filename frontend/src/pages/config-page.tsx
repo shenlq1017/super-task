@@ -449,6 +449,85 @@ function FormTab() {
                         />
                       </label>
                     </div>
+                    {/* 1.7 §4：per-kind 字段（group + 新 kind 字段），按 kind 显隐 */}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                        {t("pages.config.groupLabel")}
+                        <Input
+                          className="mt-1"
+                          value={s.group ?? ""}
+                          onChange={(e) => setSvc(id, { group: e.target.value || null })}
+                        />
+                      </label>
+                      {s.kind === "spring-boot" || s.kind === "python" ? (
+                        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                          {s.kind === "python" ? t("pages.config.modulePythonLabel") : t("pages.config.moduleLabel")}
+                          <Input
+                            className="mt-1 font-mono"
+                            value={s.module ?? ""}
+                            onChange={(e) => setSvc(id, { module: e.target.value || null })}
+                          />
+                        </label>
+                      ) : null}
+                      {s.kind === "node" || s.kind === "python" || s.kind === "go" || s.kind === "generic" ? (
+                        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                          {t("pages.config.dirLabel")}
+                          <Input
+                            className="mt-1 font-mono"
+                            value={s.dir ?? ""}
+                            onChange={(e) => setSvc(id, { dir: e.target.value || null })}
+                          />
+                        </label>
+                      ) : null}
+                      {s.kind === "python" ? (
+                        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                          {t("pages.config.entryLabel")}
+                          <Input
+                            className="mt-1 font-mono"
+                            value={s.entry ?? ""}
+                            onChange={(e) => setSvc(id, { entry: e.target.value || null })}
+                          />
+                        </label>
+                      ) : null}
+                      {s.kind === "go" ? (
+                        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                          {t("pages.config.packageLabel")}
+                          <Input
+                            className="mt-1 font-mono"
+                            value={s.package ?? ""}
+                            placeholder="./cmd/server"
+                            onChange={(e) => setSvc(id, { package: e.target.value || null })}
+                          />
+                        </label>
+                      ) : null}
+                      {s.kind === "generic" ? (
+                        <>
+                          <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                            {t("pages.config.programLabel")}
+                            <Input
+                              className="mt-1 font-mono"
+                              value={s.program ?? ""}
+                              onChange={(e) => setSvc(id, { program: e.target.value || null })}
+                            />
+                          </label>
+                          <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+                            {t("pages.config.argsLabel")}
+                            <Input
+                              className="mt-1 font-mono"
+                              value={(s.args ?? []).join(", ")}
+                              onChange={(e) =>
+                                setSvc(id, {
+                                  args: e.target.value
+                                    .split(",")
+                                    .map((x) => x.trim())
+                                    .filter(Boolean),
+                                })
+                              }
+                            />
+                          </label>
+                        </>
+                      ) : null}
+                    </div>
                     <div>
                       <div className="mb-1.5 text-[0.75rem] font-medium text-[var(--t3,#8a8f98)]">{t("pages.config.serviceEnv")}</div>
                       <EnvVariablesEditor value={s.env} onChange={(env) => setEnv(id, env)} hideTitle />

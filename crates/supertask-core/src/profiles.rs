@@ -102,13 +102,20 @@ pub fn overlay_spec(spec: &SuperTaskFile, id: &str) -> Result<SuperTaskFile> {
 
 /// §10.2 切换前置：profile 必须存在。
 pub fn require_profile(spec: &SuperTaskFile, id: &str) -> Result<()> {
-    let profiles = spec.profiles.as_ref().map(|p| p.items.clone()).unwrap_or_default();
+    let profiles = spec
+        .profiles
+        .as_ref()
+        .map(|p| p.items.clone())
+        .unwrap_or_default();
     if profiles.contains_key(id) {
         return Ok(());
     }
     Err(Error::new(
         ErrorCode::ProfileNotFound,
-        format!("profile {id:?} 不存在。可用: {DEFAULT_PROFILE}（隐式）及 {:?}", profile_ids(spec)),
+        format!(
+            "profile {id:?} 不存在。可用: {DEFAULT_PROFILE}（隐式）及 {:?}",
+            profile_ids(spec)
+        ),
     ))
 }
 
@@ -116,7 +123,12 @@ pub fn require_profile(spec: &SuperTaskFile, id: &str) -> Result<()> {
 pub fn list(spec: &SuperTaskFile) -> crate::ipc::ProfilesListOutput {
     let active = active_id(spec);
     let mut out = Vec::new();
-    for (pid, item) in spec.profiles.as_ref().map(|p| p.items.clone()).unwrap_or_default() {
+    for (pid, item) in spec
+        .profiles
+        .as_ref()
+        .map(|p| p.items.clone())
+        .unwrap_or_default()
+    {
         let mut enabled_count = 0u32;
         for (sid, svc) in &spec.services {
             let enabled = item
@@ -128,9 +140,15 @@ pub fn list(spec: &SuperTaskFile) -> crate::ipc::ProfilesListOutput {
                 enabled_count += 1;
             }
         }
-        out.push(crate::ipc::ProfileSummary { id: pid, enabled_count: Some(enabled_count) });
+        out.push(crate::ipc::ProfileSummary {
+            id: pid,
+            enabled_count: Some(enabled_count),
+        });
     }
-    crate::ipc::ProfilesListOutput { active, profiles: out }
+    crate::ipc::ProfilesListOutput {
+        active,
+        profiles: out,
+    }
 }
 
 #[cfg(test)]

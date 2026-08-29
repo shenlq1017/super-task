@@ -45,9 +45,10 @@ pub fn check_with_endpoints(
             connect_first(&addrs, timeout)
         }
         HealthType::Http => {
-            let url = spec.http.clone().or_else(|| {
-                port.map(|p| format!("http://127.0.0.1:{p}/actuator/health"))
-            });
+            let url = spec
+                .http
+                .clone()
+                .or_else(|| port.map(|p| format!("http://127.0.0.1:{p}/actuator/health")));
             let Some(url) = url else {
                 return HealthResult {
                     ok: false,
@@ -127,7 +128,10 @@ fn http_probe(url: &str, eps: &[ListenEndpoint], timeout: Duration) -> HealthRes
     // host 展开：localhost 双栈；字面量只取对应族
     let hosts: &[IpAddr] = match host.as_str() {
         "::1" | "[::1]" => &[IpAddr::V6(Ipv6Addr::LOCALHOST)],
-        _ => &[IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)],
+        _ => &[
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ],
     };
     for ip in hosts {
         push_addr(&mut addrs, SocketAddr::new(*ip, port));
@@ -220,7 +224,10 @@ fn split_http_url(url: &str) -> Option<(String, u16, String)> {
     let hostport = hostport.split('@').next_back()?;
     if let Some(h) = hostport.strip_prefix('[') {
         let (h, r) = h.split_once(']')?;
-        let port = r.strip_prefix(':').and_then(|p| p.parse().ok()).unwrap_or(80);
+        let port = r
+            .strip_prefix(':')
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(80);
         return Some((format!("[{h}]"), port, path));
     }
     let (host, port) = match hostport.split_once(':') {
@@ -266,11 +273,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         // 持续 accept：本测试会连续两次连接（回退路径 + 端点路径），
         // 只 accept 一次线程返回后 socket 关闭会让第二次连接失败
-        std::thread::spawn(move || {
-            loop {
-                if listener.accept().is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            if listener.accept().is_err() {
+                break;
             }
         });
         thread::sleep(Duration::from_millis(30));
@@ -284,7 +289,11 @@ mod tests {
         };
         let r = check_with_endpoints(&spec, Some(port), &[]);
         assert!(r.ok, "双栈回退应命中 [::1]，detail={}", r.detail);
-        assert!(r.detail.contains("[::1]"), "detail 应报告真实端点: {}", r.detail);
+        assert!(
+            r.detail.contains("[::1]"),
+            "detail 应报告真实端点: {}",
+            r.detail
+        );
 
         // 端点感知路径：直接给定 [::1] 监听端点
         let eps = vec![ListenEndpoint {
@@ -318,11 +327,21 @@ mod tests {
             timeout_secs: 2,
         };
         let eps = vec![
-            ListenEndpoint { ip: IpAddr::V4(Ipv4Addr::LOCALHOST), port: main_port },
-            ListenEndpoint { ip: IpAddr::V4(Ipv4Addr::LOCALHOST), port: noise_port },
+            ListenEndpoint {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: main_port,
+            },
+            ListenEndpoint {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: noise_port,
+            },
         ];
         let r = check_with_endpoints(&spec, Some(main_port), &eps);
-        assert!(r.ok && r.detail.contains(&main_port.to_string()), "{}", r.detail);
+        assert!(
+            r.ok && r.detail.contains(&main_port.to_string()),
+            "{}",
+            r.detail
+        );
 
         // 规则 2：配置端口不在树上 → 探全部真实端点（端口对齐）
         let r2 = check_with_endpoints(&spec, Some(main_port.wrapping_add(10000)), &eps);
@@ -335,7 +354,10 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         accept_and_reply_200(listener);
         thread::sleep(Duration::from_millis(30));
-        let r = http(&format!("http://127.0.0.1:{port}/x"), Duration::from_secs(1));
+        let r = http(
+            &format!("http://127.0.0.1:{port}/x"),
+            Duration::from_secs(1),
+        );
         assert!(r.ok, "{}", r.detail);
     }
 
@@ -346,9 +368,16 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         accept_and_reply_200(listener);
         thread::sleep(Duration::from_millis(30));
-        let r = http(&format!("http://localhost:{port}/health"), Duration::from_secs(1));
+        let r = http(
+            &format!("http://localhost:{port}/health"),
+            Duration::from_secs(1),
+        );
         assert!(r.ok, "{}", r.detail);
-        assert!(r.detail.contains("[::1]"), "detail 应记录命中地址: {}", r.detail);
+        assert!(
+            r.detail.contains("[::1]"),
+            "detail 应记录命中地址: {}",
+            r.detail
+        );
     }
 
     #[test]

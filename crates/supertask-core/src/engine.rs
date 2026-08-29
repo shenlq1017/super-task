@@ -149,7 +149,10 @@ pub struct PortsAssignView {
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
     Runtime(RuntimeSnapshot),
-    Logs { workspace_id: String, items: Vec<LogLine> },
+    Logs {
+        workspace_id: String,
+        items: Vec<LogLine>,
+    },
     /// 1.2 §9.2：sampler 批量指标（仅订阅时产生）
     Metrics(crate::ipc::MetricsPayload),
 }
@@ -267,7 +270,9 @@ fn detached_take(root_norm: &str) -> Option<HashMap<String, DetachedSlot>> {
 
 fn detached_put(root_norm: String, slots: HashMap<String, DetachedSlot>) {
     let mut guard = DETACHED.lock().expect("detached lock");
-    guard.get_or_insert_with(HashMap::new).insert(root_norm, slots);
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(root_norm, slots);
 }
 
 pub struct Engine {
@@ -286,11 +291,16 @@ pub struct Engine {
     validator: Arc<dyn crate::gateway::validate::ValidateRunner>,
     /// 1.5 §3.1：工作区锁持有者标签（前端身份：desktop/cli/mcp）
     holder: crate::lock::LockHolder,
+    /// 1.7 §7：app 级网络默认（代理/镜像），壳层与 CLI 在 open 前注入；缺省 None=全走 workspace 段
+    app_network: Mutex<Option<crate::appdata::AppNetwork>>,
 }
 
 impl Engine {
     pub fn new() -> Self {
-        Self::create(SpawnerKind::Real, Arc::new(crate::docker::ProcessDockerRunner))
+        Self::create(
+            SpawnerKind::Real,
+            Arc::new(crate::docker::ProcessDockerRunner),
+        )
     }
 
     /// 注入自定义 DockerRunner（测试用 fake；生产走 [`Engine::new`]）。
@@ -316,12 +326,18 @@ impl Engine {
 
     #[cfg(test)]
     pub fn ping_for_test() -> Self {
-        Self::create(SpawnerKind::Ping, Arc::new(crate::docker::ProcessDockerRunner))
+        Self::create(
+            SpawnerKind::Ping,
+            Arc::new(crate::docker::ProcessDockerRunner),
+        )
     }
 
     #[cfg(test)]
     pub fn fail_for_test() -> Self {
-        Self::create(SpawnerKind::Fail, Arc::new(crate::docker::ProcessDockerRunner))
+        Self::create(
+            SpawnerKind::Fail,
+            Arc::new(crate::docker::ProcessDockerRunner),
+        )
     }
 
     fn create(spawner: SpawnerKind, docker: Arc<dyn DockerRunner>) -> Self {
@@ -362,7 +378,13 @@ impl Engine {
             operations: crate::operation::OperationHub::new(),
             validator: Arc::new(crate::gateway::validate::ProcessValidateRunner),
             holder: crate::lock::LockHolder::Desktop,
+            app_network: Mutex::new(None),
         }
+    }
+
+    /// 1.7 §7：壳层 / CLI 在 open 前注入 app 级网络默认（代理 + 镜像）。
+    pub fn set_app_network(&self, net: crate::appdata::AppNetwork) {
+        *self.app_network.lock().expect("app_network lock") = Some(net);
     }
 
     pub fn open(&self, path: &Path) -> Result<(Vec<ParseWarning>, RuntimeSnapshot)> {
@@ -376,9 +398,10 @@ impl Engine {
                 ));
             }
         }
-        let root = sandbox::strip_verbatim(fs::canonicalize(path).map_err(|e| {
-            Error::new(ErrorCode::CwdMissing, format!("无法打开目录: {e}"))
-        })?);
+        let root = sandbox::strip_verbatim(
+            fs::canonicalize(path)
+                .map_err(|e| Error::new(ErrorCode::CwdMissing, format!("无法打开目录: {e}")))?,
+        );
         // 工作区所有权锁：打开即占；失败路径必须释放，避免本进程自己挡自己
         crate::lock::acquire(&root, self.holder)?;
         match self.open_locked(&root) {
@@ -521,7 +544,8 @@ impl Engine {
     }
 
     /// open 后回填同根工作区被 detach 的进程：job 仍活着 → 服务直接 Running。
-    fn adopt_detached(&self, root: &Path, workspace_id: &str) {        let Some(detached) = detached_take(&norm_root(root)) else {
+    fn adopt_detached(&self, root: &Path, workspace_id: &str) {
+        let Some(detached) = detached_take(&norm_root(root)) else {
             return;
         };
         let mut g = self.inner.lock().expect("engine lock");
@@ -632,10 +656,15 @@ impl Engine {
 
     /// Write a fresh `supertask.yaml` from a spec, then open the workspace.
     /// Used by the scan wizard: confirm a draft → persist → open in one step.
-    pub fn init(&self, path: &Path, mut file: SuperTaskFile) -> Result<(Vec<ParseWarning>, RuntimeSnapshot)> {
-        let root = sandbox::strip_verbatim(fs::canonicalize(path).map_err(|e| {
-            Error::new(ErrorCode::CwdMissing, format!("无法打开目录: {e}"))
-        })?);
+    pub fn init(
+        &self,
+        path: &Path,
+        mut file: SuperTaskFile,
+    ) -> Result<(Vec<ParseWarning>, RuntimeSnapshot)> {
+        let root = sandbox::strip_verbatim(
+            fs::canonicalize(path)
+                .map_err(|e| Error::new(ErrorCode::CwdMissing, format!("无法打开目录: {e}")))?,
+        );
         {
             let g = self.inner.lock().expect("engine lock");
             if !g.workspace_id.is_empty() {
@@ -657,9 +686,8 @@ impl Engine {
         }
         file.apply_defaults();
         let text = to_yaml(&file)?;
-        fs::write(&yaml_path, text).map_err(|e| {
-            Error::new(ErrorCode::YamlParse, format!("写 YAML 失败: {e}"))
-        })?;
+        fs::write(&yaml_path, text)
+            .map_err(|e| Error::new(ErrorCode::YamlParse, format!("写 YAML 失败: {e}")))?;
         self.open(&root)
     }
 
@@ -780,7 +808,11 @@ impl Engine {
         })
     }
 
-    pub fn save_text(&self, text: &str, base_hash: &str) -> Result<(SuperTaskFile, String, Vec<ParseWarning>)> {
+    pub fn save_text(
+        &self,
+        text: &str,
+        base_hash: &str,
+    ) -> Result<(SuperTaskFile, String, Vec<ParseWarning>)> {
         let (file, warnings) = parse_yaml(text)?;
         let mut g = self.inner.lock().expect("engine lock");
         require_ws(&g)?;
@@ -792,9 +824,8 @@ impl Engine {
         }
         check_can_replace_spec(&g, &file)?;
         // ponytail: hold lock for ≤1MiB write so hash stays atomic; split if yaml saves contend
-        fs::write(&g.yaml_path, text).map_err(|e| {
-            Error::new(ErrorCode::YamlParse, format!("写入 YAML 失败: {e}"))
-        })?;
+        fs::write(&g.yaml_path, text)
+            .map_err(|e| Error::new(ErrorCode::YamlParse, format!("写入 YAML 失败: {e}")))?;
         apply_spec_slots(&mut g, &file)?;
         g.spec = file.clone();
         g.yaml_text = text.to_string();
@@ -827,7 +858,11 @@ impl Engine {
         Ok(())
     }
 
-    pub fn logs_snapshot(&self, source: Option<&LogSource>, limit: usize) -> Result<(Vec<LogLine>, u64)> {
+    pub fn logs_snapshot(
+        &self,
+        source: Option<&LogSource>,
+        limit: usize,
+    ) -> Result<(Vec<LogLine>, u64)> {
         let g = self.inner.lock().expect("engine lock");
         require_ws(&g)?;
         Ok(g.logs.snapshot(source, limit.max(1)))
@@ -858,7 +893,11 @@ impl Engine {
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
             if matches!(
                 slot.state,
-                RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping | RtState::Building
+                RtState::Starting
+                    | RtState::Running
+                    | RtState::Unhealthy
+                    | RtState::Stopping
+                    | RtState::Building
             ) {
                 return Err(Error::new(
                     ErrorCode::AlreadyInProgress,
@@ -977,8 +1016,12 @@ impl Engine {
             }
             emit_runtime(&g);
         }
-        self.wait_state(id, &[RtState::Stopped, RtState::Exited], Duration::from_secs(8))
-            .map_err(|_| Error::new(ErrorCode::JobKill, format!("{id} 停止超时")))?;
+        self.wait_state(
+            id,
+            &[RtState::Stopped, RtState::Exited],
+            Duration::from_secs(8),
+        )
+        .map_err(|_| Error::new(ErrorCode::JobKill, format!("{id} 停止超时")))?;
         Ok(())
     }
 
@@ -1005,7 +1048,10 @@ impl Engine {
         let (cmds, cwd, env, timeout) = {
             let mut g = self.inner.lock().expect("engine lock");
             require_ws(&g)?;
-            if g.script.as_ref().is_some_and(|s| s.state == ScriptState::Running) {
+            if g.script
+                .as_ref()
+                .is_some_and(|s| s.state == ScriptState::Running)
+            {
                 return Err(Error::new(ErrorCode::ScriptBusy, "已有脚本在运行"));
             }
             let spec = g
@@ -1129,7 +1175,20 @@ impl Engine {
 
     #[allow(clippy::too_many_arguments)]
     fn spawn_service(&self, id: &str) -> Result<()> {
-        let (run_spec, build_spec, root, health_spec, health_none, port, kind, pkg, svc_grace, is_jar, bt, module) = {
+        let (
+            run_spec,
+            build_spec,
+            root,
+            health_spec,
+            health_none,
+            port,
+            kind,
+            pkg,
+            svc_grace,
+            is_jar,
+            bt,
+            module,
+        ) = {
             let g = self.inner.lock().expect("engine lock");
             let slot = g
                 .slots
@@ -1154,8 +1213,9 @@ impl Engine {
                 return self.spawn_compose(id, &eff_svc);
             }
             let is_jar = eff_svc.kind == "spring-boot" && eff_svc.launch.as_deref() == Some("jar");
-            // §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入
-            let env = build_service_env(&eff_spec, id, &g.root)?;
+            // §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入 < 网络注入(最低)
+            let app_net = self.app_network.lock().expect("app_network lock").clone();
+            let env = build_service_env(&eff_spec, id, &g.root, app_net.as_ref())?;
             // 1.4 §5.1：build_tool 解析（显式优先，缺省按构建文件探测）。
             // 测试 spawner 无真实 fs 上下文：只认显式字段，缺省按 maven。
             let real = matches!(self.spawner, SpawnerKind::Real);
@@ -1164,7 +1224,8 @@ impl Engine {
                 if real {
                     crate::launcher::resolve_build_tool(&g.root, &eff_svc)?
                 } else {
-                    crate::launcher::explicit_build_tool(&eff_svc).unwrap_or(crate::launcher::BuildTool::Maven)
+                    crate::launcher::explicit_build_tool(&eff_svc)
+                        .unwrap_or(crate::launcher::BuildTool::Maven)
                 }
             } else {
                 crate::launcher::BuildTool::Maven
@@ -1176,6 +1237,15 @@ impl Engine {
             } else {
                 let mut planned = crate::launcher::plan_service_in(&eff_spec, id, plan_root)?;
                 planned.env = env;
+                // 1.7 §5：显式 `toolchain.manager: mise` 时合并 mise 工具的 PATH env_delta
+                if matches!(self.spawner, SpawnerKind::Real) {
+                    crate::launcher::apply_pinned_mise_env(
+                        eff_spec.toolchain.as_ref(),
+                        &eff_svc.kind,
+                        &g.root,
+                        &mut planned.env,
+                    );
+                }
                 (planned, None)
             };
             let health_spec = eff_svc.health.clone();
@@ -1237,14 +1307,18 @@ impl Engine {
         }
 
         if matches!(self.spawner, SpawnerKind::Real) {
-            probe::require_tools_for_kind(&kind, pkg, Some(bt.as_str()))?;
+            probe::require_tools_for_kind(&kind, pkg, Some(bt.as_str()), &run_spec.program)?;
         }
         // 1.4 §5.1：gradle 服务 wrapper 优先（root/module gradlew[.bat] → PATH gradle），
         // 都无 → GRADLE_WRAPPER_MISSING；测试 spawner 跳过 fs 解析。
         let mut run_spec = run_spec;
         if bt == crate::launcher::BuildTool::Gradle && matches!(self.spawner, SpawnerKind::Real) {
-            let (program, args, warns) =
-                crate::launcher::resolve_gradle_launcher(&root, &module, &run_spec.program, &run_spec.args)?;
+            let (program, args, warns) = crate::launcher::resolve_gradle_launcher(
+                &root,
+                &module,
+                &run_spec.program,
+                &run_spec.args,
+            )?;
             for w in warns {
                 push_line(
                     &self.inner,
@@ -1404,10 +1478,20 @@ impl Engine {
             // stop 已成功但保存失败：服务保持 stopped，错误原样上抛（§5.4）
             let (spec, hash, _) = saved?;
             self.start_one(id)?;
-            return Ok(PortsAssignView { spec, hash, notes, restart_required: false });
+            return Ok(PortsAssignView {
+                spec,
+                hash,
+                notes,
+                restart_required: false,
+            });
         }
         let (spec, hash, _) = saved?;
-        Ok(PortsAssignView { spec, hash, notes, restart_required: false })
+        Ok(PortsAssignView {
+            spec,
+            hash,
+            notes,
+            restart_required: false,
+        })
     }
 
     // ---- secrets（值绝不返回）----
@@ -1493,7 +1577,9 @@ impl Engine {
     pub fn metrics_snapshot(&self) -> Result<crate::ipc::MetricsSnapshotOutput> {
         let g = self.inner.lock().expect("engine lock");
         require_ws(&g)?;
-        Ok(crate::ipc::MetricsSnapshotOutput { services: g.metrics.clone() })
+        Ok(crate::ipc::MetricsSnapshotOutput {
+            services: g.metrics.clone(),
+        })
     }
 
     // ---- profile ----
@@ -1561,7 +1647,10 @@ impl Engine {
                 slot.state,
                 RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
             ) {
-                return Err(Error::new(ErrorCode::BuildBusy, format!("{id} 运行中，停止后再构建")));
+                return Err(Error::new(
+                    ErrorCode::BuildBusy,
+                    format!("{id} 运行中，停止后再构建"),
+                ));
             }
             let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
             let eff_svc = eff_spec.services.get(id).unwrap().clone();
@@ -1572,7 +1661,8 @@ impl Engine {
                 ));
             }
             let bt = crate::launcher::resolve_build_tool(&g.root, &eff_svc)?;
-            let env = build_service_env(&eff_spec, id, &g.root)?;
+            let app_net = self.app_network.lock().expect("app_network lock").clone();
+            let env = build_service_env(&eff_spec, id, &g.root, app_net.as_ref())?;
             (
                 crate::launcher::plan_jar_build_in(&eff_svc, env, Some(&g.root))?,
                 g.root.clone(),
@@ -1625,7 +1715,11 @@ impl Engine {
         if out.code != 0 {
             return Err(Error::new(
                 ErrorCode::ComposeConfigFailed,
-                format!("docker compose ps 退出码 {}: {}", out.code, out.stderr.trim()),
+                format!(
+                    "docker compose ps 退出码 {}: {}",
+                    out.code,
+                    out.stderr.trim()
+                ),
             ));
         }
         Ok(crate::docker::parse_ps(&out.stdout)
@@ -1666,7 +1760,10 @@ impl Engine {
                 None => return Ok(None),
             },
         };
-        Ok(Some((sandbox::confine(&g.root, &rel)?, cfg.project_name.clone())))
+        Ok(Some((
+            sandbox::confine(&g.root, &rel)?,
+            cfg.project_name.clone(),
+        )))
     }
 
     /// §5.2 compose 启动：同步前置检查（失败不 accepted）→ 异步 up。
@@ -1676,7 +1773,10 @@ impl Engine {
         // 1) docker 三态前置（probe 缓存；锁外执行，最多 5s）
         self.probe_ready()?;
         let service = svc.service.clone().ok_or_else(|| {
-            Error::new(ErrorCode::SpecInvalid, format!("{id}: kind: compose 缺少 service 字段"))
+            Error::new(
+                ErrorCode::SpecInvalid,
+                format!("{id}: kind: compose 缺少 service 字段"),
+            )
         })?;
         let (file, project) = {
             let g = self.inner.lock().expect("engine lock");
@@ -1706,7 +1806,12 @@ impl Engine {
                     let project = g.spec.docker.as_ref().and_then(|d| d.project_name.clone());
                     self.compose_loader.load(&g.root, &r, project.as_deref())?
                 }
-                None => return Err(Error::new(ErrorCode::ComposeFileMissing, "未找到 compose 文件")),
+                None => {
+                    return Err(Error::new(
+                        ErrorCode::ComposeFileMissing,
+                        "未找到 compose 文件",
+                    ))
+                }
             }
         };
         if model.find(&service).is_none() {
@@ -1805,10 +1910,15 @@ impl Engine {
                     &self.inner,
                     src.clone(),
                     LogStream::System,
-                    format!("COMPOSE_STOP_FAILED: docker compose stop 退出码 {}", out.code),
+                    format!(
+                        "COMPOSE_STOP_FAILED: docker compose stop 退出码 {}",
+                        out.code
+                    ),
                 );
-                slot.last_error =
-                    Some(format!("COMPOSE_STOP_FAILED: docker compose stop 退出码 {}", out.code));
+                slot.last_error = Some(format!(
+                    "COMPOSE_STOP_FAILED: docker compose stop 退出码 {}",
+                    out.code
+                ));
                 // 重查实际状态对齐 UI（§5.2）
                 match compose_container_running(&self.docker, &root, &info) {
                     Some(false) => {
@@ -1822,7 +1932,10 @@ impl Engine {
                         emit_runtime(&g);
                         Err(Error::new(
                             ErrorCode::ComposeStopFailed,
-                            format!("{}: docker compose stop 退出码 {}，容器仍在运行", id, out.code),
+                            format!(
+                                "{}: docker compose stop 退出码 {}，容器仍在运行",
+                                id, out.code
+                            ),
                         ))
                     }
                     None => {
@@ -1837,14 +1950,18 @@ impl Engine {
             }
             Err(e) => {
                 let msg = if e.kind() == std::io::ErrorKind::NotFound {
-                    "COMPOSE_STOP_FAILED: 未找到 docker。请安装 Docker Desktop 并确保在 PATH 中。".to_string()
+                    "COMPOSE_STOP_FAILED: 未找到 docker。请安装 Docker Desktop 并确保在 PATH 中。"
+                        .to_string()
                 } else {
                     format!("COMPOSE_STOP_FAILED: docker compose stop 执行失败: {e}")
                 };
                 push_line(&self.inner, src, LogStream::System, msg.clone());
                 slot.last_error = Some(msg);
                 emit_runtime(&g);
-                Err(Error::new(ErrorCode::ComposeStopFailed, "docker compose stop 执行失败"))
+                Err(Error::new(
+                    ErrorCode::ComposeStopFailed,
+                    "docker compose stop 执行失败",
+                ))
             }
         }
     }
@@ -1856,7 +1973,10 @@ impl Engine {
             let g = self.inner.lock().expect("engine lock");
             require_ws(&g)?;
             let cfg = g.spec.docker.as_ref().ok_or_else(|| {
-                Error::new(ErrorCode::DockerBuildUnknown, format!("docker.builds 中没有 {name:?}"))
+                Error::new(
+                    ErrorCode::DockerBuildUnknown,
+                    format!("docker.builds 中没有 {name:?}"),
+                )
             })?;
             let entry = cfg
                 .builds
@@ -1864,7 +1984,10 @@ impl Engine {
                 .find(|b| b.name == name)
                 .cloned()
                 .ok_or_else(|| {
-                    Error::new(ErrorCode::DockerBuildUnknown, format!("docker.builds 中没有 {name:?}"))
+                    Error::new(
+                        ErrorCode::DockerBuildUnknown,
+                        format!("docker.builds 中没有 {name:?}"),
+                    )
                 })?;
             (g.root.clone(), entry)
         };
@@ -1909,7 +2032,10 @@ impl Engine {
                 .get(id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
             let service = svc.service.clone().ok_or_else(|| {
-                Error::new(ErrorCode::SpecInvalid, format!("{id}: kind: compose 缺少 service 字段"))
+                Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("{id}: kind: compose 缺少 service 字段"),
+                )
             })?;
             let (rel_file, project) = match g.spec.docker.as_ref() {
                 Some(d) => (
@@ -1920,14 +2046,15 @@ impl Engine {
                 ),
                 None => (crate::scan::discover_compose_file(&g.root), None),
             };
-            let rel_file = rel_file.ok_or_else(|| {
-                Error::new(ErrorCode::ComposeFileMissing, "未找到 compose 文件")
-            })?;
+            let rel_file = rel_file
+                .ok_or_else(|| Error::new(ErrorCode::ComposeFileMissing, "未找到 compose 文件"))?;
             (g.root.clone(), rel_file, project, service)
         };
         // service 存在性（缓存解析；沙箱校验）
         let file = sandbox::confine(&root, &rel_file)?;
-        let model = self.compose_loader.load(&root, &rel_file, project.as_deref())?;
+        let model = self
+            .compose_loader
+            .load(&root, &rel_file, project.as_deref())?;
         if model.find(&service).is_none() {
             return Err(Error::new(
                 ErrorCode::ComposeServiceMissing,
@@ -1971,12 +2098,7 @@ impl Engine {
     }
 
     fn state_of(&self, id: &str) -> Option<RtState> {
-        self.inner
-            .lock()
-            .ok()?
-            .slots
-            .get(id)
-            .map(|s| s.state)
+        self.inner.lock().ok()?.slots.get(id).map(|s| s.state)
     }
 
     /// 等 launch: jar 的 Building 阶段结束（成功/失败/被停都离开 Building）。
@@ -1996,7 +2118,12 @@ impl Engine {
     fn wait_ready(&self, id: &str, timeout: Duration) -> Result<()> {
         self.wait_state(
             id,
-            &[RtState::Running, RtState::Unhealthy, RtState::Exited, RtState::Stopped],
+            &[
+                RtState::Running,
+                RtState::Unhealthy,
+                RtState::Exited,
+                RtState::Stopped,
+            ],
             timeout,
         )
     }
@@ -2010,10 +2137,7 @@ impl Engine {
                 }
             }
             if Instant::now() >= deadline {
-                return Err(Error::new(
-                    ErrorCode::JobKill,
-                    format!("{id} 等待状态超时"),
-                ));
+                return Err(Error::new(ErrorCode::JobKill, format!("{id} 等待状态超时")));
             }
             thread::sleep(Duration::from_millis(40));
         }
@@ -2030,9 +2154,7 @@ impl Engine {
             .as_ref()
             .filter(|c| c.kind.is_some() && c.enabled)
             .cloned()
-            .ok_or_else(|| {
-                Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置或未启用")
-            })
+            .ok_or_else(|| Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置或未启用"))
     }
 
     /// §8 gateway.status：只读快照（路由 + 上游端口 + 存活）。
@@ -2081,12 +2203,11 @@ impl Engine {
             ),
             None => (None, None, None),
         };
-        let conf_path = kind
-            .and_then(|k| {
-                let p = crate::gateway::validate::gateway_dir(&g.root)
-                    .join(crate::gateway::validate::conf_file_name(k));
-                p.is_file().then(|| p.to_string_lossy().into_owned())
-            });
+        let conf_path = kind.and_then(|k| {
+            let p = crate::gateway::validate::gateway_dir(&g.root)
+                .join(crate::gateway::validate::conf_file_name(k));
+            p.is_file().then(|| p.to_string_lossy().into_owned())
+        });
         Ok(crate::ipc::GatewayStatusOutput {
             configured,
             enabled,
@@ -2146,9 +2267,13 @@ impl Engine {
         };
         let conf = match conf {
             Some(c) => c,
-            None => spec.gateway.clone().filter(|c| c.kind.is_some()).ok_or_else(|| {
-                Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置 kind")
-            })?,
+            None => spec
+                .gateway
+                .clone()
+                .filter(|c| c.kind.is_some())
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置 kind")
+                })?,
         };
         let kind = conf.kind.expect("kind checked");
         if let Err(e) = crate::gateway::ensure_static(&spec, &conf) {
@@ -2187,14 +2312,7 @@ impl Engine {
 
     /// 校验链（§6.1 第 1–3 步）：静态 → 探测 → 渲染落盘 → spawn 校验。
     /// 返回 spawn 所需的 (root, conf, bin, conf_path)。
-    fn gateway_prepare(
-        &self,
-    ) -> Result<(
-        PathBuf,
-        crate::spec::GatewayConf,
-        PathBuf,
-        PathBuf,
-    )> {
+    fn gateway_prepare(&self) -> Result<(PathBuf, crate::spec::GatewayConf, PathBuf, PathBuf)> {
         let (root, spec) = {
             let g = self.inner.lock().expect("engine lock");
             require_ws(&g)?;
@@ -2205,9 +2323,7 @@ impl Engine {
             .as_ref()
             .filter(|c| c.kind.is_some() && c.enabled)
             .cloned()
-            .ok_or_else(|| {
-                Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置或未启用")
-            })?;
+            .ok_or_else(|| Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置或未启用"))?;
         crate::gateway::ensure_static(&spec, &conf)?;
         let kind = conf.kind.expect("kind checked");
         let bin = crate::gateway::probe::resolve_gateway_bin(kind, conf.bin.as_deref())?;
@@ -2222,8 +2338,11 @@ impl Engine {
     pub fn gateway_start(&self) -> Result<()> {
         let (root, conf, bin, conf_path) = self.gateway_prepare()?;
         let kind = conf.kind.expect("kind checked");
-        let argv =
-            crate::gateway::validate::start_argv(kind, &conf_path, &crate::gateway::validate::gateway_dir(&root));
+        let argv = crate::gateway::validate::start_argv(
+            kind,
+            &conf_path,
+            &crate::gateway::validate::gateway_dir(&root),
+        );
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut g = self.inner.lock().expect("engine lock");
@@ -2282,10 +2401,22 @@ impl Engine {
                 id: "gateway".into(),
             };
             if let Some(out) = stdout {
-                spawn_pump(Arc::clone(&self.inner), src.clone(), LogStream::Stdout, out, Arc::clone(&cancel));
+                spawn_pump(
+                    Arc::clone(&self.inner),
+                    src.clone(),
+                    LogStream::Stdout,
+                    out,
+                    Arc::clone(&cancel),
+                );
             }
             if let Some(err) = stderr {
-                spawn_pump(Arc::clone(&self.inner), src, LogStream::Stderr, err, Arc::clone(&cancel));
+                spawn_pump(
+                    Arc::clone(&self.inner),
+                    src,
+                    LogStream::Stderr,
+                    err,
+                    Arc::clone(&cancel),
+                );
             }
             spawn_gateway_waiter(Arc::clone(&self.inner), child);
             spawn_gateway_health(Arc::clone(&self.inner), conf.port, Arc::clone(&cancel));
@@ -2372,7 +2503,10 @@ impl Engine {
                 .map(|s| {
                     matches!(
                         s.state,
-                        RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+                        RtState::Starting
+                            | RtState::Running
+                            | RtState::Unhealthy
+                            | RtState::Stopping
                     )
                 })
                 .unwrap_or(false)
@@ -2620,7 +2754,10 @@ fn kill_foreign_by_pid(pid: u32) -> Result<()> {
     crate::discover::taskkill_tree(pid)
 }
 
-fn spawn_real(planned: &CommandSpec, cwd: &Path) -> Result<(Child, Arc<dyn crate::proc::ProcessTree>)> {
+fn spawn_real(
+    planned: &CommandSpec,
+    cwd: &Path,
+) -> Result<(Child, Arc<dyn crate::proc::ProcessTree>)> {
     let program = probe::resolve_program(&planned.program)?;
     let mut cmd = Command::new(&program);
     cmd.args(&planned.args)
@@ -2769,9 +2906,7 @@ fn script_shell() -> (String, Vec<String>, Option<String>) {
         (
             "sh".into(),
             vec!["-c".into()],
-            Some(
-                "PATH 中没有 bash，脚本回落 sh -c 执行：bash 特有语法可能不兼容".into(),
-            ),
+            Some("PATH 中没有 bash，脚本回落 sh -c 执行：bash 特有语法可能不兼容".into()),
         )
     }
 }
@@ -2867,7 +3002,13 @@ fn run_script_cmds(
             );
         }
         if let Some(errp) = child.stderr.take() {
-            spawn_pump(Arc::clone(&inner), src.clone(), LogStream::Stderr, errp, cancel);
+            spawn_pump(
+                Arc::clone(&inner),
+                src.clone(),
+                LogStream::Stderr,
+                errp,
+                cancel,
+            );
         }
         loop {
             if Instant::now() >= deadline {
@@ -2938,6 +3079,7 @@ fn build_service_env(
     eff_spec: &SuperTaskFile,
     id: &str,
     root: &Path,
+    app_network: Option<&crate::appdata::AppNetwork>,
 ) -> Result<IndexMap<String, String>> {
     let svc = eff_spec
         .services
@@ -2956,6 +3098,10 @@ fn build_service_env(
             env.entry(key.to_string()).or_insert_with(|| p.to_string());
         }
     }
+    // 1.7 §7：镜像/代理注入，最低优先级（已存在的键不覆盖，显式 env 永远赢）。
+    // resolve 失败（如 custom 代理缺 URL）随启动硬失败；settings.xml 写失败静默跳过注入。
+    let eff_net = crate::network::resolve(eff_spec.network.as_ref(), app_network)?;
+    let (_, _inject_warns) = crate::network::inject_env(&eff_net, root, &mut env);
     Ok(env)
 }
 
@@ -2991,7 +3137,7 @@ fn spawn_core(
     spawner: SpawnerKind,
 ) -> Result<()> {
     if matches!(spawner, SpawnerKind::Real) {
-        probe::require_tools_for_kind(&kind, pkg, build_tool)?;
+        probe::require_tools_for_kind(&kind, pkg, build_tool, &planned.program)?;
     }
     if !cwd.is_dir() {
         return Err(Error::new(
@@ -3175,11 +3321,19 @@ fn jar_build_phase(
         id: id.to_string(),
     };
     let is_gradle = bt == crate::launcher::BuildTool::Gradle;
-    let stage_label = if is_gradle { "gradle bootJar" } else { "mvn package" };
+    let stage_label = if is_gradle {
+        "gradle bootJar"
+    } else {
+        "mvn package"
+    };
     if is_gradle {
         // §5.1 wrapper 优先；都无 → GRADLE_WRAPPER_MISSING（building 失败收场）
-        let (program, args, warns) =
-            crate::launcher::resolve_gradle_launcher(root, &module, &build_spec.program, &build_spec.args)?;
+        let (program, args, warns) = crate::launcher::resolve_gradle_launcher(
+            root,
+            &module,
+            &build_spec.program,
+            &build_spec.args,
+        )?;
         for w in warns {
             push_line(&inner, src.clone(), LogStream::System, w);
         }
@@ -3236,7 +3390,12 @@ fn jar_build_phase(
                         if let Some(slot) = g.slots.get_mut(id) {
                             slot.pid = None;
                             slot.job = None;
-                            if let Ok(s) = apply(slot.state, RtEvent::ProcessExited { stop_requested: true }) {
+                            if let Ok(s) = apply(
+                                slot.state,
+                                RtEvent::ProcessExited {
+                                    stop_requested: true,
+                                },
+                            ) {
                                 slot.state = s;
                             }
                             emit_runtime(&g);
@@ -3325,7 +3484,10 @@ fn select_jar_artifact(root: &Path, module: &str) -> Result<PathBuf> {
         if !name.ends_with(".jar") {
             continue;
         }
-        if name.starts_with("original-") || name.ends_with("-sources.jar") || name.ends_with("-javadoc.jar") {
+        if name.starts_with("original-")
+            || name.ends_with("-sources.jar")
+            || name.ends_with("-javadoc.jar")
+        {
             continue;
         }
         jars.push(p);
@@ -3367,12 +3529,18 @@ fn select_jar_artifact(root: &Path, module: &str) -> Result<PathBuf> {
         .details(serde_yaml::to_value(&names).unwrap_or(serde_yaml::Value::Null)));
     }
     if jars.is_empty() {
-        return Err(Error::new(ErrorCode::ArtifactMissing, "target 中没有可执行 jar"));
+        return Err(Error::new(
+            ErrorCode::ArtifactMissing,
+            "target 中没有可执行 jar",
+        ));
     }
     let names = names_of(&jars);
     Err(Error::new(
         ErrorCode::JarAmbiguous,
-        format!("多个候选 jar 且 pom 未提供 artifactId: {}", names.join(", ")),
+        format!(
+            "多个候选 jar 且 pom 未提供 artifactId: {}",
+            names.join(", ")
+        ),
     ))
 }
 
@@ -3389,11 +3557,20 @@ fn select_gradle_artifact(root: &Path, module: &str) -> Result<PathBuf> {
         ));
     }
     let mut jars: Vec<PathBuf> = Vec::new();
-    let entries = fs::read_dir(&libs)
-        .map_err(|e| Error::new(ErrorCode::ArtifactMissing, format!("无法读取 build/libs: {e}")))?;
+    let entries = fs::read_dir(&libs).map_err(|e| {
+        Error::new(
+            ErrorCode::ArtifactMissing,
+            format!("无法读取 build/libs: {e}"),
+        )
+    })?;
     for e in entries {
         let p = e
-            .map_err(|e| Error::new(ErrorCode::ArtifactMissing, format!("读取 build/libs 失败: {e}")))?
+            .map_err(|e| {
+                Error::new(
+                    ErrorCode::ArtifactMissing,
+                    format!("读取 build/libs 失败: {e}"),
+                )
+            })?
             .path();
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if !name.ends_with(".jar") {
@@ -3503,12 +3680,13 @@ fn metrics_loop(inner: Arc<Mutex<Inner>>) {
             if !map.is_empty() {
                 let _ = g
                     .events
-                    .try_send(EngineEvent::Metrics(crate::ipc::MetricsPayload { services: map }));
+                    .try_send(EngineEvent::Metrics(crate::ipc::MetricsPayload {
+                        services: map,
+                    }));
             }
         }
     }
 }
-
 
 fn spawn_waiter(inner: Arc<Mutex<Inner>>, id: String, mut child: Child) {
     thread::Builder::new()
@@ -3523,18 +3701,15 @@ fn spawn_waiter(inner: Arc<Mutex<Inner>>, id: String, mut child: Child) {
                 kind: LogSourceKind::Service,
                 id: id.clone(),
             };
-            let err_msg = if !g
-                .slots
-                .get(&id)
-                .map(|s| s.stop_requested)
-                .unwrap_or(true)
-                && code != 0
-            {
-                Some(exit_error_from_logs(&g, &src, code))
-            } else {
-                None
+            let err_msg =
+                if !g.slots.get(&id).map(|s| s.stop_requested).unwrap_or(true) && code != 0 {
+                    Some(exit_error_from_logs(&g, &src, code))
+                } else {
+                    None
+                };
+            let Some(slot) = g.slots.get_mut(&id) else {
+                return;
             };
-            let Some(slot) = g.slots.get_mut(&id) else { return };
             slot.pid = None;
             slot.job = None;
             slot.cancel.store(true, Ordering::SeqCst);
@@ -3545,7 +3720,11 @@ fn spawn_waiter(inner: Arc<Mutex<Inner>>, id: String, mut child: Child) {
             if let Some(msg) = err_msg {
                 slot.last_error = Some(msg);
             }
-            slot.exit_reason = if slot.stop_requested { None } else { Some("crash") };
+            slot.exit_reason = if slot.stop_requested {
+                None
+            } else {
+                Some("crash")
+            };
             let ev = RtEvent::ProcessExited {
                 stop_requested: slot.stop_requested,
             };
@@ -3624,7 +3803,9 @@ fn spawn_health(
                 }
                 let r = health::check_with_endpoints(&spec, port, &eps);
                 let mut g = inner.lock().expect("engine lock");
-                let Some(slot) = g.slots.get_mut(&id) else { break };
+                let Some(slot) = g.slots.get_mut(&id) else {
+                    break;
+                };
                 let past = slot
                     .started
                     .map(|t| t.elapsed() >= slot.grace)
@@ -3692,7 +3873,12 @@ fn flush_logs(inner: &Mutex<Inner>, items: Vec<LogLine>) {
 fn compose_up_args(info: &ComposeInfo) -> Vec<String> {
     let mut a = crate::docker::compose_base_args(&info.file, info.project.as_deref());
     // --no-deps 必带：SuperTask 依赖图是顺序唯一真源（§5.2）；只允许单服务名
-    a.extend(["up".to_string(), "-d".to_string(), "--no-deps".to_string(), info.service.clone()]);
+    a.extend([
+        "up".to_string(),
+        "-d".to_string(),
+        "--no-deps".to_string(),
+        info.service.clone(),
+    ]);
     a
 }
 
@@ -3704,7 +3890,12 @@ fn compose_stop_args(info: &ComposeInfo) -> Vec<String> {
 
 fn compose_ps_args(info: &ComposeInfo) -> Vec<String> {
     let mut a = crate::docker::compose_base_args(&info.file, info.project.as_deref());
-    a.extend(["ps".to_string(), "--format".to_string(), "json".to_string(), info.service.clone()]);
+    a.extend([
+        "ps".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+        info.service.clone(),
+    ]);
     a
 }
 
@@ -3812,19 +4003,28 @@ fn compose_up_flow(
         // up 非零 → 状态回 stopped，last_error 带输出摘要；不进 running（§5.2）
         let mut g = inner.lock().expect("engine lock");
         if let Some(slot) = g.slots.get_mut(&id) {
-            if let Ok(s) = apply(slot.state, RtEvent::ProcessExited { stop_requested: true }) {
+            if let Ok(s) = apply(
+                slot.state,
+                RtEvent::ProcessExited {
+                    stop_requested: true,
+                },
+            ) {
                 slot.state = s;
             }
             slot.started = None;
             slot.pid = None;
-            slot.last_error = Some(format!("COMPOSE_UP_FAILED: docker compose up 退出码 {code}"));
+            slot.last_error = Some(format!(
+                "COMPOSE_UP_FAILED: docker compose up 退出码 {code}"
+            ));
             emit_runtime(&g);
         }
         return;
     }
     let stop_after_up = {
         let mut g = inner.lock().expect("engine lock");
-        let Some(slot) = g.slots.get_mut(&id) else { return };
+        let Some(slot) = g.slots.get_mut(&id) else {
+            return;
+        };
         if let Some(c) = slot.compose.as_mut() {
             c.started_by_engine = true;
         }
@@ -3902,7 +4102,13 @@ fn compose_follow_logs(
         wait: _, // --follow 无需退出码
     } = stream;
     // stderr：docker CLI 自身错误 → system stream
-    spawn_pump(inner.clone(), src.clone(), LogStream::System, stderr, cancel.clone());
+    spawn_pump(
+        inner.clone(),
+        src.clone(),
+        LogStream::System,
+        stderr,
+        cancel.clone(),
+    );
     let done = Arc::new(AtomicBool::new(false));
     // stdout：容器日志 → stdout stream；EOF → done
     {
@@ -3999,11 +4205,16 @@ fn compose_monitor(
             if out.code != 0 {
                 continue;
             }
-            let Some(c) = crate::docker::parse_ps(&out.stdout).into_iter().find(|c| c.exited()) else {
+            let Some(c) = crate::docker::parse_ps(&out.stdout)
+                .into_iter()
+                .find(|c| c.exited())
+            else {
                 continue;
             };
             let mut g = inner.lock().expect("engine lock");
-            let Some(slot) = g.slots.get_mut(&id) else { break };
+            let Some(slot) = g.slots.get_mut(&id) else {
+                break;
+            };
             if slot.stop_requested {
                 continue; // 引擎 stop 流程负责收尾
             }
@@ -4016,7 +4227,12 @@ fn compose_monitor(
             slot.pid = None;
             slot.started = None;
             slot.cancel.store(true, Ordering::SeqCst); // 停健康探测与日志泵
-            if let Ok(s) = apply(slot.state, RtEvent::ProcessExited { stop_requested: false }) {
+            if let Ok(s) = apply(
+                slot.state,
+                RtEvent::ProcessExited {
+                    stop_requested: false,
+                },
+            ) {
                 slot.state = s;
             }
             emit_runtime(&g);
@@ -4034,15 +4250,19 @@ fn run_build_streaming(
     src: &LogSource,
     label: &str,
 ) -> Result<serde_yaml::Value> {
-    let crate::docker::DockerStream { stdout, stderr, kill, wait } = match runner.run_stream(spawn)
-    {
+    let crate::docker::DockerStream {
+        stdout,
+        stderr,
+        kill,
+        wait,
+    } = match runner.run_stream(spawn) {
         Ok(s) => s,
         Err(e) => {
             return Err(map_docker_spawn_err(e));
         }
     };
     ctx.on_cancel(kill); // 取消 → 杀构建进程（best effort，不删已提交层）
-    // stderr 独立线程排水（BuildKit 进度走 stderr；防管道写满互卡）
+                         // stderr 独立线程排水（BuildKit 进度走 stderr；防管道写满互卡）
     let inner2 = Arc::clone(inner);
     let src2 = src.clone();
     let ctx2 = ctx.clone();
@@ -4097,7 +4317,10 @@ fn run_build_streaming(
     if ctx.cancelled() {
         return Err(Error::new(ErrorCode::Spawn, "构建已取消"));
     }
-    let code = { let mut wait = wait; wait() };
+    let code = {
+        let mut wait = wait;
+        wait()
+    };
     let mut all = out_lines;
     all.extend(err_lines);
     // 单行截断由日志管道负责；operation message 只带尾部摘要（默认最后 20 行）
@@ -4141,11 +4364,7 @@ fn rt_state_str(s: RtState) -> String {
 fn loopback_host_for(port: u16) -> String {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
     let probe = |ip: IpAddr| {
-        TcpStream::connect_timeout(
-            &SocketAddr::new(ip, port),
-            Duration::from_millis(150),
-        )
-        .is_ok()
+        TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_millis(150)).is_ok()
     };
     if probe(IpAddr::V4(Ipv4Addr::LOCALHOST)) {
         return "127.0.0.1".into();
@@ -4163,7 +4382,10 @@ fn apache_modules_dir_of(bin: &Path) -> Option<String> {
 }
 
 fn stderr_from_details(e: &Error) -> Option<String> {
-    let Error::App { details: Some(d), .. } = e else {
+    let Error::App {
+        details: Some(d), ..
+    } = e
+    else {
         return None;
     };
     d.get("stderr").and_then(|v| v.as_str()).map(str::to_string)
@@ -4249,7 +4471,9 @@ fn spawn_gateway_waiter(inner: Arc<Mutex<Inner>>, mut child: Child) {
             } else {
                 None
             };
-            let Some(slot) = g.gateway.as_mut() else { return };
+            let Some(slot) = g.gateway.as_mut() else {
+                return;
+            };
             slot.pid = None;
             slot.job = None;
             slot.cancel.store(true, Ordering::SeqCst);
@@ -4281,7 +4505,9 @@ fn spawn_gateway_health(inner: Arc<Mutex<Inner>>, port: u16, cancel: Arc<AtomicB
             }
             let ok = crate::ports::is_serving(port);
             let mut g = inner.lock().expect("engine lock");
-            let Some(slot) = g.gateway.as_mut() else { break };
+            let Some(slot) = g.gateway.as_mut() else {
+                break;
+            };
             let past = slot
                 .started
                 .map(|t| t.elapsed() >= Duration::from_secs(3))
@@ -4420,7 +4646,11 @@ services:
         let root = std::env::temp_dir().join(format!("st-eng-comp{}-{}", std::process::id(), n));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:7\n",
+        )
+        .unwrap();
         fs::write(
             root.join("supertask.yaml"),
             format!(
@@ -4462,11 +4692,24 @@ services:
             .iter()
             .find(|c| c.args.contains(&"up".to_string()))
             .expect("up call");
-        assert_eq!(&up.args[0..4], &["compose".to_string(), "--ansi".to_string(), "never".to_string(), "-f".to_string()]);
+        assert_eq!(
+            &up.args[0..4],
+            &[
+                "compose".to_string(),
+                "--ansi".to_string(),
+                "never".to_string(),
+                "-f".to_string()
+            ]
+        );
         assert!(up.args[4].ends_with("compose.yaml"));
         assert_eq!(
             &up.args[5..],
-            &["up".to_string(), "-d".to_string(), "--no-deps".to_string(), "redis".to_string()],
+            &[
+                "up".to_string(),
+                "-d".to_string(),
+                "--no-deps".to_string(),
+                "redis".to_string()
+            ],
             "up 必带 --no-deps 且只允许单服务名"
         );
         assert_eq!(up.cwd.as_deref(), Some(root.as_path()));
@@ -4474,7 +4717,11 @@ services:
         // config 缓存：open 1 次 + start 0 次
         let config_calls = calls
             .iter()
-            .filter(|c| c.args.windows(2).any(|w| w == ["config".to_string(), "--format".to_string()]))
+            .filter(|c| {
+                c.args
+                    .windows(2)
+                    .any(|w| w == ["config".to_string(), "--format".to_string()])
+            })
             .count();
         assert_eq!(config_calls, 1, "config 应命中 mtime+hash 缓存");
 
@@ -4496,7 +4743,10 @@ services:
         thread::sleep(Duration::from_millis(300));
         let (lines, _) = eng
             .logs_snapshot(
-                Some(&LogSource { kind: LogSourceKind::Service, id: "redis".into() }),
+                Some(&LogSource {
+                    kind: LogSourceKind::Service,
+                    id: "redis".into(),
+                }),
                 50,
             )
             .unwrap();
@@ -4525,7 +4775,10 @@ services:
             &stop.args[stop.args.len() - 2..],
             &["stop".to_string(), "redis".to_string()],
         );
-        assert!(!stop.args.iter().any(|a| a == "--rm" || a == "down" || a == "rm"));
+        assert!(!stop
+            .args
+            .iter()
+            .any(|a| a == "--rm" || a == "down" || a == "rm"));
         eng.close().unwrap();
         let _ = fs::remove_dir_all(&root);
     }
@@ -4546,7 +4799,13 @@ services:
             eng.state_of("redis")
         );
         let snap = eng.snapshot().unwrap();
-        let err = snap.services.get("redis").unwrap().last_error.clone().unwrap();
+        let err = snap
+            .services
+            .get("redis")
+            .unwrap()
+            .last_error
+            .clone()
+            .unwrap();
         assert!(err.contains("COMPOSE_UP_FAILED"), "{err}");
         eng.close().unwrap();
         let _ = fs::remove_dir_all(&root);
@@ -4596,11 +4855,15 @@ services:
         eng.close().unwrap();
         let calls = fake.calls();
         assert!(
-            calls.iter().any(|c| c.args.ends_with(&["stop".to_string(), "redis".to_string()])),
+            calls
+                .iter()
+                .any(|c| c.args.ends_with(&["stop".to_string(), "redis".to_string()])),
             "引擎启动过的 redis 应被清场"
         );
         assert!(
-            !calls.iter().any(|c| c.args.ends_with(&["stop".to_string(), "mysql".to_string()])),
+            !calls
+                .iter()
+                .any(|c| c.args.ends_with(&["stop".to_string(), "mysql".to_string()])),
             "未由引擎启动的 mysql 不应被清场（§5.6）"
         );
         let _ = fs::remove_dir_all(&root);
@@ -4628,8 +4891,7 @@ services:
         eng.close().unwrap();
 
         // c) compose 文件缺失 → COMPOSE_FILE_MISSING（不 spawn config）
-        let root2 = std::env::temp_dir()
-            .join(format!("st-eng-compmiss-{}", std::process::id()));
+        let root2 = std::env::temp_dir().join(format!("st-eng-compmiss-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root2);
         fs::create_dir_all(&root2).unwrap();
         fs::write(
@@ -4644,7 +4906,10 @@ services:
         let e = eng.start_one("redis").unwrap_err();
         assert_eq!(e.code(), ErrorCode::ComposeFileMissing);
         assert!(
-            !fake.calls().iter().any(|c| c.args.windows(2).any(|w| w == ["config".to_string(), "--format".to_string()])),
+            !fake.calls().iter().any(|c| c
+                .args
+                .windows(2)
+                .any(|w| w == ["config".to_string(), "--format".to_string()])),
             "文件缺失时不应 spawn config"
         );
         eng.close().unwrap();
@@ -4689,8 +4954,12 @@ services:
         fake.push_ok(compose_config_json());
         let eng = Engine::with_docker_runner(fake.clone());
         let (warnings, _) = eng.open(&root).unwrap();
-        assert!(warnings.iter().any(|w| w.code == ErrorCode::ComposeServiceMissing));
-        assert!(warnings.iter().any(|w| w.code == ErrorCode::ComposePortMismatch));
+        assert!(warnings
+            .iter()
+            .any(|w| w.code == ErrorCode::ComposeServiceMissing));
+        assert!(warnings
+            .iter()
+            .any(|w| w.code == ErrorCode::ComposePortMismatch));
         eng.close().unwrap();
         let _ = fs::remove_dir_all(&root);
     }
@@ -4715,7 +4984,10 @@ services:
         let mut terminal = None;
         for _ in 0..200 {
             if let Some(ev) = eng.operations().get(&op_id) {
-                if matches!(ev.state, crate::operation::OpState::Succeeded | crate::operation::OpState::Failed) {
+                if matches!(
+                    ev.state,
+                    crate::operation::OpState::Succeeded | crate::operation::OpState::Failed
+                ) {
                     terminal = Some(ev);
                     break;
                 }
@@ -4725,7 +4997,11 @@ services:
         let ev = terminal.expect("operation terminal");
         assert_eq!(ev.state, crate::operation::OpState::Succeeded);
         assert_eq!(ev.kind, "docker.build");
-        assert!(ev.message.as_deref().unwrap().contains("Successfully built"));
+        assert!(ev
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("Successfully built"));
 
         // build argv 顺序：build -t <tag> <context>
         let all_calls = fake.calls();
@@ -4734,7 +5010,10 @@ services:
             .find(|c| c.args.first().map(String::as_str) == Some("build"))
             .expect("build call");
         assert_eq!(build.args[0], "build");
-        assert_eq!(&build.args[1..3], &["-t".to_string(), "mall-user:local".to_string()]);
+        assert_eq!(
+            &build.args[1..3],
+            &["-t".to_string(), "mall-user:local".to_string()]
+        );
         assert_eq!(build.args.len(), 4);
         assert_eq!(build.cwd.as_deref(), Some(root.as_path()));
         eng.close().unwrap();
@@ -4762,7 +5041,10 @@ services:
         let mut terminal = None;
         for _ in 0..200 {
             if let Some(ev) = eng.operations().get(&op_id) {
-                if matches!(ev.state, crate::operation::OpState::Succeeded | crate::operation::OpState::Failed) {
+                if matches!(
+                    ev.state,
+                    crate::operation::OpState::Succeeded | crate::operation::OpState::Failed
+                ) {
                     terminal = Some(ev);
                     break;
                 }
@@ -4780,7 +5062,14 @@ services:
             .iter()
             .find(|c| c.args.contains(&"build".to_string()))
             .expect("compose build call");
-        assert_eq!(&build.args[0..3], &["compose".to_string(), "--ansi".to_string(), "never".to_string()]);
+        assert_eq!(
+            &build.args[0..3],
+            &[
+                "compose".to_string(),
+                "--ansi".to_string(),
+                "never".to_string()
+            ]
+        );
         assert_eq!(
             &build.args[build.args.len() - 2..],
             &["build".to_string(), "redis".to_string()]
@@ -4856,10 +5145,17 @@ services:
         eng.open(&root).unwrap();
         eng.subscribe_logs().unwrap();
         eng.start_one("ping").unwrap();
-        assert!(wait_eq(&eng, "ping", RtState::Running), "{:?}", eng.state_of("ping"));
+        assert!(
+            wait_eq(&eng, "ping", RtState::Running),
+            "{:?}",
+            eng.state_of("ping")
+        );
         let snap = eng.snapshot().unwrap();
         let view = snap.services.get("ping").expect("ping view");
-        assert!(view.managed, "spawned service must be managed (not external)");
+        assert!(
+            view.managed,
+            "spawned service must be managed (not external)"
+        );
         thread::sleep(Duration::from_millis(400));
         let (lines, _) = eng.logs_snapshot(None, 50).unwrap();
         assert!(!lines.is_empty(), "ping should emit stdout");
@@ -5371,11 +5667,17 @@ services:
         assert!(root.join(".supertask/gateway/nginx.conf").is_file());
         // 日志 source=gateway
         eng.subscribe_logs().unwrap();
-        let src = LogSource { kind: LogSourceKind::Gateway, id: "gateway".into() };
+        let src = LogSource {
+            kind: LogSourceKind::Gateway,
+            id: "gateway".into(),
+        };
         eng.clear_logs(&src).unwrap();
         // 停止 → stopped，端口释放
         eng.gateway_stop().unwrap();
-        assert_eq!(eng.gateway_status().unwrap().state.as_deref(), Some("stopped"));
+        assert_eq!(
+            eng.gateway_status().unwrap().state.as_deref(),
+            Some("stopped")
+        );
         let mut released = false;
         for _ in 0..25 {
             if !crate::ports::is_serving(gw) {
@@ -5389,7 +5691,10 @@ services:
         eng.gateway_start().unwrap();
         assert!(wait_gateway_state(&eng, "running", 25));
         eng.stop_all().unwrap();
-        assert_eq!(eng.gateway_status().unwrap().state.as_deref(), Some("stopped"));
+        assert_eq!(
+            eng.gateway_status().unwrap().state.as_deref(),
+            Some("stopped")
+        );
         eng.close().unwrap();
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&root);
@@ -5418,9 +5723,7 @@ services:
             upstream: None,
             extra: Default::default(),
         });
-        let e = eng
-            .gateway_apply(new_conf.clone(), "deadbeef")
-            .unwrap_err();
+        let e = eng.gateway_apply(new_conf.clone(), "deadbeef").unwrap_err();
         assert_eq!(e.code(), ErrorCode::YamlConflict);
 
         // b) 正常 apply：运行中 → 重启（stop→start），yaml 已更新

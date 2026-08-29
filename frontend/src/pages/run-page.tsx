@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from "react";
 import { useOutletContext, NavLink, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -18,6 +18,8 @@ import { LogView } from "@/components/log-view";
 import {
   STATE_META,
   StatusDot,
+  GATEWAY_STATE_TINT,
+  GATEWAY_STATE_DOT,
   fmtDuration,
   fmtTime,
   healthClass,
@@ -36,11 +38,16 @@ import {
   apiScriptRun,
   apiDockerProbe,
   apiDockerPs,
+  apiGatewayStart,
+  apiGatewayStop,
+  apiGatewayRestart,
+  apiGatewayStatus,
 } from "../ipc/api";
 import { IpcFailure } from "../ipc/protocol";
 import type {
   ContainerSummary,
   DockerProbe,
+  GatewayStatusOut,
   IdeTarget,
   LogSource,
   ScriptRuntimeView,
@@ -69,6 +76,9 @@ import {
   Hammer,
   Loader2,
   Container,
+  Network,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import type { ShellCtx } from "../app/AppShell";
 
@@ -84,32 +94,42 @@ function serviceCmd(id: string, s: ServiceSpec): string {
     const script = s.script ?? "dev";
     return `npm --prefix ${dir} run ${script}`;
   }
+  // 1.7：python / go / generic（仅展示用途）
+  if (s.kind === "python") {
+    const mod = s.module ?? "";
+    const base = mod ? `python -m ${mod}` : `python ${s.entry ?? ""}`.trimEnd();
+    return [base, ...s.extra_args].join(" ");
+  }
+  if (s.kind === "go") {
+    return `go run ${s.package ?? "."}${s.extra_args.length ? ` ${s.extra_args.join(" ")}` : ""}`;
+  }
+  if (s.kind === "generic") {
+    return [s.program ?? "?", ...(s.args ?? []), ...s.extra_args].join(" ");
+  }
   // 单模块（module "." 或缺省）省略 -pl，与引擎 plan_spring 的行为一致
   const module = s.module ?? "";
   return module === "." || module === "" ? "mvn spring-boot:run" : `mvn -pl ${module} spring-boot:run`;
 }
 
-function kindLabel(kind: string): string {
-  if (kind === "node") return "NODE";
-  if (kind === "compose") return "COMPOSE";
-  if (kind === "task") return "TASK";
-  return "SPRING";
-}
+/** 1.7：kind → 徽标文案/颜色映射表（禁止按 kind 写 if 长链的呈现逻辑）。 */
+const KIND_BADGE: Record<string, { label: string; color: string }> = {
+  "spring-boot": { label: "SPRING", color: "var(--st-accent,#5e6ad2)" },
+  node: { label: "NODE", color: "#2E90FA" },
+  compose: { label: "COMPOSE", color: "#12B76A" },
+  task: { label: "TASK", color: "var(--t3,#8a8f98)" },
+  python: { label: "PYTHON", color: "#F79009" },
+  go: { label: "GO", color: "#00B8D9" },
+  generic: { label: "PROC", color: "#8a8f98" },
+};
 
 function KindBadge({ kind, buildTool }: { kind: string; buildTool?: string | null }) {
-  const color =
-    kind === "node"
-      ? "#2E90FA"
-      : kind === "compose"
-        ? "#12B76A"
-        : kind === "task"
-          ? "var(--t3,#8a8f98)"
-          : "var(--st-accent,#5e6ad2)";
+  const fallback = { label: kind.toUpperCase(), color: "var(--t3,#8a8f98)" };
+  const { label, color } = KIND_BADGE[kind] ?? fallback;
   return (
     <>
       <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]">
         <span className="size-1.5 rounded-full" style={{ background: color }} />
-        {kindLabel(kind)}
+        {label}
       </span>
       {buildTool === "gradle" ? (
         <span className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]">
@@ -827,7 +847,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   const ws = useWorkspace();
   const runtime = useRuntime();
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"logs" | "env" | "health" | "config" | "metrics" | "container">("logs");
+  const [tab, setTab] = useState<"logs" | "env" | "health" | "config" | "metrics" | "container" | "proxy">("logs");
   const [confirmStop, setConfirmStop] = useState(false);
   const [building, setBuilding] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -873,7 +893,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
         : t("pages.run.stackSpring");
   const topo = spec?.depends_on?.length ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") }) : t("pages.run.noDeps");
 
-  type DetailTab = "logs" | "env" | "health" | "config" | "metrics" | "container";
+  type DetailTab = "logs" | "env" | "health" | "config" | "metrics" | "container" | "proxy";
   const tabs: { k: DetailTab; label: string; icon: typeof FileText }[] = [
     { k: "logs", label: t("nav.logs"), icon: FileText },
     { k: "env", label: t("pages.run.tabEnv"), icon: Settings2 },
@@ -882,14 +902,15 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
     { k: "metrics", label: t("pages.run.tabMetrics"), icon: Activity },
     // 1.3：容器 Tab 仅 compose 服务显示（镜像/容器 ID/healthcheck/退出码，只读）
     ...(isCompose ? [{ k: "container" as DetailTab, label: t("nav.docker"), icon: Container }] : []),
+    // 1.6：代理 Tab 仅网关已配置且启用时显示（本服务视角：网关状态 + 指向本服务的路由）
+    ...(rt.state.gateway ? [{ k: "proxy" as DetailTab, label: t("pages.run.lockProxy"), icon: Network }] : []),
   ];
   const locked = [
     // 终端 PTY 从未进入路线图任何版本（2026-08-26 界面设计文档标注「1.5」与
     // 路线图/1.5 规格「能搬家：导出包+CLI+MCP」冲突，以路线图为准）→ 标注待排期；
-    // 容器 Tab 1.3 已对 compose 服务上线，不再列入锁定项；
-    // 代理 = 1.6 网关。指标 1.2 已上线为正式 Tab。
+    // 容器 Tab 1.3、代理 Tab 1.6（网关）均已上线为正式 Tab，不再列入锁定项；
+    // 指标 1.2 已上线为正式 Tab。
     { label: t("pages.run.lockTerminal"), v: t("pages.run.unscheduled") },
-    { label: t("pages.run.lockProxy"), v: "1.6" },
   ];
 
   return (
@@ -1078,6 +1099,11 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
         {tab === "container" ? (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ContainerPanel id={id} />
+          </div>
+        ) : null}
+        {tab === "proxy" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <ProxyPanel id={id} />
           </div>
         ) : null}
       </div>
@@ -1397,6 +1423,132 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
   );
 }
 
+/** 1.6 代理 Tab：本服务视角的网关切片——网关状态 + 指向本服务的路由（只读）。
+ * 路由编辑统一在 /gateway 页（单一编辑入口）；这里复用 gateway.status /
+ * gateway.start|stop|restart 与 `pages.gateway.*` 词条。 */
+function ProxyPanel({ id }: { id: string }) {
+  const rt = useRuntime();
+  const ws = useWorkspace();
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const gw = rt.state.gateway;
+  const [status, setStatus] = useState<GatewayStatusOut | null>(null);
+  const [busy, setBusy] = useState(false);
+  const wsId = ws.state.workspaceId;
+  const svcState = rt.state.services[id]?.state;
+
+  const refresh = useCallback(async () => {
+    if (!wsId) return;
+    try {
+      setStatus(await apiGatewayStatus(wsId));
+    } catch {
+      // 面板级只读信息：失败静默，网关/服务状态变化时会重试
+    }
+  }, [wsId]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh, id, gw?.state, svcState]);
+
+  if (!gw || !wsId) return null;
+
+  const act = async (fn: () => Promise<unknown>, okKey: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      toast(t(okKey), "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const routes = status?.routes.filter((r) => r.target === id) ?? [];
+  const gwActive = gw.state === "running" || gw.state === "starting" || gw.state === "unhealthy";
+
+  return (
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
+      {/* 网关状态卡 */}
+      <div className="rounded-[var(--r-lg,16px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Network className="size-4 shrink-0 text-[var(--primary,#5E6AD2)]" />
+          <span className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{t("nav.gateway")}</span>
+          <span className="font-mono text-[0.78rem] text-[var(--t2,#62666d)]">
+            {gw.kind} · :{gw.port}
+          </span>
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold",
+              GATEWAY_STATE_TINT[gw.state],
+            )}
+          >
+            <span className={cn("size-1.5 rounded-full", GATEWAY_STATE_DOT[gw.state])} />
+            {t(`pages.gateway.state_${gw.state}`)}
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            {gwActive ? (
+              <>
+                <Button variant="warn" size="sm" disabled={busy} onClick={() => void act(() => apiGatewayRestart(wsId), "pages.gateway.restartSent")}>
+                  <RotateCw className="size-3.5" /> {t("pages.gateway.restart")}
+                </Button>
+                <Button variant="destructive" size="sm" disabled={busy} onClick={() => void act(() => apiGatewayStop(wsId), "pages.gateway.stopSent")}>
+                  <Square className="size-3.5" /> {t("pages.gateway.stop")}
+                </Button>
+              </>
+            ) : (
+              <Button variant="default" size="sm" disabled={busy} onClick={() => void act(() => apiGatewayStart(wsId), "pages.gateway.startSent")}>
+                {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                {t("pages.gateway.start")}
+              </Button>
+            )}
+          </div>
+        </div>
+        {gw.last_error ? (
+          <div className="mt-2 rounded-[var(--r-sm,8px)] bg-[#fdecec] px-3 py-2 text-[0.78rem] text-[#dc2626]">{gw.last_error}</div>
+        ) : null}
+      </div>
+
+      {/* 指向本服务的路由（只读；编辑在 /gateway） */}
+      <div className="rounded-[var(--r-lg,16px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-4">
+        <div className="flex items-center gap-2">
+          <span className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{t("pages.run.proxyRoutes")}</span>
+          <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">{routes.length}</span>
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => navigate("/gateway")}>
+            <Network className="size-3.5" />
+            {t("pages.run.proxyOpenGateway")}
+          </Button>
+        </div>
+        {routes.length === 0 ? (
+          <p className="mt-3 text-[0.8rem] text-[var(--t3,#8a8f98)]">{t("pages.run.proxyNoRoutes")}</p>
+        ) : (
+          <div className="mt-1 flex flex-col divide-y divide-[var(--line,#e6e6e6)]">
+            {routes.map((r, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2 py-2 text-[0.8rem]">
+                {r.upstream_alive != null ? (
+                  <span
+                    className={cn("size-2 shrink-0 rounded-full", r.upstream_alive ? "bg-[#27a644]" : "bg-[#c3c6cc]")}
+                    title={r.upstream_alive ? t("pages.gateway.upstreamAlive") : t("pages.gateway.upstreamDown")}
+                  />
+                ) : (
+                  <span className="size-2 shrink-0" />
+                )}
+                <span className="rounded bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[0.72rem] text-[var(--t2,#62666d)]">
+                  {r.host ?? t("pages.run.proxyCatchAll")}
+                </span>
+                <span className="font-mono text-[var(--t1,#222326)]">{r.path}</span>
+                <span className="text-[var(--t3,#8a8f98)]">→</span>
+                <span className="font-mono text-[var(--t2,#62666d)]">:{r.target_port ?? "?"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ScriptDetail({ id }: { id: string }) {
   const ws = useWorkspace();
   const { view, isRunning, anyRunning, run, cancel } = useScriptView(id);
@@ -1524,6 +1676,95 @@ function ScriptDetail({ id }: { id: string }) {
 
 /* ---------------- RunPage ---------------- */
 
+/* ---------------- 1.7 §8.1 服务分组（纯呈现层；组序 = YAML 首现序，未分组最后） ---------------- */
+
+const GROUP_COLLAPSED_KEY = "st:runGroupCollapsed";
+
+function readGroupCollapsedPref(): Record<string, boolean> {
+  try {
+    return JSON.parse(localStorage.getItem(GROUP_COLLAPSED_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+type ServiceGroup = { key: string; label: string; ids: string[] };
+
+function buildGroups(serviceIds: string[], spec: Record<string, ServiceSpec> | undefined, ungroupedLabel: string): ServiceGroup[] {
+  const map = new Map<string, string[]>();
+  for (const id of serviceIds) {
+    const g = spec?.[id]?.group?.trim() ?? "";
+    const key = g || "__ungrouped__";
+    const list = map.get(key);
+    if (list) list.push(id);
+    else map.set(key, [id]);
+  }
+  // YAML 首现序：serviceIds 本身即 spec 序；未分组强制排最后
+  const keys = [...map.keys()].sort((a, b) => {
+    if (a === "__ungrouped__") return 1;
+    if (b === "__ungrouped__") return -1;
+    return 0;
+  });
+  return keys.map((k) => ({ key: k, label: k === "__ungrouped__" ? ungroupedLabel : k, ids: map.get(k)! }));
+}
+
+function GroupHeader({
+  label,
+  ids,
+  states,
+  collapsed,
+  onToggle,
+  onStart,
+  onStop,
+}: {
+  label: string;
+  ids: string[];
+  states: Record<string, string>;
+  collapsed: boolean;
+  onToggle: () => void;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const { t } = useTranslation();
+  const running = ids.filter((id) => states[id] === "running" || states[id] === "starting").length;
+  return (
+    <div className="flex items-center gap-1.5 px-1 pb-1 pt-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex min-w-0 cursor-pointer items-center gap-1 rounded-[var(--r-sm,8px)] px-1 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--t1,#222326)]"
+        title={collapsed ? t("pages.run.expandList") : t("pages.run.collapseList")}
+      >
+        {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+        <span className="truncate">{label}</span>
+      </button>
+      <span className="font-mono text-[10px] text-[var(--t3,#8a8f98)]">
+        {t("pages.run.serviceCountRunning", { total: ids.length, running })}
+      </span>
+      <span className="ml-auto flex gap-1">
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={running === ids.length}
+          className="grid size-6 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[var(--st-accent-tint-line,#c9cff0)] hover:bg-[var(--st-accent-tint,#eef0fb)] hover:text-[var(--st-accent,#5e6ad2)] disabled:cursor-not-allowed disabled:opacity-50"
+          title={t("pages.run.groupStart")}
+        >
+          <Play className="size-3" />
+        </button>
+        <button
+          type="button"
+          onClick={onStop}
+          disabled={running === 0}
+          className="grid size-6 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)] disabled:cursor-not-allowed disabled:opacity-50"
+          title={t("pages.run.groupStop")}
+        >
+          <Square className="size-3" />
+        </button>
+      </span>
+    </div>
+  );
+}
+
 export function RunPage() {
   const rt = useRuntime();
   const ws = useWorkspace();
@@ -1537,6 +1778,49 @@ export function RunPage() {
   const running = serviceIds.filter((i) => rt.state.services[i].state === "running").length;
   const totalItems = serviceIds.length + scriptIds.length;
   const [cardsCollapsed, setCardsCollapsed] = useState(() => readCardsCollapsedPref() ?? totalItems === 1);
+
+  // 1.7 §8.1：分组（spec.group 字段；无分组时渲染与旧版一致）
+  const groups = useMemo(
+    () => buildGroups(serviceIds, ws.state.spec?.services, t("pages.run.ungrouped")),
+    // serviceIds 随 rt.state.services 引用变化而稳定，spec 变化重建
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rt.state.services, ws.state.spec, t],
+  );
+  const hasGroups = groups.length > 1 || (groups.length === 1 && groups[0].key !== "__ungrouped__");
+  const [groupCollapsed, setGroupCollapsed] = useState<Record<string, boolean>>(() => readGroupCollapsedPref());
+  const [groupStopTarget, setGroupStopTarget] = useState<ServiceGroup | null>(null);
+
+  const toggleGroup = (key: string) => {
+    setGroupCollapsed((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      try {
+        localStorage.setItem(GROUP_COLLAPSED_KEY, JSON.stringify(next));
+      } catch {
+        /* 隐私模式等场景忽略 */
+      }
+      return next;
+    });
+  };
+
+  const startGroup = async (ids: string[]) => {
+    for (const id of ids) {
+      try {
+        await rt.actions.startOne(id);
+      } catch {
+        /* 单个失败继续其余（结果在卡片状态呈现） */
+      }
+    }
+  };
+
+  const stopGroup = async (ids: string[]) => {
+    for (const id of ids) {
+      try {
+        await rt.actions.stopOne(id);
+      } catch {
+        /* 同上 */
+      }
+    }
+  };
 
   useEffect(() => {
     if (readCardsCollapsedPref() === null && totalItems === 1) setCardsCollapsed(true);
@@ -1618,6 +1902,31 @@ export function RunPage() {
                 <div className="rounded-lg border border-dashed border-[var(--line,#e6e6e6)] p-6 text-center text-sm text-[var(--t3,#8a8f98)]">
                   {t("pages.run.noServices")}
                 </div>
+              ) : hasGroups ? (
+                groups.map((grp) => (
+                  <div key={grp.key} className="flex flex-col gap-2">
+                    <GroupHeader
+                      label={grp.label}
+                      ids={grp.ids}
+                      states={Object.fromEntries(grp.ids.map((id) => [id, rt.state.services[id]?.state ?? "stopped"]))}
+                      collapsed={!!groupCollapsed[grp.key]}
+                      onToggle={() => toggleGroup(grp.key)}
+                      onStart={() => void startGroup(grp.ids)}
+                      onStop={() => setGroupStopTarget(grp)}
+                    />
+                    {!groupCollapsed[grp.key] &&
+                      grp.ids.map((id) => (
+                        <ServiceCard
+                          key={id}
+                          id={id}
+                          svc={rt.state.services[id]}
+                          spec={ws.state.spec?.services[id]}
+                          selected={sel?.kind === "service" && sel.id === id}
+                          onOpen={() => setSelected({ kind: "service", id })}
+                        />
+                      ))}
+                  </div>
+                ))
               ) : (
                 serviceIds.map((id) => (
                   <ServiceCard
@@ -1723,6 +2032,20 @@ export function RunPage() {
           </div>
         </div>
       ) : null}
+
+      {/* 1.7 §8.1：组级停止确认 */}
+      <ConfirmDialog
+        open={groupStopTarget !== null}
+        title={t("pages.run.groupStopConfirmTitle", { group: groupStopTarget?.label ?? "" })}
+        description={t("pages.run.groupStopConfirmDesc", { count: groupStopTarget?.ids.length ?? 0 })}
+        destructive
+        onConfirm={() => {
+          const ids = groupStopTarget?.ids ?? [];
+          setGroupStopTarget(null);
+          void stopGroup(ids);
+        }}
+        onCancel={() => setGroupStopTarget(null)}
+      />
     </div>
   );
 }

@@ -8,6 +8,7 @@ import { YamlProvider } from "../providers/yaml-provider";
 import { ToastProvider } from "../components/ui/toast";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { migrateLocalRecents } from "../lib/migrate-recents";
+import { CrashNotifier } from "../components/crash-notifier";
 import { AppRoutes } from "./routes";
 
 /** app.load 完成且工作区 bootstrap 结束后，做一次 localStorage 最近工作区迁移。 */
@@ -36,6 +37,7 @@ function Gate() {
     <WorkspaceProvider>
       <RecentsMigrator />
       <RuntimeProvider>
+        <CrashNotifier />
         <LogsProvider>
           <YamlProvider>
             <AppRoutes />

@@ -1,0 +1,23 @@
+version: 1
+name: node-demo
+description: "Node 零依赖服务测试工作区（1.0 场景：启停/日志/健康/脚本，无需 npm install）"
+services:
+  web:
+    kind: node
+    dir: web
+    port: 5173
+    script: dev
+  api:
+    kind: node
+    dir: api
+    port: 9001
+    script: dev
+    health:
+      type: http
+      http: http://127.0.0.1:9001/health
+scripts:
+  hello:
+    cmds:
+      - node -v
+      - echo SCRIPT_OK
+    timeout_secs: 60

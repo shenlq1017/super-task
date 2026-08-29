@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -11,11 +12,12 @@ import { apiWorkspaceImportPackage } from "../ipc/api";
 import { IpcFailure } from "../ipc/protocol";
 import { errorDisplayText } from "@/lib/error-messages";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FolderOpen, PackageOpen, ScanLine, Plus, FolderSearch } from "lucide-react";
+import { Cloud, FolderOpen, PackageOpen, ScanLine, Plus, FolderSearch } from "lucide-react";
 
 export function WelcomePage() {
   const ws = useWorkspace();
   const openWs = useOpenWorkspace();
+  const navigate = useNavigate();
   const { t } = useTranslation();
   const { toast } = useToast();
   const [path, setPath] = useState("");
@@ -122,6 +124,16 @@ export function WelcomePage() {
           <p className="mb-3 text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.welcome.importPkgHint")}</p>
           <Button variant="soft" size="sm" className="gap-1" onClick={importPkg} disabled={busy}>
             <PackageOpen /> {t("pages.welcome.importPkgBtn")}
+          </Button>
+        </Card>
+
+        <Card className="mt-4 border-[rgb(94_106_210_/_0.28)] bg-[rgb(94_106_210_/_0.035)] p-4">
+          <div className="mb-1 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">
+            <Cloud className="size-4 text-[var(--st-accent,#5e6ad2)]" /> {t("pages.welcome.cloudRestore")}
+          </div>
+          <p className="mb-3 text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.welcome.cloudRestoreHint")}</p>
+          <Button variant="default" size="sm" className="gap-1" onClick={() => navigate("/cloud")} disabled={busy}>
+            <Cloud className="size-3.5" /> {t("pages.welcome.cloudRestoreBtn")}
           </Button>
         </Card>
 

@@ -10,12 +10,13 @@ import { useWorkspace } from "../providers/workspace-provider";
 import { useYaml } from "@/providers/yaml-provider";
 import { useOperations } from "../providers/operation-provider";
 import { useToast } from "@/components/ui/toast";
-import { apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade } from "../ipc/api";
-import { IpcFailure, type ManagerAvailability, type ToolProbe, type ToolchainProbeOut } from "../ipc/protocol";
+import { apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade, apiYamlSaveForm } from "../ipc/api";
+import { IpcFailure, type ManagerAvailability, type NetworkSpec, type ToolProbe, type ToolchainProbeOut } from "../ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
+import { errorDisplayText } from "@/lib/error-messages";
 import { cn } from "@/lib/utils";
 
-type ToolKey = "java" | "maven" | "node" | "npm" | "pnpm" | "yarn";
+type ToolKey = "java" | "maven" | "node" | "npm" | "pnpm" | "yarn" | "python" | "go";
 
 /** 客户端镜像后端 manifest 默认版本（§4.3 版本来源第 3 级）。 */
 const DEFAULT_VERSION: Record<ToolKey, string> = {
@@ -25,12 +26,17 @@ const DEFAULT_VERSION: Record<ToolKey, string> = {
   npm: "20",
   pnpm: "9",
   yarn: "1",
+  python: "3.12",
+  go: "1.23",
 };
 
 const CORE_TOOLS: { key: ToolKey; label: string; rec: string }[] = [
   { key: "java", label: "JDK", rec: "21 LTS" },
   { key: "maven", label: "Maven", rec: "3.9" },
   { key: "node", label: "Node.js", rec: "20 LTS" },
+  // 1.7 §5：python / go（探测 + 一键安装，链路复用 mise/winget）
+  { key: "python", label: "Python", rec: "3.12" },
+  { key: "go", label: "Go", rec: "1.23" },
 ];
 
 /** npm/pnpm/yarn 只在当前工作区有 node 服务时出现（§15.1）。 */
@@ -113,6 +119,9 @@ export function EnvPage() {
     if (key === "java") return wsTc.java ?? null;
     if (key === "maven") return wsTc.maven ?? null;
     if (key === "node") return wsTc.node ?? null;
+    // 1.7：python/go 钉扎（major.minor）
+    if (key === "python") return wsTc.python ?? null;
+    if (key === "go") return wsTc.go ?? null;
     if (key === "npm" || key === "pnpm" || key === "yarn") {
       return wsTc.package_manager === key ? key : null;
     }
@@ -214,8 +223,126 @@ export function EnvPage() {
             {t("pages.env.pinHint")}
           </p>
         )}
+
+        {/* 1.7 §7：网络（代理 + 镜像）——写入 workspace network 段，启动时注入 env */}
+        <NetworkCard />
       </div>
     </div>
+  );
+}
+
+/** 1.7 §7：网络卡（此前网络配置只有 spec 无 UI）。保存走 yaml.saveForm（带 base_hash）。 */
+function NetworkCard() {
+  const ws = useWorkspace();
+  const yaml = useYaml();
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const spec = ws.state.spec;
+  const net = spec?.network ?? null;
+  const [draft, setDraft] = useState<NetworkSpec>(() => net ?? {});
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setDraft(net ?? {});
+  }, [ws.state.workspaceId, yaml.state.hash]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const set = (patch: NetworkSpec) => setDraft((prev) => ({ ...prev, ...patch }));
+
+  const save = async () => {
+    if (!spec || !ws.state.workspaceId) return;
+    setBusy(true);
+    try {
+      await apiYamlSaveForm({ ...spec, network: draft }, yaml.state.hash);
+      await yaml.actions.reload();
+      toast(t("pages.env.networkSaved"), "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? errorDisplayText(e.code, e.message) : String(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hasWs = ws.state.workspaceId != null;
+  const proxy = draft.proxy ?? {};
+  const inputCls = "mt-1 w-full rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-2 py-1 font-mono text-[0.75rem] text-[var(--t1,#222326)] focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]";
+  return (
+    <Card className="mt-3 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <h3 className="text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.env.networkTitle")}</h3>
+        <Button variant="success" size="sm" className="ml-auto gap-1" onClick={() => void save()} disabled={busy || !hasWs}>
+          {t("common.save")}
+        </Button>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+          {t("pages.env.proxyMode")}
+          <select
+            className={cn(inputCls, "cursor-pointer")}
+            value={proxy.mode ?? "off"}
+            onChange={(e) => set({ proxy: { ...proxy, mode: e.target.value as "off" | "system" | "custom" } })}
+          >
+            <option value="off">off</option>
+            <option value="system">system</option>
+            <option value="custom">custom</option>
+          </select>
+        </label>
+        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+          HTTP
+          <input
+            className={inputCls}
+            value={proxy.http ?? ""}
+            placeholder="http://127.0.0.1:7890"
+            onChange={(e) => set({ proxy: { ...proxy, http: e.target.value || null } })}
+          />
+        </label>
+        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+          HTTPS
+          <input
+            className={inputCls}
+            value={proxy.https ?? ""}
+            placeholder="http://127.0.0.1:7890"
+            onChange={(e) => set({ proxy: { ...proxy, https: e.target.value || null } })}
+          />
+        </label>
+        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+          {t("pages.env.mavenMirror")}
+          <input
+            className={inputCls}
+            value={draft.maven?.mirror ?? ""}
+            placeholder="https://maven.aliyun.com/repository/public"
+            onChange={(e) => set({ maven: { mirror: e.target.value || null } })}
+          />
+        </label>
+        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+          {t("pages.env.npmRegistry")}
+          <input
+            className={inputCls}
+            value={draft.npm?.registry ?? ""}
+            placeholder="https://registry.npmjs.org"
+            onChange={(e) => set({ npm: { registry: e.target.value || null } })}
+          />
+        </label>
+        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+          PIP_INDEX_URL
+          <input
+            className={inputCls}
+            value={draft.python?.index_url ?? ""}
+            placeholder="https://pypi.tuna.tsinghua.edu.cn/simple"
+            onChange={(e) => set({ python: { index_url: e.target.value || null } })}
+          />
+        </label>
+        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+          GOPROXY
+          <input
+            className={inputCls}
+            value={draft.go?.goproxy ?? ""}
+            placeholder="https://goproxy.cn"
+            onChange={(e) => set({ go: { goproxy: e.target.value || null } })}
+          />
+        </label>
+      </div>
+      <p className="mt-2 text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.env.networkHint")}</p>
+    </Card>
   );
 }
 

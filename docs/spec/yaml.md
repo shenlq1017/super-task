@@ -49,7 +49,7 @@
 | `services` | 必填 | map | 至少一个服务 |
 | `scripts` | 1.0 | map | 可空 |
 | `toolchain` | 1.2 | object | typed：`manager`/`java`/`maven`/`node`/`package_manager`，见 1.2 规格 §4 |
-| `network` | 1.2 | object | typed：`proxy`（off/system/custom）/`maven.mirror`/`npm.registry`，见 1.2 规格 §7 |
+| `network` | 1.2 | object | typed：`proxy`（off/system/custom）/`maven.mirror`/`npm.registry`/`python.index_url`（1.7）/`go.goproxy`（1.7），见 1.2 规格 §7 |
 | `log_retention` | 1.2 | object | **顶层**保留策略，不要嵌进 `logging` |
 | `templates` | reserved | object | 1.1 来源模板元数据 |
 | `git` | reserved | object | 1.1 |
@@ -73,7 +73,7 @@
 | `kind` | 必填 | string | | 见 §4.2 |
 | `service` | 1.3 | string | | `kind: compose` 专用：compose 文件内的服务名；其余 kind 经 extra round-trip |
 | `enabled` | 1.0 | bool | true | false 则启动全部时跳过 |
-| `group` | reserved | string | | 1.2 UI 分组 |
+| `group` | 1.7 | string | | 运行页分组（原 reserved）；运行页按 YAML 首现序聚类，未分组排最后 |
 | `labels` | reserved | map | {} | 任意标注 |
 | `port` | 1.0 | uint16 | | 主端口；1–65535。无端口的服务可省略（健康只能 `none`） |
 | `ports` | reserved | uint16[] | | 附加端口，1.2 |
@@ -95,7 +95,9 @@
 **环境合并（启动时）：** 进程从当前用户环境起步 → 叠工作区 `env` → 叠服务 `env`。然后：
 
 - `kind: spring-boot` 且最终没有 `SERVER_PORT` 且有 `port` → 注入 `SERVER_PORT={port}`  
-- `kind: node` 且没有 `PORT` 且有 `port` → 注入 `PORT={port}`  
+- `kind: node` / `python` / `go` 且没有 `PORT` 且有 `port` → 注入 `PORT={port}`（1.7 起 python/go 加入；`generic` 无生态约定不注入）  
+
+再叠加**网络注入（1.7，优先级最低，显式 env 永远赢）**：`npm_config_registry` / `PIP_INDEX_URL` / `GOPROXY` / `MAVEN_ARGS`（maven mirror 生成 `.supertask/maven-settings.xml`）与代理键；详见 1.7 规格 §7。
 
 表单改端口：同时改 `port` 与上述对应键（若存在）。
 
@@ -106,9 +108,9 @@
 | `spring-boot` | 1.0 | 可启动 |
 | `node` | 1.0 | 可启动 |
 | `compose` | 1.3 | 可启动（1.3）：`docker compose up -d --no-deps <service>`；`service` 必填、注入类字段（`env`/`env_file`/`extra_args`/`build_args`/`jvm_args`/`cwd`/`restart`/`module`/`dir`/`package_manager`/`launch`）非法即 `SPEC_INVALID`；grace 默认 60s、health 默认 `tcp(port)`；详见 1.3 规格 §5 |
-| `python` | 2.2 | 同上 |
-| `go` | 2.2 | 同上 |
-| `generic` | 1.x | argv 通用进程，1.0 不可启动 |
+| `python` | 1.7 | 可启动（2026-08-29 自 2.2 提前）：见 §4.6 |
+| `go` | 1.7 | 可启动（同上提前）：见 §4.6 |
+| `generic` | 1.7 | 可启动（argv 通用进程）：见 §4.6。UI 不提供拼 cmdline 入口 |
 | 其它字符串 | — | 当未知 kind，不可启动，写回原字符串 |
 
 ### 4.3 `kind: spring-boot`
@@ -144,6 +146,29 @@
 命令：`<pm>.cmd run <script>`；若有 `extra_args` 则 `--` 再追加。
 
 默认 `grace_secs`: **15**。默认 `health.type`: **tcp**（连 `127.0.0.1:port`）。
+
+### 4.6 `kind: python` / `go` / `generic`（1.7）
+
+字段合法性矩阵（非法组合 `SPEC_INVALID`；未知 kind 仍 `KIND_UNSUPPORTED`）：
+
+| 字段 | spring-boot | node | compose | python | go | generic |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| `module` | 必填 | ✗ | ✗ | 与 entry 恰一（`python -m`） | ✗ | ✗ |
+| `dir` | ✗ | 必填 | ✗ | 必填 | 可选（缺省 `.`） | 可选（缺省 `.`） |
+| `entry` | ✗ | ✗ | ✗ | 必填（与 module 恰一），相对 dir | ✗ | ✗ |
+| `package` | ✗ | ✗ | ✗ | ✗ | 可选（缺省 `.`；裸路径归一为 `./x`），相对 dir | ✗ |
+| `program` + `args` | ✗ | ✗ | ✗ | ✗ | ✗ | program 必填、args 可选 |
+| `extra_args` | ✓ | ✓ | ✗ | ✓ | ✓（传给被运行程序） | ✓ |
+| `launch`/`build_tool`/`jvm_args`/`package_manager`/`script`/`service` | 按上文 | | ✗ | ✗ | ✗ | ✗ |
+
+**python 启动**：`python <entry>` 或 `python -m <module>` + extra_args；工作目录 `dir`。
+解释器解析顺序：`dir/.venv` → `dir/venv` → root `.venv`/`venv` → PATH（`.venv` 与 `venv` 并存取 `.venv`）。Windows venv 用 `Scripts/python.exe`，Unix 用 `bin/python`。`entry` 文件不存在 → `ENTRY_NOT_FOUND`（启动硬错误）。
+
+**go 启动**：`go run <package>` + extra_args；工作目录 `dir`。`package` 目录不存在 → `PACKAGE_NOT_FOUND`。go build flags 不支持（需要时用 scripts）。`go build` 产物运行模式后排。
+
+**generic 启动**：`<program> [args…]` + extra_args；工作目录 `dir`。`program` 含路径分隔符 = 工作区内相对路径（相对 `dir`，禁止 `..`/绝对路径），规划期解析为绝对路径并检查存在；纯名字走 PATH（PATHEXT），未命中 `MISSING_TOOL`。**UI 不提供拼 cmdline 入口**（已拍板 14）。
+
+默认 `grace_secs`：python **15**、go **60**（冷编译宽限）、generic **15**。默认 `health.type`：**tcp**（有 `port` 时；无 port 允许 `none`）。
 
 ### 4.5 `health`
 

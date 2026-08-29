@@ -1,0 +1,32 @@
+version: 1
+name: gateway-demo
+description: "1.6 网关测试工作区：nginx / caddy / apache 三引擎反代两个 Node 服务（零依赖，离线可跑）"
+services:
+  web:
+    kind: node
+    dir: web
+    port: 5173
+    script: dev
+    env:
+      SVC_NAME: gw-web
+  api:
+    kind: node
+    dir: api
+    port: 9001
+    script: dev
+    env:
+      SVC_NAME: gw-api
+    health:
+      type: http
+      http: http://127.0.0.1:9001/health
+gateway:
+  kind: nginx
+  port: 8080
+  routes:
+    - path: /api
+      target: api
+    - host: api.localhost
+      path: /
+      target: api
+    - path: /
+      target: web

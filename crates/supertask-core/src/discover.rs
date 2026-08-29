@@ -49,8 +49,12 @@ pub fn classify_process(name: &str) -> &'static str {
 
 /// 枚举系统中「正在监听端口」的进程（含白名单外的 other）。
 pub fn discover_services() -> Result<Vec<ForeignService>> {
-    let listeners = listen_ports_by_pid()
-        .map_err(|e| Error::new(ErrorCode::Discover, format!("读取系统 LISTEN 端口表失败:{e}")))?;
+    let listeners = listen_ports_by_pid().map_err(|e| {
+        Error::new(
+            ErrorCode::Discover,
+            format!("读取系统 LISTEN 端口表失败:{e}"),
+        )
+    })?;
     if listeners.is_empty() {
         return Ok(Vec::new());
     }
@@ -99,8 +103,12 @@ pub struct ListenEndpoint {
 
 /// pid → LISTEN 端点列表（IPv4 + IPv6）。读取失败显式 Err。
 pub fn listen_endpoints_by_pid() -> Result<HashMap<u32, Vec<ListenEndpoint>>> {
-    imp::listen_endpoints_by_pid()
-        .map_err(|e| Error::new(ErrorCode::Discover, format!("读取系统 LISTEN 端口表失败:{e}")))
+    imp::listen_endpoints_by_pid().map_err(|e| {
+        Error::new(
+            ErrorCode::Discover,
+            format!("读取系统 LISTEN 端口表失败:{e}"),
+        )
+    })
 }
 
 /// port → pid（仅 LISTEN）。
@@ -130,7 +138,10 @@ pub fn kill_tree(pid: u32) -> Result<()> {
         ));
     }
     if pid == std::process::id() {
-        return Err(Error::new(ErrorCode::JobKill, "不能终止 SuperTask 自身进程"));
+        return Err(Error::new(
+            ErrorCode::JobKill,
+            "不能终止 SuperTask 自身进程",
+        ));
     }
     let listening = listen_ports_by_pid()?
         .get(&pid)
@@ -174,8 +185,11 @@ pub fn taskkill_tree(pid: u32) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             // kill(pid, 0) 仅探活；ESRCH = 已退出
-            if nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), nix::sys::signal::Signal::SIGCONT)
-                .is_err()
+            if nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(raw),
+                nix::sys::signal::Signal::SIGCONT,
+            )
+            .is_err()
             {
                 return Ok(());
             }
@@ -193,9 +207,7 @@ mod imp {
     use std::sync::{Mutex, OnceLock};
     use std::time::Instant;
 
-    use netstat2::{
-        get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo,
-    };
+    use netstat2::{get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo};
 
     use super::ListenEndpoint;
     use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
@@ -253,7 +265,9 @@ mod imp {
         let now = Instant::now();
 
         let mut cache = cpu_cache().lock().ok()?;
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         match cache.insert(pid, (total, now)) {
             None => None,
             Some((prev_total, prev_at)) => {
@@ -309,8 +323,14 @@ mod imp {
                 for &pid in &si.associated_pids {
                     if pid != 0 {
                         let v = out.entry(pid).or_default();
-                        if !v.contains(&ListenEndpoint { ip, port: tcp.local_port }) {
-                            v.push(ListenEndpoint { ip, port: tcp.local_port });
+                        if !v.contains(&ListenEndpoint {
+                            ip,
+                            port: tcp.local_port,
+                        }) {
+                            v.push(ListenEndpoint {
+                                ip,
+                                port: tcp.local_port,
+                            });
                         }
                     }
                 }
@@ -577,8 +597,9 @@ mod imp {
                     None
                 } else {
                     let tps = procfs::ticks_per_second().max(1) as f64;
-                    let cores =
-                        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+                    let cores = std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(1);
                     let used = (total.saturating_sub(prev_total) as f64) / tps;
                     let pct = used / wall / cores as f64 * 100.0;
                     Some((pct as f32).clamp(0.0, cores as f32 * 100.0))
@@ -644,7 +665,10 @@ mod imp {
         };
         let mut it = line.split_whitespace();
         let cpu = it.next().and_then(|v| v.parse::<f32>().ok());
-        let mem = it.next().and_then(|v| v.parse::<u64>().ok()).map(|kb| kb * 1024);
+        let mem = it
+            .next()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|kb| kb * 1024);
         (cpu, mem)
     }
 }
@@ -653,17 +677,15 @@ use imp::process_names;
 
 /// pid → LISTEN 本地端口列表（IPv4 + IPv6 合并，升序）。端点实现的折叠视图。
 pub fn listen_ports_by_pid() -> Result<HashMap<u32, Vec<u16>>> {
-    Ok(
-        listen_endpoints_by_pid()?
-            .into_iter()
-            .map(|(pid, eps)| {
-                let mut ports: Vec<u16> = eps.into_iter().map(|e| e.port).collect();
-                ports.sort_unstable();
-                ports.dedup();
-                (pid, ports)
-            })
-            .collect(),
-    )
+    Ok(listen_endpoints_by_pid()?
+        .into_iter()
+        .map(|(pid, eps)| {
+            let mut ports: Vec<u16> = eps.into_iter().map(|e| e.port).collect();
+            ports.sort_unstable();
+            ports.dedup();
+            (pid, ports)
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -730,8 +752,16 @@ mod tests {
         let svcs = discover_services().expect("本机 LISTEN 端口表读取不应失败");
         let with_cpu = svcs.iter().filter(|s| s.cpu_percent.is_some()).count();
         let with_mem = svcs.iter().filter(|s| s.memory_bytes.is_some()).count();
-        assert!(with_cpu >= 1, "第二次采样没有任何进程拿到 CPU%（共 {} 个）", svcs.len());
-        assert!(with_mem >= 1, "没有任何进程拿到内存读数（共 {} 个）", svcs.len());
+        assert!(
+            with_cpu >= 1,
+            "第二次采样没有任何进程拿到 CPU%（共 {} 个）",
+            svcs.len()
+        );
+        assert!(
+            with_mem >= 1,
+            "没有任何进程拿到内存读数（共 {} 个）",
+            svcs.len()
+        );
     }
 
     #[test]
@@ -739,7 +769,10 @@ mod tests {
         // 回归：本地 IPv4 监听端口要能反查到 pid（曾因表解析错误全部失配）
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert!(port_to_pid(port).is_some(), "IPv4 监听端口 {port} 必须能反查到 pid");
+        assert!(
+            port_to_pid(port).is_some(),
+            "IPv4 监听端口 {port} 必须能反查到 pid"
+        );
     }
 
     #[test]
@@ -747,7 +780,10 @@ mod tests {
         // 回归：Node 默认监听 [::]，IPv6 监听必须能被发现
         let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert!(port_to_pid(port).is_some(), "IPv6 监听端口 {port} 必须能反查到 pid");
+        assert!(
+            port_to_pid(port).is_some(),
+            "IPv6 监听端口 {port} 必须能反查到 pid"
+        );
     }
 
     #[test]

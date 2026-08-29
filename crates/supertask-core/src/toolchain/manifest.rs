@@ -10,6 +10,9 @@ pub const DEFAULT_MAVEN: &str = "3.9";
 pub const DEFAULT_NODE: &str = "20";
 pub const DEFAULT_PNPM: &str = "9";
 pub const DEFAULT_YARN: &str = "1";
+/// 1.7 §5：python/go 缺省钉扎口径 major.minor。
+pub const DEFAULT_PYTHON: &str = "3.12";
+pub const DEFAULT_GO: &str = "1.23";
 
 pub fn default_version(tool: ToolKind) -> &'static str {
     match tool {
@@ -19,6 +22,8 @@ pub fn default_version(tool: ToolKind) -> &'static str {
         ToolKind::Node | ToolKind::Npm => DEFAULT_NODE,
         ToolKind::Pnpm => DEFAULT_PNPM,
         ToolKind::Yarn => DEFAULT_YARN,
+        ToolKind::Python => DEFAULT_PYTHON,
+        ToolKind::Go => DEFAULT_GO,
     }
 }
 
@@ -29,6 +34,8 @@ pub fn mise_tool_name(tool: ToolKind) -> &'static str {
         ToolKind::Node | ToolKind::Npm => "node",
         ToolKind::Pnpm => "pnpm",
         ToolKind::Yarn => "yarn",
+        ToolKind::Python => "python",
+        ToolKind::Go => "go",
     }
 }
 
@@ -51,6 +58,14 @@ const WINGET_PACKAGES: &[(ToolKind, &str, &str)] = &[
     (ToolKind::Pnpm, "lts", "pnpm.pnpm"),
     (ToolKind::Yarn, "1", "Yarn.Yarn"),
     (ToolKind::Yarn, "lts", "Yarn.Yarn"),
+    // 1.7 §5：python / go
+    (ToolKind::Python, "3.13", "Python.Python.3.13"),
+    (ToolKind::Python, "3.12", "Python.Python.3.12"),
+    (ToolKind::Python, "3.11", "Python.Python.3.11"),
+    (ToolKind::Python, "lts", "Python.Python.3.12"),
+    (ToolKind::Go, "1.23", "GoLang.Go"),
+    (ToolKind::Go, "1.22", "GoLang.Go"),
+    (ToolKind::Go, "lts", "GoLang.Go"),
 ];
 
 pub fn winget_id(tool: ToolKind, logical_version: &str) -> Result<&'static str> {
@@ -73,7 +88,11 @@ pub fn winget_id(tool: ToolKind, logical_version: &str) -> Result<&'static str> 
     }
     Err(Error::new(
         ErrorCode::ToolchainVersionInvalid,
-        format!("winget 清单不含 {} {}（manifest v{WINGET_MANIFEST_VERSION}）", tool.as_str(), logical_version),
+        format!(
+            "winget 清单不含 {} {}（manifest v{WINGET_MANIFEST_VERSION}）",
+            tool.as_str(),
+            logical_version
+        ),
     ))
 }
 
@@ -82,8 +101,36 @@ mod tests {
     use super::*;
     #[test]
     fn ids_are_fixed_not_user_input() {
-        assert_eq!(winget_id(ToolKind::Java, "21").unwrap(), "EclipseAdoptium.Temurin.21.JDK");
+        assert_eq!(
+            winget_id(ToolKind::Java, "21").unwrap(),
+            "EclipseAdoptium.Temurin.21.JDK"
+        );
         assert_eq!(winget_id(ToolKind::Maven, "3.9").unwrap(), "Apache.Maven");
-        assert_eq!(winget_id(ToolKind::Java, "99").unwrap_err().code(), ErrorCode::ToolchainVersionInvalid);
+        assert_eq!(
+            winget_id(ToolKind::Java, "99").unwrap_err().code(),
+            ErrorCode::ToolchainVersionInvalid
+        );
+    }
+
+    #[test]
+    fn v17_python_go_mappings() {
+        assert_eq!(mise_tool_name(ToolKind::Python), "python");
+        assert_eq!(mise_tool_name(ToolKind::Go), "go");
+        // major.minor 完整命中与前缀回退（3.12.4 → 3.12）
+        assert_eq!(
+            winget_id(ToolKind::Python, "3.12").unwrap(),
+            "Python.Python.3.12"
+        );
+        assert_eq!(
+            winget_id(ToolKind::Python, "3.12.4").unwrap(),
+            "Python.Python.3.12"
+        );
+        assert_eq!(winget_id(ToolKind::Go, "1.23.1").unwrap(), "GoLang.Go");
+        assert_eq!(
+            winget_id(ToolKind::Go, "2.0").unwrap_err().code(),
+            ErrorCode::ToolchainVersionInvalid
+        );
+        assert_eq!(default_version(ToolKind::Python), "3.12");
+        assert_eq!(default_version(ToolKind::Go), "1.23");
     }
 }

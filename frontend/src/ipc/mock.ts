@@ -26,8 +26,12 @@ import type {
   GatewayConf,
   GatewayStatusOut,
   ToolProbe,
+  CloudStatusOut,
+  CloudSyncOut,
+  CloudMigratePlanOut,
+  CloudMigrateApplyOut,
 } from "./protocol";
-import { PROTOCOL } from "./protocol";
+import { PROTOCOL, cmd } from "./protocol";
 
 // ---------------------------------------------------------------------------
 // In-memory demo workspace so the UI is fully interactive in a plain browser
@@ -259,6 +263,14 @@ type ServiceRT = {
   log_seq: number;
 };
 
+const mockCloud = {
+  loggedIn: false,
+  email: null as string | null,
+  lastSyncedMs: null as number | null,
+  conflicts: ["w1"] as string[],
+  telemetryEnabled: false,
+  endpoint: "https://cloud.supertask.local.example",
+};
 const state = {
   opened: false,
   spec: demoSpec(),
@@ -862,7 +874,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         { id: "git", path: "/git", status: "live", since: "1.1" },
         { id: "docker", path: "/docker", status: "live", since: "1.3" },
         { id: "gateway", path: "/gateway", status: "live", since: "1.6" },
-        { id: "cloud", path: "/cloud", status: "soon", since: "2.0" },
+        { id: "cloud", path: "/cloud", status: "live", since: "2.0" },
         { id: "ai", path: "/ai", status: "soon", since: "2.1" },
         { id: "settings", path: "/settings", status: "live", since: "1.0" },
       ],
@@ -2010,6 +2022,82 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
 
   if (command === "app.update.install") {
     throw { protocol: PROTOCOL, code: "UPDATE_FAILED", message: "没有可安装的更新（mock）", retryable: false };
+  }
+
+  // ---- 2.0 云（mock provider：确定性演示；含登录/同步/冲突旋钮） ----
+  if (command === cmd.CLOUD_STATUS) {
+    const endpoint = typeof window !== "undefined"
+      ? window.localStorage.getItem("st:cloudEndpoint") ?? mockCloud.endpoint
+      : mockCloud.endpoint;
+    const out: CloudStatusOut = {
+      logged_in: mockCloud.loggedIn,
+      email: mockCloud.loggedIn ? mockCloud.email : null,
+      device: "mockdevice0000000",
+      endpoint,
+      last_synced_ms: mockCloud.lastSyncedMs,
+      conflicts: mockCloud.conflicts.length,
+      conflict_ids: [...mockCloud.conflicts],
+      quota: mockCloud.loggedIn
+        ? { entities: 3, entities_max: 100, bytes: 4096, bytes_max: 10000000 }
+        : null,
+      telemetry_enabled: mockCloud.telemetryEnabled,
+    };
+    return out;
+  }
+  if (command === cmd.CLOUD_LOGIN) {
+    const email = String(args?.email ?? "").trim();
+    if (!email || !String(args?.password ?? "")) {
+      throw { protocol: PROTOCOL, code: "CLOUD_AUTH_FAILED", message: "邮箱或密码不能为空", retryable: false };
+    }
+    mockCloud.loggedIn = true;
+    mockCloud.email = email;
+    return { account_id: "acc-demo", email, expires_in_secs: 900 };
+  }
+  if (command === cmd.CLOUD_LOGOUT) {
+    mockCloud.loggedIn = false;
+    mockCloud.email = null;
+    return { ok: true };
+  }
+  if (command === cmd.CLOUD_SYNC) {
+    if (!mockCloud.loggedIn) throw { protocol: PROTOCOL, code: "CLOUD_NOT_LOGGED_IN", message: "未登录", retryable: false };
+    mockCloud.lastSyncedMs = Date.now();
+    return { pushed: 1, pulled: 0, pending: [], skipped: [], conflicts: [...mockCloud.conflicts] } satisfies CloudSyncOut;
+  }
+  if (command === cmd.CLOUD_RESOLVE) {
+    if (!mockCloud.loggedIn) throw { protocol: PROTOCOL, code: "CLOUD_NOT_LOGGED_IN", message: "未登录", retryable: false };
+    const entityId = String(args?.entity_id ?? args?.entityId ?? "");
+    mockCloud.conflicts = mockCloud.conflicts.filter((id) => id !== entityId);
+    return { pushed: 0, pulled: 1, pending: [], skipped: [], conflicts: [] } satisfies CloudSyncOut;
+  }
+  if (command === cmd.CLOUD_MIGRATE_PLAN) {
+    if (!mockCloud.loggedIn) throw { protocol: PROTOCOL, code: "CLOUD_NOT_LOGGED_IN", message: "未登录", retryable: false };
+    const out: CloudMigratePlanOut = {
+      entities: [{ id: "workspace-demo", type: "workspace", name: "Demo workspace" }, { id: "app-settings", type: "settings", name: "Settings" }],
+      toolchain_gaps: [{ status: "missing", tool: "python", version: "3.12" }],
+    };
+    return out;
+  }
+  if (command === cmd.CLOUD_MIGRATE_APPLY) {
+    if (!mockCloud.loggedIn) throw { protocol: PROTOCOL, code: "CLOUD_NOT_LOGGED_IN", message: "未登录", retryable: false };
+    mockCloud.lastSyncedMs = Date.now();
+    const workspaces = Array.isArray(args?.workspaces) ? args?.workspaces as { entity_id?: string; entityId?: string; dir: string }[] : [];
+    const out: CloudMigrateApplyOut = {
+      pushed: 0, pulled: workspaces.length, pending: [], skipped: [], conflicts: [],
+      applied: workspaces.map((item) => item.entity_id ?? item.entityId ?? "").filter(Boolean), warnings: [],
+    };
+    return out;
+  }
+  if (command === cmd.CLOUD_ENDPOINT_SET) {
+    const endpoint = String(args?.endpoint ?? "").trim().replace(/\/$/, "");
+    if (!/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(endpoint)) {
+      throw { protocol: PROTOCOL, code: "CLOUD_PROTOCOL_ERROR", message: "云端点无效", retryable: false };
+    }
+    if (typeof window !== "undefined") window.localStorage.setItem("st:cloudEndpoint", endpoint);
+    return { endpoint, supported: false, local_only: true };
+  }
+  if (command === cmd.CLOUD_TELEMETRY_SET) {
+    mockCloud.telemetryEnabled = !!args?.enabled;
+    return { enabled: mockCloud.telemetryEnabled };
   }
 
   throw {

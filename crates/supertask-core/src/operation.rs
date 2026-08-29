@@ -171,7 +171,10 @@ impl OperationHub {
             inner: Arc::clone(&self.inner),
             cancel: {
                 let records = self.inner.records.lock().unwrap();
-                records.get(&id).map(|r| r.cancel.clone()).unwrap_or_default()
+                records
+                    .get(&id)
+                    .map(|r| r.cancel.clone())
+                    .unwrap_or_default()
             },
         };
         let inner = Arc::clone(&self.inner);
@@ -180,10 +183,13 @@ impl OperationHub {
             let id = id_for_thread;
             inner.transition(&id, OpState::Running, None, None, None, None);
             // panic 也必须落到终态，否则记录永久卡在 Running（has_active 永真）
-            let outcome =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&ctx))).unwrap_or_else(
-                    |_| Err(Error::new(ErrorCode::Protocol, "operation 内部错误（panic）")),
-                );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&ctx)))
+                .unwrap_or_else(|_| {
+                    Err(Error::new(
+                        ErrorCode::Protocol,
+                        "operation 内部错误（panic）",
+                    ))
+                });
             match outcome {
                 Ok(value) => {
                     inner.transition(&id, OpState::Succeeded, None, None, None, Some(value));
@@ -377,7 +383,9 @@ mod tests {
     #[test]
     fn failure_carries_error_code() {
         let hub = OperationHub::new();
-        let id = hub.spawn("test.fail", |_| Err(Error::new(ErrorCode::IdeNotFound, "未找到 IDE")));
+        let id = hub.spawn("test.fail", |_| {
+            Err(Error::new(ErrorCode::IdeNotFound, "未找到 IDE"))
+        });
         let terminals = wait_terminals(&hub, 1);
         let failed = &terminals[0];
         assert_eq!(failed.operation_id, id);

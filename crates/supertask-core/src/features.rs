@@ -19,19 +19,84 @@ pub struct Feature {
 /// Backend + UI share this list. Soon features still appear in session.hello.
 pub fn features() -> &'static [Feature] {
     &[
-        Feature { id: "run", path: "/run", status: FeatureStatus::Live, since: "1.0" },
-        Feature { id: "logs", path: "/logs", status: FeatureStatus::Live, since: "1.0" },
-        Feature { id: "config", path: "/config", status: FeatureStatus::Live, since: "1.0" },
-        Feature { id: "templates", path: "/templates", status: FeatureStatus::Live, since: "1.1" },
-        Feature { id: "env", path: "/env", status: FeatureStatus::Live, since: "1.0" },
-        Feature { id: "workspaces", path: "/workspaces", status: FeatureStatus::Live, since: "1.1" },
-        Feature { id: "discover", path: "/discover", status: FeatureStatus::Live, since: "1.1" },
-        Feature { id: "git", path: "/git", status: FeatureStatus::Live, since: "1.1" },
-        Feature { id: "docker", path: "/docker", status: FeatureStatus::Live, since: "1.3" },
-        Feature { id: "gateway", path: "/gateway", status: FeatureStatus::Live, since: "1.6" },
-        Feature { id: "cloud", path: "/cloud", status: FeatureStatus::Soon, since: "2.0" },
-        Feature { id: "ai", path: "/ai", status: FeatureStatus::Soon, since: "2.1" },
-        Feature { id: "settings", path: "/settings", status: FeatureStatus::Live, since: "1.0" },
+        Feature {
+            id: "run",
+            path: "/run",
+            status: FeatureStatus::Live,
+            since: "1.0",
+        },
+        Feature {
+            id: "logs",
+            path: "/logs",
+            status: FeatureStatus::Live,
+            since: "1.0",
+        },
+        Feature {
+            id: "config",
+            path: "/config",
+            status: FeatureStatus::Live,
+            since: "1.0",
+        },
+        Feature {
+            id: "templates",
+            path: "/templates",
+            status: FeatureStatus::Live,
+            since: "1.1",
+        },
+        Feature {
+            id: "env",
+            path: "/env",
+            status: FeatureStatus::Live,
+            since: "1.0",
+        },
+        Feature {
+            id: "workspaces",
+            path: "/workspaces",
+            status: FeatureStatus::Live,
+            since: "1.1",
+        },
+        Feature {
+            id: "discover",
+            path: "/discover",
+            status: FeatureStatus::Live,
+            since: "1.1",
+        },
+        Feature {
+            id: "git",
+            path: "/git",
+            status: FeatureStatus::Live,
+            since: "1.1",
+        },
+        Feature {
+            id: "docker",
+            path: "/docker",
+            status: FeatureStatus::Live,
+            since: "1.3",
+        },
+        Feature {
+            id: "gateway",
+            path: "/gateway",
+            status: FeatureStatus::Live,
+            since: "1.6",
+        },
+        Feature {
+            id: "cloud",
+            path: "/cloud",
+            status: FeatureStatus::Live,
+            since: "2.0",
+        },
+        Feature {
+            id: "ai",
+            path: "/ai",
+            status: FeatureStatus::Soon,
+            since: "2.1",
+        },
+        Feature {
+            id: "settings",
+            path: "/settings",
+            status: FeatureStatus::Live,
+            since: "1.0",
+        },
     ]
 }
 
@@ -48,11 +113,7 @@ pub fn require_live(id: &str) -> crate::error::Result<&'static Feature> {
     }
 }
 
-pub const SOON_COMMANDS: &[(&str, &str)] = &[
-    ("cloud.login", "2.0"),
-    ("cloud.sync", "2.0"),
-    ("ai.complete", "2.1"),
-];
+pub const SOON_COMMANDS: &[(&str, &str)] = &[("ai.complete", "2.1")];
 
 pub fn reject_soon_command(cmd: &str) -> Option<crate::Error> {
     SOON_COMMANDS

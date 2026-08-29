@@ -10,7 +10,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::docker::runner::{DockerRunner, DockerSpawn};
-use crate::error::{ErrorCode, Error, Result};
+use crate::error::{Error, ErrorCode, Result};
 use crate::sandbox::confine;
 
 /// ps/config 类命令超时（规格 §4.2）。
@@ -42,7 +42,10 @@ impl ComposeModel {
 pub fn parse_compose_config(stdout: &str) -> Result<ComposeModel> {
     invalid(|| {
         let v = parse_json(stdout)?;
-        let services = v.get("services").and_then(Value::as_object).ok_or("no services")?;
+        let services = v
+            .get("services")
+            .and_then(Value::as_object)
+            .ok_or("no services")?;
         let mut out = Vec::with_capacity(services.len());
         for (name, sv) in services {
             let ports: Vec<u16> = sv
@@ -73,7 +76,12 @@ pub fn parse_compose_config(stdout: &str) -> Result<ComposeModel> {
 }
 
 fn invalid<T>(f: impl FnOnce() -> std::result::Result<T, String>) -> Result<T> {
-    f().map_err(|e| Error::new(ErrorCode::ComposeConfigFailed, format!("compose config 解析失败: {e}")))
+    f().map_err(|e| {
+        Error::new(
+            ErrorCode::ComposeConfigFailed,
+            format!("compose config 解析失败: {e}"),
+        )
+    })
 }
 
 fn parse_json(stdout: &str) -> std::result::Result<Value, String> {
@@ -92,7 +100,11 @@ fn published_port(v: &Value) -> Option<u16> {
 /// 规范化输出中 `depends_on` 是 map（条件对象）或字符串列表；旧版两者都有。
 fn depends_on_keys(v: Option<&Value>) -> Vec<String> {
     match v {
-        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(String::from).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect(),
         Some(Value::Object(o)) => o.keys().cloned().collect(),
         _ => Vec::new(),
     }
@@ -139,10 +151,18 @@ impl ComposeConfigLoader {
         project_name: Option<&str>,
     ) -> Result<ComposeModel> {
         let path = confine(root, compose_file)?;
-        let meta = std::fs::metadata(&path)
-            .map_err(|_| Error::new(ErrorCode::ComposeFileMissing, format!("compose 文件不存在: {compose_file}")))?;
-        let bytes = std::fs::read(&path)
-            .map_err(|_| Error::new(ErrorCode::ComposeFileMissing, format!("compose 文件不可读: {compose_file}")))?;
+        let meta = std::fs::metadata(&path).map_err(|_| {
+            Error::new(
+                ErrorCode::ComposeFileMissing,
+                format!("compose 文件不存在: {compose_file}"),
+            )
+        })?;
+        let bytes = std::fs::read(&path).map_err(|_| {
+            Error::new(
+                ErrorCode::ComposeFileMissing,
+                format!("compose 文件不可读: {compose_file}"),
+            )
+        })?;
         let key = CacheKey {
             root: root.to_path_buf(),
             file: compose_file.to_string(),
@@ -183,19 +203,32 @@ impl ComposeConfigLoader {
             })
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    Error::new(ErrorCode::DockerNotFound, "未找到 docker。请安装 Docker Desktop 并确保在 PATH 中。")
+                    Error::new(
+                        ErrorCode::DockerNotFound,
+                        "未找到 docker。请安装 Docker Desktop 并确保在 PATH 中。",
+                    )
                 } else {
-                    Error::new(ErrorCode::ComposeConfigFailed, format!("docker compose config 执行失败: {e}"))
+                    Error::new(
+                        ErrorCode::ComposeConfigFailed,
+                        format!("docker compose config 执行失败: {e}"),
+                    )
                 }
             })?;
         if out.code != 0 {
             return Err(Error::new(
                 ErrorCode::ComposeConfigFailed,
-                format!("docker compose config 退出码 {}: {}", out.code, tail(&out.stderr)),
+                format!(
+                    "docker compose config 退出码 {}: {}",
+                    out.code,
+                    tail(&out.stderr)
+                ),
             ));
         }
         let model = parse_compose_config(&out.stdout)?;
-        *self.cache.lock().unwrap() = Some(CachedEntry { key, model: model.clone() });
+        *self.cache.lock().unwrap() = Some(CachedEntry {
+            key,
+            model: model.clone(),
+        });
         Ok(model)
     }
 }
@@ -298,7 +331,9 @@ mod tests {
             ErrorCode::ComposeConfigFailed
         );
         assert_eq!(
-            parse_compose_config(r#"{"services": {}}"#).unwrap_err().code(),
+            parse_compose_config(r#"{"services": {}}"#)
+                .unwrap_err()
+                .code(),
             ErrorCode::ComposeConfigFailed
         );
     }
@@ -318,7 +353,10 @@ mod tests {
     #[test]
     fn loader_spawns_once_and_caches_by_mtime_hash() {
         let dir = temp_ws("cache");
-        write_file(&dir.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n");
+        write_file(
+            &dir.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:7\n",
+        );
         let fake = Arc::new(FakeDockerRunner::new());
         fake.push_ok(fixture_config_json());
         let loader = ComposeConfigLoader::new(fake.clone());
@@ -327,12 +365,17 @@ mod tests {
         assert_eq!(m1.services.len(), 3);
 
         // 命中缓存：不 spawn，不消费脚本
-        let m2 = loader.load(&dir, "compose.yaml", None).expect("load 2 (cached)");
+        let m2 = loader
+            .load(&dir, "compose.yaml", None)
+            .expect("load 2 (cached)");
         assert_eq!(m2, m1);
         assert_eq!(fake.calls().len(), 1);
 
         // 文件内容变化 → 重新执行
-        write_file(&dir.join("compose.yaml"), "services:\n  redis:\n    image: redis:8\n");
+        write_file(
+            &dir.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:8\n",
+        );
         fake.push_ok(fixture_config_json());
         loader.load(&dir, "compose.yaml", None).expect("load 3");
         assert_eq!(fake.calls().len(), 2);
@@ -351,11 +394,16 @@ mod tests {
     #[test]
     fn loader_passes_project_name() {
         let dir = temp_ws("proj");
-        write_file(&dir.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n");
+        write_file(
+            &dir.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:7\n",
+        );
         let fake = Arc::new(FakeDockerRunner::new());
         fake.push_ok(fixture_config_json());
         let loader = ComposeConfigLoader::new(fake.clone());
-        loader.load(&dir, "compose.yaml", Some("mall")).expect("load");
+        loader
+            .load(&dir, "compose.yaml", Some("mall"))
+            .expect("load");
         let args = &fake.calls()[0].args;
         let p = args.iter().position(|a| a == "-p").expect("-p flag");
         assert_eq!(&args[p..p + 2], &["-p".to_string(), "mall".to_string()]);
@@ -374,7 +422,10 @@ mod tests {
         assert!(fake.calls().is_empty());
 
         // docker 不存在
-        write_file(&dir.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n");
+        write_file(
+            &dir.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:7\n",
+        );
         fake.push_err(std::io::ErrorKind::NotFound);
         assert_eq!(
             loader.load(&dir, "compose.yaml", None).unwrap_err().code(),
@@ -401,7 +452,10 @@ mod tests {
         let fake = Arc::new(FakeDockerRunner::new());
         let loader = ComposeConfigLoader::new(fake);
         assert_eq!(
-            loader.load(&dir, "../outside.yaml", None).unwrap_err().code(),
+            loader
+                .load(&dir, "../outside.yaml", None)
+                .unwrap_err()
+                .code(),
             ErrorCode::PathEscape
         );
     }

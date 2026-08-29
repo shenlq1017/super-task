@@ -100,7 +100,10 @@ fn apply_produces_yaml_snapshot() {
     let (merged, warnings) = taskfile::apply(
         &current,
         &dir,
-        &[script_id_of(&preview_items(&dir), "deploy-web").unwrap(), "lint-all".to_string()],
+        &[
+            script_id_of(&preview_items(&dir), "deploy-web").unwrap(),
+            "lint-all".to_string(),
+        ],
     )
     .unwrap();
 
@@ -112,7 +115,10 @@ fn apply_produces_yaml_snapshot() {
     // 插值按原文导入；全局 env CI 合并
     let deploy = merged.scripts.get("deploy-web").unwrap();
     assert_eq!(deploy.cmds, vec!["echo {{.TARGET}}"]);
-    assert_eq!(deploy.env.get("TOKEN").map(String::as_str), Some("$DEPLOY_TOKEN"));
+    assert_eq!(
+        deploy.env.get("TOKEN").map(String::as_str),
+        Some("$DEPLOY_TOKEN")
+    );
     assert_eq!(deploy.env.get("CI").map(String::as_str), Some("1"));
     // silent 丢弃
     assert_eq!(
@@ -136,7 +142,9 @@ fn engine_save_form_yaml_conflict_then_success() {
     engine.open(&dir).expect("open workspace");
 
     let current = engine.spec().unwrap();
-    let items = taskfile::preview(&dir, Some(&current.scripts)).unwrap().tasks;
+    let items = taskfile::preview(&dir, Some(&current.scripts))
+        .unwrap()
+        .tasks;
     let selected = vec![script_id_of(&items, "lint-all").unwrap()];
     let (merged, _) = taskfile::apply(&current, &dir, &selected).unwrap();
 

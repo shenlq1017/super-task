@@ -1,0 +1,24 @@
+version: 1
+name: spring-multi
+description: "Maven 多模块 Spring Boot 测试工作区（1.0/1.2/1.4 场景：多模块启停、http/tcp 健康、改端口、脚本、launch jar）"
+services:
+  user-api:
+    kind: spring-boot
+    module: user-api
+    port: 8081
+    health:
+      type: http
+      http: http://127.0.0.1:8081/actuator/health
+  order-api:
+    kind: spring-boot
+    module: order-api
+    port: 8082
+    depends_on:
+      - user-api
+    health:
+      type: tcp
+scripts:
+  build-all:
+    cmds:
+      - mvn -q clean package -DskipTests
+    timeout_secs: 900

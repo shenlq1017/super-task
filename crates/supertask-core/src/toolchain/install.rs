@@ -68,7 +68,8 @@ fn run_flow(
     }
 
     // 安装成功 ≠ 工具可用：立即重新解析（§4.4）。winget 分支内部会刷新进程 PATH。
-    let resolved = resolver::resolve_tool_with(runner, manager, req.tool, req.workspace, req.path_probe)?;
+    let resolved =
+        resolver::resolve_tool_with(runner, manager, req.tool, req.workspace, req.path_probe)?;
     Ok(InstallOutcome {
         tool: req.tool,
         version: req.version.to_string(),
@@ -79,7 +80,12 @@ fn run_flow(
 
 /// 失败保留已有工具与原 YAML（§4.5）：这里只报错，不做任何删除/回滚。
 /// 消息只保留 stderr 尾行摘要，完整输出按本地诊断策略处理，不进事件流。
-fn install_failure(output: &ToolOutput, tool: ToolKind, manager: ProviderKind, upgrade: bool) -> Error {
+fn install_failure(
+    output: &ToolOutput,
+    tool: ToolKind,
+    manager: ProviderKind,
+    upgrade: bool,
+) -> Error {
     let verb = if upgrade { "升级" } else { "安装" };
     let code = provider::classify_output(output);
     let hint = match code {
@@ -96,7 +102,11 @@ fn install_failure(output: &ToolOutput, tool: ToolKind, manager: ProviderKind, u
     let tail: String = tail.chars().take(200).collect();
     Error::new(
         code,
-        format!("{verb} {}（{}）失败: {tail}。{hint}", tool.as_str(), manager.as_str()),
+        format!(
+            "{verb} {}（{}）失败: {tail}。{hint}",
+            tool.as_str(),
+            manager.as_str()
+        ),
     )
 }
 
@@ -179,7 +189,10 @@ mod tests {
         let calls = fake.calls();
         // 安装 argv 固定：`mise install java@21`，无任何拼接 shell
         assert_eq!(calls[2].program, "mise");
-        assert_eq!(calls[2].args, vec!["install".to_string(), "java@21".to_string()]);
+        assert_eq!(
+            calls[2].args,
+            vec!["install".to_string(), "java@21".to_string()]
+        );
     }
 
     #[test]
@@ -194,8 +207,12 @@ mod tests {
         let calls = fake.calls();
         let argv = calls[2].args.clone();
         // 包 ID 来自 manifest，版本与工具名不进 argv；--scope user，无提权参数
-        assert!(argv.windows(2).any(|w| w == ["--id".to_string(), "OpenJS.NodeJS.LTS".to_string()]));
-        assert!(argv.windows(2).any(|w| w == ["--scope".to_string(), "user".to_string()]));
+        assert!(argv
+            .windows(2)
+            .any(|w| w == ["--id".to_string(), "OpenJS.NodeJS.LTS".to_string()]));
+        assert!(argv
+            .windows(2)
+            .any(|w| w == ["--scope".to_string(), "user".to_string()]));
         assert!(argv.iter().all(|a| !a.contains("admin")));
     }
 
@@ -209,7 +226,13 @@ mod tests {
         let ws = PathBuf::from("C:/work/mall");
         let out = install(
             &fake,
-            req(ToolKind::Maven, "3.9", Some(ToolchainManager::Winget), None, &ws),
+            req(
+                ToolKind::Maven,
+                "3.9",
+                Some(ToolchainManager::Winget),
+                None,
+                &ws,
+            ),
         )
         .unwrap();
         assert_eq!(out.manager, ProviderKind::Winget);
@@ -226,7 +249,13 @@ mod tests {
         let ws = PathBuf::from("C:/work/mall");
         let out = install(
             &fake,
-            req(ToolKind::Node, "20", None, Some(ToolchainManager::Winget), &ws),
+            req(
+                ToolKind::Node,
+                "20",
+                None,
+                Some(ToolchainManager::Winget),
+                &ws,
+            ),
         )
         .unwrap();
         assert_eq!(out.manager, ProviderKind::Winget);
@@ -286,6 +315,9 @@ mod tests {
         let out = upgrade(&fake, req(ToolKind::Java, "21", None, None, &ws)).unwrap();
         assert_eq!(out.manager, ProviderKind::Mise);
         let calls = fake.calls();
-        assert_eq!(calls[2].args, vec!["upgrade".to_string(), "java@21".to_string()]);
+        assert_eq!(
+            calls[2].args,
+            vec!["upgrade".to_string(), "java@21".to_string()]
+        );
     }
 }

@@ -1,12 +1,12 @@
 //! Provider auto-select and fixed argv builders.
 
-use std::time::Duration;
-use indexmap::IndexMap;
 use super::manifest;
 use super::runner::SpawnSpec;
 use super::{ProviderKind, ToolKind};
 use crate::error::{Error, ErrorCode, Result};
 use crate::spec::ToolchainManager;
+use indexmap::IndexMap;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct ManagerAvailability {
@@ -28,20 +28,35 @@ pub fn select_manager(
     };
     match pref {
         ToolchainManager::Mise => {
-            if available.mise { Ok(ProviderKind::Mise) } else {
-                Err(Error::new(ErrorCode::ToolchainManagerMissing, "未找到 mise。请安装后重试。"))
+            if available.mise {
+                Ok(ProviderKind::Mise)
+            } else {
+                Err(Error::new(
+                    ErrorCode::ToolchainManagerMissing,
+                    "未找到 mise。请安装后重试。",
+                ))
             }
         }
         ToolchainManager::Winget => {
-            if available.winget { Ok(ProviderKind::Winget) } else {
-                Err(Error::new(ErrorCode::ToolchainManagerMissing, "未找到 winget。请安装后重试。"))
+            if available.winget {
+                Ok(ProviderKind::Winget)
+            } else {
+                Err(Error::new(
+                    ErrorCode::ToolchainManagerMissing,
+                    "未找到 winget。请安装后重试。",
+                ))
             }
         }
         ToolchainManager::Auto => {
-            if available.mise { Ok(ProviderKind::Mise) }
-            else if available.winget { Ok(ProviderKind::Winget) }
-            else {
-                Err(Error::new(ErrorCode::ToolchainManagerMissing, "mise 和 winget 都不可用"))
+            if available.mise {
+                Ok(ProviderKind::Mise)
+            } else if available.winget {
+                Ok(ProviderKind::Winget)
+            } else {
+                Err(Error::new(
+                    ErrorCode::ToolchainManagerMissing,
+                    "mise 和 winget 都不可用",
+                ))
             }
         }
     }
@@ -62,36 +77,72 @@ pub fn version_probe_spec(program: &str) -> SpawnSpec {
 
 pub fn detect_availability(runner: &dyn super::runner::ToolRunner) -> ManagerAvailability {
     let run = |prog: &str| -> bool {
-        runner.run(&version_probe_spec(prog)).map(|o| o.code == 0).unwrap_or(false)
+        runner
+            .run(&version_probe_spec(prog))
+            .map(|o| o.code == 0)
+            .unwrap_or(false)
     };
-    ManagerAvailability { mise: run("mise"), winget: run("winget") }
+    ManagerAvailability {
+        mise: run("mise"),
+        winget: run("winget"),
+    }
 }
 
-pub fn install_spec(provider: ProviderKind, tool: ToolKind, version: &str, env: IndexMap<String, String>) -> Result<SpawnSpec> {
+pub fn install_spec(
+    provider: ProviderKind,
+    tool: ToolKind,
+    version: &str,
+    env: IndexMap<String, String>,
+) -> Result<SpawnSpec> {
     argv(provider, tool, version, false, env)
 }
-pub fn upgrade_spec(provider: ProviderKind, tool: ToolKind, version: &str, env: IndexMap<String, String>) -> Result<SpawnSpec> {
+pub fn upgrade_spec(
+    provider: ProviderKind,
+    tool: ToolKind,
+    version: &str,
+    env: IndexMap<String, String>,
+) -> Result<SpawnSpec> {
     argv(provider, tool, version, true, env)
 }
 
-fn argv(provider: ProviderKind, tool: ToolKind, version: &str, upgrade: bool, env: IndexMap<String, String>) -> Result<SpawnSpec> {
+fn argv(
+    provider: ProviderKind,
+    tool: ToolKind,
+    version: &str,
+    upgrade: bool,
+    env: IndexMap<String, String>,
+) -> Result<SpawnSpec> {
     match provider {
         ProviderKind::Mise => {
             let logical = format!("{}@{}", manifest::mise_tool_name(tool), version);
             let cmd = if upgrade { "upgrade" } else { "install" }.to_string();
-            Ok(SpawnSpec { program: "mise".into(), args: vec![cmd, logical], cwd: None, env, timeout: INSTALL_TIMEOUT })
+            Ok(SpawnSpec {
+                program: "mise".into(),
+                args: vec![cmd, logical],
+                cwd: None,
+                env,
+                timeout: INSTALL_TIMEOUT,
+            })
         }
         ProviderKind::Winget => {
             let id = manifest::winget_id(tool, version)?;
             let cmd = if upgrade { "upgrade" } else { "install" }.to_string();
-            Ok(SpawnSpec { program: "winget".into(), args: vec![
-                cmd,
-                "--id".into(), id.to_string(),
-                "--accept-package-agreements".into(),
-                "--accept-source-agreements".into(),
-                "--disable-interactivity".into(),
-                "--scope".into(), "user".into(),
-            ], cwd: None, env, timeout: INSTALL_TIMEOUT })
+            Ok(SpawnSpec {
+                program: "winget".into(),
+                args: vec![
+                    cmd,
+                    "--id".into(),
+                    id.to_string(),
+                    "--accept-package-agreements".into(),
+                    "--accept-source-agreements".into(),
+                    "--disable-interactivity".into(),
+                    "--scope".into(),
+                    "user".into(),
+                ],
+                cwd: None,
+                env,
+                timeout: INSTALL_TIMEOUT,
+            })
         }
     }
 }
@@ -100,15 +151,20 @@ pub fn which_spec(tool: ToolKind, cwd: Option<std::path::PathBuf>) -> SpawnSpec 
     SpawnSpec {
         program: "mise".into(),
         args: vec!["which".into(), manifest::mise_tool_name(tool).into()],
-        cwd, env: IndexMap::new(), timeout: PROBE_TIMEOUT,
+        cwd,
+        env: IndexMap::new(),
+        timeout: PROBE_TIMEOUT,
     }
 }
 
 pub fn classify_output(output: &super::runner::ToolOutput) -> ErrorCode {
     let text = format!("{}\n{}", output.stderr, output.stdout).to_ascii_lowercase();
-    if text.contains("administrator") || text.contains("elevat")
-        || text.contains("access is denied") || text.contains("permission denied")
-        || text.contains("requires admin") || text.contains("uac")
+    if text.contains("administrator")
+        || text.contains("elevat")
+        || text.contains("access is denied")
+        || text.contains("permission denied")
+        || text.contains("requires admin")
+        || text.contains("uac")
     {
         ErrorCode::ToolchainPermission
     } else {
@@ -128,9 +184,18 @@ mod tests {
 
     #[test]
     fn auto_order_mise_then_winget() {
-        let both = ManagerAvailability { mise: true, winget: true };
-        let only_winget = ManagerAvailability { mise: false, winget: true };
-        let none = ManagerAvailability { mise: false, winget: false };
+        let both = ManagerAvailability {
+            mise: true,
+            winget: true,
+        };
+        let only_winget = ManagerAvailability {
+            mise: false,
+            winget: true,
+        };
+        let none = ManagerAvailability {
+            mise: false,
+            winget: false,
+        };
         // auto：mise 可用优先
         assert_eq!(
             select_manager(None, None, both).unwrap(),
@@ -143,8 +208,12 @@ mod tests {
         );
         // 用户临时选择优先于工作区
         assert_eq!(
-            select_manager(Some(ToolchainManager::Mise), Some(ToolchainManager::Winget), both)
-                .unwrap(),
+            select_manager(
+                Some(ToolchainManager::Mise),
+                Some(ToolchainManager::Winget),
+                both
+            )
+            .unwrap(),
             ProviderKind::Mise
         );
         // mise 缺失 → winget；都缺失 → TOOLCHAIN_MANAGER_MISSING

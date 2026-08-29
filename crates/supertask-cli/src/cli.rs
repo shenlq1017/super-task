@@ -47,9 +47,7 @@ pub enum Cmd {
         ids: Vec<String>,
     },
     /// 停止再启动（缺省全部，按拓扑顺序）
-    Restart {
-        ids: Vec<String>,
-    },
+    Restart { ids: Vec<String> },
     /// 服务快照 + 工作区锁持有者（只读，不取锁）
     Status,
     /// 历史日志尾部/检索（只读 `.supertask/logs`，不取锁）
@@ -87,6 +85,11 @@ pub enum Cmd {
     },
     /// 工具链与 docker 探测摘要（CI 排障）
     Doctor,
+    /// 云（status/sync/logout；与桌面共享会话，登录只在桌面端）
+    Cloud {
+        #[command(subcommand)]
+        cmd: CloudCmd,
+    },
     /// stdio MCP 服务器（Cursor/Claude 等编辑器接入；断开即停止全部服务）
     Mcp,
     /// 版本与协议信息
@@ -99,6 +102,16 @@ pub enum ScriptCmd {
     Run { id: String },
     /// 取消当前脚本
     Cancel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
+pub enum CloudCmd {
+    /// 登录态 / 设备 / 最近同步 / 冲突数 / 配额（只读，不取锁）
+    Status,
+    /// 执行 pull→push 同步（冲突只列出，不覆盖）
+    Sync,
+    /// 清会话（保留本地数据与同步状态）
+    Logout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

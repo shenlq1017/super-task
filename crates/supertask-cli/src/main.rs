@@ -2,6 +2,7 @@
 //! 退出码：0 成功；1 运行错误；2 用法错误（clap）。
 
 mod cli;
+mod cloud_cmd;
 mod mcp;
 mod output;
 mod pkg_cmd;
@@ -27,7 +28,12 @@ fn main() {
 fn run(args: &cli::Cli) -> Result<i32, Error> {
     // 可变命令按需取锁；只读命令 resolve 后直读文件
     match &args.cmd {
-        cli::Cmd::Up { ids, wait, wait_timeout, command } => {
+        cli::Cmd::Up {
+            ids,
+            wait,
+            wait_timeout,
+            command,
+        } => {
             let root = resolve::resolve(args.workspace.as_deref())?;
             up::run_up(&root, ids, *wait, *wait_timeout, command)
         }
@@ -54,13 +60,17 @@ fn run(args: &cli::Cli) -> Result<i32, Error> {
             let root = resolve::resolve(args.workspace.as_deref())?;
             readonly::run_logs(args.json, &root, id.as_deref(), *lines, grep.as_deref())
         }
+        cli::Cmd::Cloud { cmd } => cloud_cmd::run_cloud(args.json, cmd),
         cli::Cmd::Doctor => readonly::run_doctor(args.json),
         cli::Cmd::Mcp => {
             let root = resolve::resolve(args.workspace.as_deref())?;
             mcp::run_mcp(root)
         }
         cli::Cmd::Version => readonly::run_version(args.json),
-        cli::Cmd::Export { output: dest, with_secrets } => {
+        cli::Cmd::Export {
+            output: dest,
+            with_secrets,
+        } => {
             let root = resolve::resolve(args.workspace.as_deref())?;
             pkg_cmd::run_export(args.json, &root, dest.as_deref(), *with_secrets)
         }
@@ -68,7 +78,10 @@ fn run(args: &cli::Cli) -> Result<i32, Error> {
             let dest_dir = match dest {
                 Some(d) => d.clone(),
                 None => std::env::current_dir().map_err(|e| {
-                    Error::new(supertask_core::ErrorCode::NoWorkspace, format!("无法读取 cwd: {e}"))
+                    Error::new(
+                        supertask_core::ErrorCode::NoWorkspace,
+                        format!("无法读取 cwd: {e}"),
+                    )
                 })?,
             };
             pkg_cmd::run_import(args.json, pkg, &dest_dir)

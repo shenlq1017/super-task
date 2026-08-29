@@ -13,7 +13,7 @@ pub struct ToolProbe {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolchainProbe {
     pub java: ToolProbe,
     pub maven: ToolProbe,
@@ -23,6 +23,11 @@ pub struct ToolchainProbe {
     pub npm: ToolProbe,
     pub pnpm: ToolProbe,
     pub yarn: ToolProbe,
+    /// 1.7 §5：python / go 探测（additive，旧前端忽略）。
+    #[serde(default)]
+    pub python: ToolProbe,
+    #[serde(default)]
+    pub go: ToolProbe,
     /// 1.6 §6.2：网关三引擎探测（不代装，缺失给平台指引）。
     #[serde(default)]
     pub gateway: crate::gateway::probe::GatewayProbe,
@@ -36,16 +41,17 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 pub fn probe_toolchain() -> ToolchainProbe {
     // Probe every tool on its own thread so the total time is bounded by the
     // slowest single tool, not the sum of them.
-    let (java, maven, gradle, node, npm, pnpm, yarn, gw) = std::thread::scope(|s| {
+    let (java, maven, gradle, node, npm, pnpm, yarn, python, go, gw) = std::thread::scope(|s| {
         let java = s.spawn(|| probe_one(&["java.exe", "java"], &["-version"]));
         let maven = s.spawn(|| probe_one(&["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"], &["-v"]));
-        let gradle = s.spawn(|| {
-            probe_one(&["gradle.bat", "gradle.exe", "gradle"], &["--version"])
-        });
+        let gradle = s.spawn(|| probe_one(&["gradle.bat", "gradle.exe", "gradle"], &["--version"]));
         let node = s.spawn(|| probe_one(&["node.exe", "node"], &["-v"]));
         let npm = s.spawn(|| probe_one(&["npm.cmd", "npm.exe", "npm"], &["-v"]));
         let pnpm = s.spawn(|| probe_one(&["pnpm.cmd", "pnpm.exe", "pnpm"], &["-v"]));
         let yarn = s.spawn(|| probe_one(&["yarn.cmd", "yarn.exe", "yarn"], &["-v"]));
+        // 1.7 §5：Windows Store 别名 `python` 非 0 退出即 not found（probe_one 现语义覆盖）
+        let python = s.spawn(|| probe_one(&["python.exe", "python", "python3"], &["--version"]));
+        let go = s.spawn(|| probe_one(&["go.exe", "go"], &["version"]));
         let gw = s.spawn(crate::gateway::probe::probe_gateway);
         (
             java.join().unwrap_or_default(),
@@ -55,6 +61,8 @@ pub fn probe_toolchain() -> ToolchainProbe {
             npm.join().unwrap_or_default(),
             pnpm.join().unwrap_or_default(),
             yarn.join().unwrap_or_default(),
+            python.join().unwrap_or_default(),
+            go.join().unwrap_or_default(),
             gw.join().unwrap_or_default(),
         )
     });
@@ -66,12 +74,25 @@ pub fn probe_toolchain() -> ToolchainProbe {
         npm,
         pnpm,
         yarn,
+        python,
+        go,
         gateway: gw,
     }
 }
 
 /// Resolve a planned program name against PATH (Windows PATHEXT-aware).
+/// 1.7：绝对路径（venv 解释器 / generic 相对路径解析产物）直接校验存在性后透传。
 pub fn resolve_program(name: &str) -> Result<PathBuf> {
+    let as_path = Path::new(name);
+    if as_path.is_absolute() {
+        if as_path.is_file() {
+            return Ok(as_path.to_path_buf());
+        }
+        return Err(Error::new(
+            ErrorCode::MissingTool,
+            format!("未找到程序 {name}。请确认路径正确，或在「环境」页安装对应工具链。"),
+        ));
+    }
     if let Some(p) = find_on_path(name) {
         return Ok(p);
     }
@@ -238,7 +259,8 @@ pub(crate) fn version_of(path: &Path, args: &[&str]) -> Option<String> {
 /// - `Apache Maven 3.9.9 (build id…)`       → `3.9.9`
 /// - `v22.4.0` / `10.7.0`                    → `22.4.0` / `10.7.0`
 fn extract_version(line: &str) -> Option<String> {
-    let re = regex::Regex::new(r"(?i)\b(?:jre|jdk)?v?(\d+(?:\.\d+)+(?:[._-][0-9A-Za-z]+)*)").ok()?;
+    let re =
+        regex::Regex::new(r"(?i)\b(?:jre|jdk)?v?(\d+(?:\.\d+)+(?:[._-][0-9A-Za-z]+)*)").ok()?;
     re.captures(line)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
@@ -246,23 +268,38 @@ fn extract_version(line: &str) -> Option<String> {
 
 /// kind 启动前置工具检查。`build_tool`（1.4 §5.1）只对 spring-boot 有意义：
 /// gradle 服务不需要 mvn（wrapper/gradle 的存在性由 `GRADLE_WRAPPER_MISSING` 路径负责）。
-pub fn require_tools_for_kind(kind: &str, pkg: Option<&str>, build_tool: Option<&str>) -> Result<()> {
+/// 1.7：`program` 为规划产物（venv / generic 相对路径已解析为绝对路径时跳过 PATH 探测）。
+pub fn require_tools_for_kind(
+    kind: &str,
+    pkg: Option<&str>,
+    build_tool: Option<&str>,
+    program: &str,
+) -> Result<()> {
     let p = probe_toolchain();
     match kind {
         "spring-boot" => {
             if !p.java.found {
-                return Err(Error::new(ErrorCode::MissingTool, "未找到 java。请安装 JDK 并确保在 PATH 中。"));
+                return Err(Error::new(
+                    ErrorCode::MissingTool,
+                    "未找到 java。请安装 JDK 并确保在 PATH 中。",
+                ));
             }
             if build_tool == Some("gradle") {
                 return Ok(());
             }
             if !p.maven.found {
-                return Err(Error::new(ErrorCode::MissingTool, "未找到 mvn。请安装 Maven 并确保在 PATH 中，或在「环境」页一键安装。"));
+                return Err(Error::new(
+                    ErrorCode::MissingTool,
+                    "未找到 mvn。请安装 Maven 并确保在 PATH 中，或在「环境」页一键安装。",
+                ));
             }
         }
         "node" => {
             if !p.node.found {
-                return Err(Error::new(ErrorCode::MissingTool, "未找到 node。请安装 Node.js 并确保在 PATH 中。"));
+                return Err(Error::new(
+                    ErrorCode::MissingTool,
+                    "未找到 node。请安装 Node.js 并确保在 PATH 中。",
+                ));
             }
             let need = pkg.unwrap_or("npm");
             let ok = match need {
@@ -274,6 +311,27 @@ pub fn require_tools_for_kind(kind: &str, pkg: Option<&str>, build_tool: Option<
                 return Err(Error::new(
                     ErrorCode::MissingTool,
                     format!("未找到 {need}。请安装并确保在 PATH 中。"),
+                ));
+            }
+        }
+        // 1.7 §5：venv 解释器（绝对路径）不受 PATH 缺 python 影响
+        "python" => {
+            let is_abs = program.contains(':') || program.starts_with('/');
+            if is_abs && Path::new(program).is_file() {
+                return Ok(());
+            }
+            if !p.python.found {
+                return Err(Error::new(
+                    ErrorCode::MissingTool,
+                    "未找到 python。请安装 Python 并确保在 PATH 中，或在「环境」页一键安装。",
+                ));
+            }
+        }
+        "go" => {
+            if !p.go.found {
+                return Err(Error::new(
+                    ErrorCode::MissingTool,
+                    "未找到 go。请安装 Go 并确保在 PATH 中，或在「环境」页一键安装。",
                 ));
             }
         }
@@ -340,7 +398,10 @@ mod tests {
         // 横幅噪音行不产生版本；build 日期行也不会盖掉真正的版本
         assert_eq!(extract_version("Picked up _JAVA_OPTIONS: -Xmx512m"), None);
         assert_eq!(
-            version_text_first_match("Picked up _JAVA_OPTIONS: -Xmx512m\nopenjdk version \"21.0.2\" 2024-01-16").as_deref(),
+            version_text_first_match(
+                "Picked up _JAVA_OPTIONS: -Xmx512m\nopenjdk version \"21.0.2\" 2024-01-16"
+            )
+            .as_deref(),
             Some("21.0.2")
         );
         // 无版本样式 → 兜底保留原始首行

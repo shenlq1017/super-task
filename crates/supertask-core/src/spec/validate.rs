@@ -76,6 +76,15 @@ pub fn validate(file: &SuperTaskFile) -> Result<Vec<ParseWarning>> {
             "compose" => {
                 validate_compose_service(id, svc)?;
             }
+            "python" => {
+                validate_python_service(id, svc)?;
+            }
+            "go" => {
+                validate_go_service(id, svc)?;
+            }
+            "generic" => {
+                validate_generic_service(id, svc)?;
+            }
             _ => {
                 warnings.push(ParseWarning {
                     code: ErrorCode::KindUnsupported,
@@ -174,6 +183,8 @@ fn validate_v12(file: &SuperTaskFile) -> Result<()> {
             ("java", tc.java.as_deref()),
             ("maven", tc.maven.as_deref()),
             ("node", tc.node.as_deref()),
+            ("python", tc.python.as_deref()),
+            ("go", tc.go.as_deref()),
         ] {
             if let Some(v) = ver {
                 if !is_valid_toolchain_version(v) {
@@ -216,6 +227,17 @@ fn validate_v12(file: &SuperTaskFile) -> Result<()> {
         }
         if let Some(reg) = &net.npm {
             if let Some(url) = &reg.registry {
+                validate_proxy_url(url)?;
+            }
+        }
+        // 1.7：pip index / GOPROXY 走同一条 URL 校验
+        if let Some(py) = &net.python {
+            if let Some(url) = &py.index_url {
+                validate_proxy_url(url)?;
+            }
+        }
+        if let Some(go) = &net.go {
+            if let Some(url) = &go.goproxy {
                 validate_proxy_url(url)?;
             }
         }
@@ -284,7 +306,9 @@ fn validate_v13(file: &SuperTaskFile) -> Result<()> {
             if !is_valid_compose_name(p) {
                 return Err(Error::new(
                     ErrorCode::SpecInvalid,
-                    format!("docker.project_name 非法: {p:?}（只允许字母数字开头，含 . _ -，≤64 字符）"),
+                    format!(
+                        "docker.project_name 非法: {p:?}（只允许字母数字开头，含 . _ -，≤64 字符）"
+                    ),
                 ));
             }
         }
@@ -309,9 +333,9 @@ fn validate_v13(file: &SuperTaskFile) -> Result<()> {
             for t in &b.tags {
                 if t.starts_with("--")
                     || t.is_empty()
-                    || !t
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '/' | '-' | '_'))
+                    || !t.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '/' | '-' | '_')
+                    })
                 {
                     return Err(Error::new(
                         ErrorCode::SpecInvalid,
@@ -326,10 +350,7 @@ fn validate_v13(file: &SuperTaskFile) -> Result<()> {
 
 /// `kind: compose` 服务静态校验（§5.1）。存在性检查（compose 文件里有没有
 /// 这个 service）在 phase 3 启动前置检查做，这里只管 YAML 自身。
-fn validate_compose_service(
-    id: &str,
-    svc: &super::file::ServiceSpec,
-) -> Result<()> {
+fn validate_compose_service(id: &str, svc: &super::file::ServiceSpec) -> Result<()> {
     let Some(service) = svc.service.as_deref() else {
         return Err(Error::new(
             ErrorCode::SpecInvalid,
@@ -355,6 +376,11 @@ fn validate_compose_service(
         svc.dir.is_some().then_some("dir"),
         svc.package_manager.is_some().then_some("package_manager"),
         svc.launch.is_some().then_some("launch"),
+        // 1.7 新 kind 字段对 compose 同样非法
+        svc.entry.is_some().then_some("entry"),
+        svc.package.is_some().then_some("package"),
+        svc.program.is_some().then_some("program"),
+        (!svc.args.is_empty()).then_some("args"),
     ]
     .iter()
     .filter_map(|x| *x)
@@ -380,6 +406,138 @@ pub fn is_valid_compose_name(s: &str) -> bool {
     b[1..]
         .iter()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+// ---------------------------------------------------------------------------
+// 1.7 §4.3：python / go / generic 字段合法性矩阵
+// ---------------------------------------------------------------------------
+
+fn validate_python_service(id: &str, svc: &super::file::ServiceSpec) -> Result<()> {
+    if svc.dir.as_deref().unwrap_or("").is_empty() {
+        return Err(Error::new(
+            ErrorCode::SpecInvalid,
+            format!("{id}: python 需要 dir"),
+        ));
+    }
+    let has_entry = svc.entry.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+    let has_module = svc
+        .module
+        .as_deref()
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if has_entry == has_module {
+        return Err(Error::new(
+            ErrorCode::SpecInvalid,
+            format!("{id}: python 需要 entry 与 module 二选一"),
+        ));
+    }
+    // module 复用 spring 字段语义（python -m <module>）；其余外来字段拒绝
+    let violations: Vec<&str> = [
+        svc.service.is_some().then_some("service"),
+        svc.package_manager.is_some().then_some("package_manager"),
+        svc.script.is_some().then_some("script"),
+        svc.build_tool.is_some().then_some("build_tool"),
+        svc.launch.is_some().then_some("launch"),
+        (!svc.jvm_args.is_empty()).then_some("jvm_args"),
+        (!svc.build_args.is_empty()).then_some("build_args"),
+        svc.package.is_some().then_some("package"),
+        svc.program.is_some().then_some("program"),
+        (!svc.args.is_empty()).then_some("args"),
+    ]
+    .iter()
+    .filter_map(|x| *x)
+    .collect();
+    if !violations.is_empty() {
+        return Err(Error::new(
+            ErrorCode::SpecInvalid,
+            format!("{id}: kind: python 不允许字段 {}", violations.join(", ")),
+        ));
+    }
+    if let Some(e) = &svc.entry {
+        if e.is_empty() {
+            return Err(Error::new(
+                ErrorCode::SpecInvalid,
+                format!("{id}: python entry 不能为空"),
+            ));
+        }
+        validate_rel_path(e, &format!("{id}: python entry"))?;
+    }
+    Ok(())
+}
+
+fn validate_go_service(id: &str, svc: &super::file::ServiceSpec) -> Result<()> {
+    let violations: Vec<&str> = [
+        svc.service.is_some().then_some("service"),
+        svc.package_manager.is_some().then_some("package_manager"),
+        svc.script.is_some().then_some("script"),
+        svc.build_tool.is_some().then_some("build_tool"),
+        svc.launch.is_some().then_some("launch"),
+        (!svc.jvm_args.is_empty()).then_some("jvm_args"),
+        (!svc.build_args.is_empty()).then_some("build_args"),
+        svc.module.is_some().then_some("module"),
+        svc.entry.is_some().then_some("entry"),
+        svc.program.is_some().then_some("program"),
+        (!svc.args.is_empty()).then_some("args"),
+    ]
+    .iter()
+    .filter_map(|x| *x)
+    .collect();
+    if !violations.is_empty() {
+        return Err(Error::new(
+            ErrorCode::SpecInvalid,
+            format!("{id}: kind: go 不允许字段 {}", violations.join(", ")),
+        ));
+    }
+    if let Some(p) = &svc.package {
+        if p.is_empty() {
+            return Err(Error::new(
+                ErrorCode::SpecInvalid,
+                format!("{id}: go package 不能为空"),
+            ));
+        }
+        // 允许 "./cmd/x"、"cmd/x"、"."；绝对路径与 ".." 拒绝
+        let bare = p.trim_start_matches("./");
+        if !bare.is_empty() {
+            validate_rel_path(bare, &format!("{id}: go package"))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_generic_service(id: &str, svc: &super::file::ServiceSpec) -> Result<()> {
+    let violations: Vec<&str> = [
+        svc.service.is_some().then_some("service"),
+        svc.package_manager.is_some().then_some("package_manager"),
+        svc.script.is_some().then_some("script"),
+        svc.build_tool.is_some().then_some("build_tool"),
+        svc.launch.is_some().then_some("launch"),
+        (!svc.jvm_args.is_empty()).then_some("jvm_args"),
+        (!svc.build_args.is_empty()).then_some("build_args"),
+        svc.module.is_some().then_some("module"),
+        svc.entry.is_some().then_some("entry"),
+        svc.package.is_some().then_some("package"),
+    ]
+    .iter()
+    .filter_map(|x| *x)
+    .collect();
+    if !violations.is_empty() {
+        return Err(Error::new(
+            ErrorCode::SpecInvalid,
+            format!("{id}: kind: generic 不允许字段 {}", violations.join(", ")),
+        ));
+    }
+    let program = svc.program.as_deref().unwrap_or("");
+    if program.is_empty() {
+        return Err(Error::new(
+            ErrorCode::SpecInvalid,
+            format!("{id}: generic 需要 program"),
+        ));
+    }
+    // 含路径分隔符 = 工作区内相对路径（相对 dir）：拒绝绝对路径与 ..
+    if program.contains('/') || program.contains('\\') {
+        validate_rel_path(program, &format!("{id}: generic program"))?;
+    }
+    Ok(())
 }
 
 /// 相对路径规则：禁空、绝对路径（/、\\、盘符）与 `..` 段（§10.2 沙箱前置）。
@@ -597,7 +755,9 @@ mod tests {
         ));
         let (f, warnings) = parse_yaml(&y).unwrap();
         // compose 是合法 kind，不再产生 KIND_UNSUPPORTED 警告
-        assert!(!warnings.iter().any(|w| w.code == ErrorCode::KindUnsupported));
+        assert!(!warnings
+            .iter()
+            .any(|w| w.code == ErrorCode::KindUnsupported));
         assert_eq!(
             f.services.get("redis").unwrap().service.as_deref(),
             Some("redis")
@@ -612,27 +772,63 @@ mod tests {
         let d2 = f2.docker.as_ref().unwrap();
         assert_eq!(d2.builds[0].tags, vec!["mall-user:local".to_string()]);
         assert!(d2.extra.contains_key("x-extra"));
-        assert_eq!(f2.services.get("redis").unwrap().service.as_deref(), Some("redis"));
+        assert_eq!(
+            f2.services.get("redis").unwrap().service.as_deref(),
+            Some("redis")
+        );
     }
 
     #[test]
     fn compose_requires_service_and_valid_charset() {
         let missing = "version: 1\nservices:\n  redis:\n    kind: compose\n    port: 6379\n";
-        assert_eq!(parse_yaml(missing).unwrap_err().code(), ErrorCode::SpecInvalid);
+        assert_eq!(
+            parse_yaml(missing).unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
         let bad = compose_yaml("").replace("service: redis", "service: \"re dis\"");
         assert_eq!(parse_yaml(&bad).unwrap_err().code(), ErrorCode::SpecInvalid);
         let leading_dash = compose_yaml("").replace("service: redis", "service: -redis");
-        assert_eq!(parse_yaml(&leading_dash).unwrap_err().code(), ErrorCode::SpecInvalid);
+        assert_eq!(
+            parse_yaml(&leading_dash).unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
     }
 
     #[test]
     fn compose_rejects_env_injection_fields() {
         for (field, yaml) in [
-            ("env", compose_yaml("").replace("    port: 6379\n", "    port: 6379\n    env:\n      FOO: bar\n")),
-            ("env_file", compose_yaml("").replace("    port: 6379\n", "    port: 6379\n    env_file:\n      - .env\n")),
-            ("restart", compose_yaml("").replace("    port: 6379\n", "    port: 6379\n    restart: unless-stopped\n")),
-            ("launch", compose_yaml("").replace("    port: 6379\n", "    port: 6379\n    launch: run\n")),
-            ("jvm_args", compose_yaml("").replace("    port: 6379\n", "    port: 6379\n    jvm_args:\n      - -Xmx1g\n")),
+            (
+                "env",
+                compose_yaml("").replace(
+                    "    port: 6379\n",
+                    "    port: 6379\n    env:\n      FOO: bar\n",
+                ),
+            ),
+            (
+                "env_file",
+                compose_yaml("").replace(
+                    "    port: 6379\n",
+                    "    port: 6379\n    env_file:\n      - .env\n",
+                ),
+            ),
+            (
+                "restart",
+                compose_yaml("").replace(
+                    "    port: 6379\n",
+                    "    port: 6379\n    restart: unless-stopped\n",
+                ),
+            ),
+            (
+                "launch",
+                compose_yaml("").replace("    port: 6379\n", "    port: 6379\n    launch: run\n"),
+            ),
+            (
+                "jvm_args",
+                compose_yaml("").replace(
+                    "    port: 6379\n",
+                    "    port: 6379\n    jvm_args:\n      - -Xmx1g\n",
+                ),
+            ),
         ] {
             let e = parse_yaml(&yaml).unwrap_err();
             assert_eq!(e.code(), ErrorCode::SpecInvalid, "{field}");
@@ -643,21 +839,40 @@ mod tests {
     #[test]
     fn docker_section_path_and_tag_rules() {
         let escape = svc_yaml("docker:\n  compose_file: ../outside/compose.yaml\n");
-        assert_eq!(parse_yaml(&escape).unwrap_err().code(), ErrorCode::SpecInvalid);
+        assert_eq!(
+            parse_yaml(&escape).unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
         let absolute = svc_yaml("docker:\n  compose_file: C:/work/compose.yaml\n");
-        assert_eq!(parse_yaml(&absolute).unwrap_err().code(), ErrorCode::SpecInvalid);
+        assert_eq!(
+            parse_yaml(&absolute).unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
         let bad_tag = svc_yaml(
             "docker:\n  builds:\n    - name: a\n      context: .\n      tags:\n        - \"--rm\"\n",
         );
-        assert_eq!(parse_yaml(&bad_tag).unwrap_err().code(), ErrorCode::SpecInvalid);
-        let no_tags = svc_yaml("docker:\n  builds:\n    - name: a\n      context: .\n      tags: []\n");
-        assert_eq!(parse_yaml(&no_tags).unwrap_err().code(), ErrorCode::SpecInvalid);
+        assert_eq!(
+            parse_yaml(&bad_tag).unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
+        let no_tags =
+            svc_yaml("docker:\n  builds:\n    - name: a\n      context: .\n      tags: []\n");
+        assert_eq!(
+            parse_yaml(&no_tags).unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
         let dup_names = svc_yaml(
             "docker:\n  builds:\n    - name: a\n      context: .\n      tags: [a:local]\n    - name: a\n      context: b\n      tags: [b:local]\n",
         );
-        assert_eq!(parse_yaml(&dup_names).unwrap_err().code(), ErrorCode::SpecInvalid);
+        assert_eq!(
+            parse_yaml(&dup_names).unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
         let bad_project = svc_yaml("docker:\n  project_name: \"-mall\"\n");
-        assert_eq!(parse_yaml(&bad_project).unwrap_err().code(), ErrorCode::SpecInvalid);
+        assert_eq!(
+            parse_yaml(&bad_project).unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
     }
 
     #[test]

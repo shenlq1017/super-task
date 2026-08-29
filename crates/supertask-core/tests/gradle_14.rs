@@ -156,7 +156,8 @@ fn bootjar_build_failure_maps_to_build_failed() {
 
     let eng = Engine::new();
     eng.open(&root).expect("open");
-    eng.start_one("api").expect("start_one accepted（异步构建）");
+    eng.start_one("api")
+        .expect("start_one accepted（异步构建）");
     // 初始态就是 Stopped：等「构建失败收场」= Stopped + last_error（先经过 Building）
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut last = None;
@@ -175,7 +176,10 @@ fn bootjar_build_failure_maps_to_build_failed() {
     assert_eq!(state, RtState::Stopped, "构建失败应回到 Stopped");
     let err = err.unwrap_or_default();
     assert!(err.contains("BUILD_FAILED"), "last_error: {err}");
-    assert!(err.contains("gradle bootJar"), "应标注 gradle 构建阶段: {err}");
+    assert!(
+        err.contains("gradle bootJar"),
+        "应标注 gradle 构建阶段: {err}"
+    );
     eng.close().unwrap();
     let _ = fs::remove_dir_all(&root);
 }

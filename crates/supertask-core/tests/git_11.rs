@@ -41,7 +41,15 @@ fn commit_all(repo: &Path, msg: &str) {
     git(repo, &["add", "-A"]);
     git(
         repo,
-        &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", msg],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-m",
+            msg,
+        ],
     );
 }
 
@@ -131,7 +139,10 @@ fn clone_into_nonempty_dir_rejected_without_touching_it() {
     let err = git::clone(&runner(), &origin.to_string_lossy(), &target, None).unwrap_err();
     assert_eq!(err.code(), ErrorCode::TargetNotEmpty);
     // 原目录内容未被改动，也没有混入 clone 产物
-    assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "precious\n");
+    assert_eq!(
+        fs::read_to_string(target.join("keep.txt")).unwrap(),
+        "precious\n"
+    );
     assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
     let _ = fs::remove_dir_all(&root);
 }
@@ -159,7 +170,9 @@ fn clean_pull_fast_forwards_and_behind_resets() {
     let after = git::pull(&runner(), &work, None, None, false).unwrap();
     assert_eq!(after.behind, 0);
     assert!(!after.dirty);
-    assert!(fs::read_to_string(work.join("file.txt")).unwrap().contains("line2"));
+    assert!(fs::read_to_string(work.join("file.txt"))
+        .unwrap()
+        .contains("line2"));
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -182,7 +195,9 @@ fn dirty_pull_blocked_then_allowed() {
     assert!(!work.join("readme.md").exists());
 
     let after = git::pull(&runner(), &work, None, None, true).unwrap();
-    assert!(fs::read_to_string(work.join("readme.md")).unwrap().contains("up"));
+    assert!(fs::read_to_string(work.join("readme.md"))
+        .unwrap()
+        .contains("up"));
     assert!(after.dirty); // 本地修改仍在，SuperTask 不动它
     let _ = fs::remove_dir_all(&root);
 }
@@ -253,7 +268,10 @@ fn clone_missing_path_maps_to_git_remote() {
         return;
     }
     let root = unique_root("clone-missing-path");
-    let url = format!("file:///{}/no-such-repo.git", root.to_string_lossy().replace('\\', "/"));
+    let url = format!(
+        "file:///{}/no-such-repo.git",
+        root.to_string_lossy().replace('\\', "/")
+    );
     let err = git::clone(&runner(), &url, &root.join("work-c"), None).unwrap_err();
     assert_eq!(err.code(), ErrorCode::GitRemote);
     let _ = fs::remove_dir_all(&root);

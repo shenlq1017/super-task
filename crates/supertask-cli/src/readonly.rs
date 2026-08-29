@@ -15,7 +15,10 @@ pub fn status_data(root: &Path) -> Result<serde_json::Value, supertask_core::Err
     let lock = lock::query(root);
     let mut services = Vec::new();
     for (id, svc) in &spec.services {
-        let listening = svc.port.map(supertask_core::ports::is_serving).unwrap_or(false);
+        let listening = svc
+            .port
+            .map(supertask_core::ports::is_serving)
+            .unwrap_or(false);
         services.push(serde_json::json!({
             "id": id,
             "kind": svc.kind,
@@ -62,7 +65,11 @@ pub fn run_status(json: bool, root: &Path) -> Result<i32, supertask_core::Error>
                 "owner: {} (pid {}){}",
                 o["holder"].as_str().unwrap_or("?"),
                 o["pid"],
-                if o["alive"].as_bool().unwrap_or(false) { "" } else { " [stale]" }
+                if o["alive"].as_bool().unwrap_or(false) {
+                    ""
+                } else {
+                    " [stale]"
+                }
             ),
             None => "owner: 无".to_string(),
         };
@@ -106,7 +113,10 @@ pub fn logs_data(
     grep: Option<&str>,
 ) -> Result<serde_json::Value, supertask_core::Error> {
     use supertask_core::ipc::{LogSource, LogSourceKind};
-    let source = id.map(|i| LogSource { kind: LogSourceKind::Service, id: i.to_string() });
+    let source = id.map(|i| LogSource {
+        kind: LogSourceKind::Service,
+        id: i.to_string(),
+    });
     let result = match grep {
         Some(q) => serde_json::to_value(supertask_core::log::search_logs(
             root,
@@ -115,9 +125,18 @@ pub fn logs_data(
             false,
             Some(lines),
         )?),
-        None => serde_json::to_value(supertask_core::log::tail_logs(root, source.as_ref(), lines)?),
+        None => serde_json::to_value(supertask_core::log::tail_logs(
+            root,
+            source.as_ref(),
+            lines,
+        )?),
     };
-    result.map_err(|e| supertask_core::Error::new(supertask_core::ErrorCode::LogQueryInvalid, format!("序列化失败: {e}")))
+    result.map_err(|e| {
+        supertask_core::Error::new(
+            supertask_core::ErrorCode::LogQueryInvalid,
+            format!("序列化失败: {e}"),
+        )
+    })
 }
 
 pub fn run_logs(
@@ -130,7 +149,11 @@ pub fn run_logs(
     let data = logs_data(root, id, lines, grep)?;
     if !json {
         for hit in data["items"].as_array().unwrap_or(&Vec::new()) {
-            println!("[{}] {}", hit["id"].as_str().unwrap_or("?"), hit["text"].as_str().unwrap_or(""));
+            println!(
+                "[{}] {}",
+                hit["id"].as_str().unwrap_or("?"),
+                hit["text"].as_str().unwrap_or("")
+            );
         }
         if data["truncated"].as_bool().unwrap_or(false) {
             println!("（仅显示最后 {lines} 行）");
@@ -185,10 +208,7 @@ mod tests {
 
     #[test]
     fn error_envelope_uses_ipc_code_table() {
-        let e = supertask_core::Error::new(
-            supertask_core::ErrorCode::WorkspaceLocked,
-            "x",
-        );
+        let e = supertask_core::Error::new(supertask_core::ErrorCode::WorkspaceLocked, "x");
         let v = output::error_value(&e);
         assert_eq!(v["code"], "WORKSPACE_LOCKED");
         assert_eq!(v["message"], "x");
@@ -229,7 +249,11 @@ pub fn run_doctor(json: bool) -> Result<i32, supertask_core::Error> {
                 "  docker   {} compose {} daemon {}",
                 docker.version.as_deref().unwrap_or("?"),
                 docker.compose_version.as_deref().unwrap_or("插件缺失"),
-                if docker.running { "运行中" } else { "未运行" },
+                if docker.running {
+                    "运行中"
+                } else {
+                    "未运行"
+                },
             );
         } else {
             println!("  docker   未找到");

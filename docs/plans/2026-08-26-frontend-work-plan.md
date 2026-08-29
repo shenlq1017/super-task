@@ -50,19 +50,19 @@ cargo test -p supertask-core
 | 简称 | 路径 | 何时 |
 |------|------|------|
 | **executing-plans** | `<user-home>\.agents\skills\executing-plans-0.1.0\SKILL.md` | 执行本计划的每一个会话 |
-| **shadcn** | `c:\project\my\super-task\.cursor\skills\shadcn\SKILL.md` | 任何组件增删、表单、Sidebar、Command、Toast、Field |
-| **shadcn/styling** | `c:\project\my\super-task\.cursor\skills\shadcn\rules\styling.md` | className、gap、语义色、`cn()` |
-| **shadcn/forms** | `c:\project\my\super-task\.cursor\skills\shadcn\rules\forms.md` | 配置页、扫描向导、env 表 |
-| **shadcn/composition** | `c:\project\my\super-task\.cursor\skills\shadcn\rules\composition.md` | Card/Dialog/Tabs/Empty/Alert |
-| **shadcn/icons** | `c:\project\my\super-task\.cursor\skills\shadcn\rules\icons.md` | Lucide、`data-icon`、禁止 emoji |
-| **react-perf** | `c:\project\my\super-task\.cursor\skills\vercel-react-best-practices\SKILL.md` | 写/改 React 时先看分类再打开具体 rule |
-| **composition** | `c:\project\my\super-task\.cursor\skills\vercel-composition-patterns\SKILL.md` | Provider、禁止 boolean 模式爆炸 |
-| **web-guidelines** | `c:\project\my\super-task\.cursor\skills\web-design-guidelines\SKILL.md` | 每个页面做完做一次 UI 审查 |
+| **shadcn** | `c:\project\my\super-task\.agents\skills\shadcn\SKILL.md` | 任何组件增删、表单、Sidebar、Command、Toast、Field |
+| **shadcn/styling** | `c:\project\my\super-task\.agents\skills\shadcn\rules\styling.md` | className、gap、语义色、`cn()` |
+| **shadcn/forms** | `c:\project\my\super-task\.agents\skills\shadcn\rules\forms.md` | 配置页、扫描向导、env 表 |
+| **shadcn/composition** | `c:\project\my\super-task\.agents\skills\shadcn\rules\composition.md` | Card/Dialog/Tabs/Empty/Alert |
+| **shadcn/icons** | `c:\project\my\super-task\.agents\skills\shadcn\rules\icons.md` | Lucide、`data-icon`、禁止 emoji |
+| **react-perf** | `c:\project\my\super-task\.agents\skills\vercel-react-best-practices\SKILL.md` | 写/改 React 时先看分类再打开具体 rule |
+| **composition** | `c:\project\my\super-task\.agents\skills\vercel-composition-patterns\SKILL.md` | Provider、禁止 boolean 模式爆炸 |
+| **web-guidelines** | `c:\project\my\super-task\.agents\skills\web-design-guidelines\SKILL.md` | 每个页面做完做一次 UI 审查 |
 | **ui-styling** | `<user-home>\.claude\skills\ui-styling\SKILL.md` | token、亮色主题、shadcn+Tailwind 合层 |
 | **ui-ux-pro-max** | `<user-home>\.claude\skills\ui-ux-pro-max\SKILL.md` | 对照设计文档的图标/动效/对比度清单 |
 | **webapp-testing** | `<user-home>\.agents\skills\webapp-testing\SKILL.md` | `tauri dev` / `vite` 下点选验证 |
 
-react-perf 要打开的 **具体 rule 文件**（均在 `.cursor/skills/vercel-react-best-practices/rules/`）：
+react-perf 要打开的 **具体 rule 文件**（均在 `.agents/skills/vercel-react-best-practices/rules/`）：
 
 | Rule 文件 | 用在 |
 |-----------|------|

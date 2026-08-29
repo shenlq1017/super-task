@@ -6,7 +6,8 @@ import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
   // 圆角统一 --r-sm(8px)；禁止在带文字的按钮上用 rounded-full（会裁切字/图标）
-  "group/button inline-flex cursor-pointer shrink-0 items-center justify-center gap-1.5 overflow-visible rounded-[var(--r-sm,8px)] border bg-clip-padding font-semibold leading-none whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))] outline-none select-none focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)] focus-visible:outline-offset-2 focus-visible:ring-0 active:scale-[.97] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
+  // leading-none 不能放这里：tailwind-merge 会认为后面的 text-* 尺寸类与 leading 冲突并把它删掉，须写在各 size 的 text-* 之后
+  "group/button inline-flex cursor-pointer shrink-0 items-center justify-center gap-1.5 overflow-visible rounded-[var(--r-sm,8px)] border bg-clip-padding font-semibold whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))] outline-none select-none focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)] focus-visible:outline-offset-2 focus-visible:ring-0 active:scale-[.97] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
   {
     variants: {
       variant: {
@@ -38,10 +39,10 @@ const buttonVariants = cva(
       },
       size: {
         default:
-          "min-h-8 px-3.5 py-2 text-[0.78rem] has-data-[icon=inline-end]:pr-2.5 has-data-[icon=inline-start]:pl-2.5",
-        xs: "min-h-6 gap-1 rounded-[var(--r-sm,8px)] px-2 text-[0.72rem] has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3",
-        sm: "min-h-[1.7rem] gap-1 px-3 py-1.5 text-[0.75rem] has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [&_svg:not([class*='size-'])]:size-3.5",
-        lg: "min-h-9 gap-1.5 px-4 py-2 text-[0.82rem] has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
+          "min-h-8 px-3.5 py-2 text-[0.78rem] leading-none has-data-[icon=inline-end]:pr-2.5 has-data-[icon=inline-start]:pl-2.5",
+        xs: "min-h-6 gap-1 rounded-[var(--r-sm,8px)] px-2 text-[0.72rem] leading-none has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3",
+        sm: "min-h-[1.7rem] gap-1 px-3 py-1.5 text-[0.75rem] leading-none has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [&_svg:not([class*='size-'])]:size-3.5",
+        lg: "min-h-9 gap-1.5 px-4 py-2 text-[0.82rem] leading-none has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
         icon: "size-8 rounded-[var(--r-sm,8px)]",
         "icon-xs": "size-6 rounded-[var(--r-sm,8px)] [&_svg:not([class*='size-'])]:size-3",
         "icon-sm": "size-7 rounded-[var(--r-sm,8px)]",

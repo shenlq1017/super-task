@@ -70,7 +70,9 @@ fn err(code: ErrorCode, message: impl Into<String>) -> IpcError {
 /// 把 JSON 值反序列化成 operation result。
 /// src-tauri 不直接依赖 serde_yaml（约定不改 Cargo.toml），目标类型
 /// `serde_yaml::Value` 由 `hub.spawn` 闭包签名的返回类型推断，这里不点名。
-fn json_into<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> supertask_core::error::Result<T> {
+fn json_into<T: serde::de::DeserializeOwned>(
+    v: serde_json::Value,
+) -> supertask_core::error::Result<T> {
     T::deserialize(v).map_err(|e| {
         supertask_core::Error::new(
             ErrorCode::Protocol,
@@ -80,8 +82,9 @@ fn json_into<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> supertask_
 }
 
 fn soon(cmd: &str) -> IpcError {
-    let e = supertask_core::features::reject_soon_command(cmd)
-        .unwrap_or_else(|| supertask_core::Error::new(ErrorCode::FeatureSoon, format!("{cmd} 尚未提供")));
+    let e = supertask_core::features::reject_soon_command(cmd).unwrap_or_else(|| {
+        supertask_core::Error::new(ErrorCode::FeatureSoon, format!("{cmd} 尚未提供"))
+    });
     IpcError::from(&e)
 }
 
@@ -137,10 +140,13 @@ pub fn workspace_add(path: String) -> Result<WorkspaceOpenOut, IpcError> {
 #[tauri::command(rename = "workspace.open")]
 pub fn workspace_open(
     state: EngineState<'_>,
+    appdata: AppDataRef<'_>,
     app: AppHandle,
     path: String,
 ) -> Result<WorkspaceOpenOut, IpcError> {
     let root = fs_canonicalize(&path)?;
+    // 1.7 §7：open 前注入 app 级网络默认（代理 + 镜像），启动链据此注入 env
+    state.set_app_network(appdata.lock().expect("appdata lock").network.clone());
     let (warnings, _) = state.open(&root).map_err(ipc_err)?;
     let spec = state.spec().map_err(ipc_err)?;
     let workspace_id = state.workspace_id().map_err(ipc_err)?;
@@ -275,7 +281,9 @@ fn sandbox_join(root: &Path, rel: &str) -> Result<PathBuf, IpcError> {
         root.join(rel)
     };
     let canon = supertask_core::sandbox::strip_verbatim(
-        candidate.canonicalize().unwrap_or_else(|_| candidate.clone()),
+        candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone()),
     );
     if !canon.starts_with(root) {
         return Err(IpcError::from(&supertask_core::Error::new(
@@ -364,7 +372,9 @@ pub struct Accepted {
 }
 
 #[tauri::command(rename = "runtime.snapshot")]
-pub fn runtime_snapshot(state: EngineState<'_>) -> Result<supertask_core::RuntimeSnapshot, IpcError> {
+pub fn runtime_snapshot(
+    state: EngineState<'_>,
+) -> Result<supertask_core::RuntimeSnapshot, IpcError> {
     state.snapshot().map_err(ipc_err)
 }
 
@@ -377,7 +387,10 @@ pub fn runtime_start_one(
 ) -> Result<Accepted, IpcError> {
     ensure_not_exiting(&exiting)?;
     state.start_one(&id).map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 #[tauri::command(rename = "runtime.startAll")]
@@ -388,19 +401,35 @@ pub fn runtime_start_all(
 ) -> Result<Accepted, IpcError> {
     ensure_not_exiting(&exiting)?;
     let order = state.start_all().map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: Some(order) })
+    Ok(Accepted {
+        accepted: true,
+        order: Some(order),
+    })
 }
 
 #[tauri::command(rename = "runtime.stopOne")]
-pub fn runtime_stop_one(state: EngineState<'_>, _workspace_id: String, id: String) -> Result<Accepted, IpcError> {
+pub fn runtime_stop_one(
+    state: EngineState<'_>,
+    _workspace_id: String,
+    id: String,
+) -> Result<Accepted, IpcError> {
     state.stop_one(&id).map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 #[tauri::command(rename = "runtime.stopAll")]
-pub fn runtime_stop_all(state: EngineState<'_>, _workspace_id: String) -> Result<Accepted, IpcError> {
+pub fn runtime_stop_all(
+    state: EngineState<'_>,
+    _workspace_id: String,
+) -> Result<Accepted, IpcError> {
     state.stop_all().map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 #[tauri::command(rename = "runtime.restartOne")]
@@ -412,7 +441,10 @@ pub fn runtime_restart_one(
 ) -> Result<Accepted, IpcError> {
     ensure_not_exiting(&exiting)?;
     state.restart_one(&id).map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -428,14 +460,24 @@ pub fn script_run(
 ) -> Result<Accepted, IpcError> {
     ensure_not_exiting(&exiting)?;
     state.run_script(&id).map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 #[tauri::command(rename = "script.cancel")]
-pub fn script_cancel(state: EngineState<'_>, _workspace_id: String, id: String) -> Result<Accepted, IpcError> {
+pub fn script_cancel(
+    state: EngineState<'_>,
+    _workspace_id: String,
+    id: String,
+) -> Result<Accepted, IpcError> {
     let _ = id;
     state.cancel_script().map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -527,22 +569,25 @@ fn toolchain_spawn_op(
         let data = appdata.lock().expect("appdata lock");
         data.network.clone()
     };
-    let env = supertask_core::network::tool_env(&supertask_core::network::resolve(
-        ws_network.as_ref(),
-        Some(&app_network),
+    let env = supertask_core::network::tool_env(
+        &supertask_core::network::resolve(ws_network.as_ref(), Some(&app_network))
+            .map_err(ipc_err)?,
     )
-    .map_err(ipc_err)?)
     .map_err(ipc_err)?;
 
     let engine = state.inner().clone();
     let ws_root = state.workspace_id().ok().map(PathBuf::from);
     let persist = input.persist;
     let base_hash = input.base_hash.clone();
-    let kind = if upgrade { "toolchain.upgrade" } else { "toolchain.install" };
+    let kind = if upgrade {
+        "toolchain.upgrade"
+    } else {
+        "toolchain.install"
+    };
     let op_id = hub.spawn(kind, move |ctx| {
-        let root = ws_root.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        });
+        let root = ws_root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let verb = if upgrade { "升级" } else { "安装" };
         ctx.report(None, format!("正在{verb} {} {version}", tool.as_str()));
         let req = toolchain::InstallRequest {
@@ -574,7 +619,9 @@ fn toolchain_spawn_op(
         }
         Ok(json_into(result)?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
 
 /// persist=true 时把版本要求写回 `toolchain`（npm/pnpm/yarn 写 `package_manager`）。
@@ -595,6 +642,9 @@ fn persist_toolchain_version(
         K::Npm => tc.package_manager = Some(PackageManager::Npm),
         K::Pnpm => tc.package_manager = Some(PackageManager::Pnpm),
         K::Yarn => tc.package_manager = Some(PackageManager::Yarn),
+        // 1.7 §5：python/go 钉扎写回
+        K::Python => tc.python = Some(version.to_string()),
+        K::Go => tc.go = Some(version.to_string()),
     }
     let (_, hash, _) = engine.save_form(&spec, base_hash)?;
     Ok(hash)
@@ -614,7 +664,9 @@ pub fn toolchain_install(
     persist: Option<bool>,
     base_hash: Option<String>,
 ) -> Result<OperationOut, IpcError> {
-    toolchain_spawn_op(state, hub, appdata, exiting, tool, version, manager, persist, base_hash, false)
+    toolchain_spawn_op(
+        state, hub, appdata, exiting, tool, version, manager, persist, base_hash, false,
+    )
 }
 
 /// 升级工具链（长操作，立即返回 operation_id；§13.1）。
@@ -631,7 +683,9 @@ pub fn toolchain_upgrade(
     persist: Option<bool>,
     base_hash: Option<String>,
 ) -> Result<OperationOut, IpcError> {
-    toolchain_spawn_op(state, hub, appdata, exiting, tool, version, manager, persist, base_hash, true)
+    toolchain_spawn_op(
+        state, hub, appdata, exiting, tool, version, manager, persist, base_hash, true,
+    )
 }
 
 #[tauri::command(rename = "app.savePrefs")]
@@ -683,7 +737,10 @@ pub fn app_save_prefs(
                 data.start_on_login = false;
             }
             let _ = state::save_appdata(&appdata);
-            return Err(err(ErrorCode::AutostartFailed, format!("开机启动注册失败: {e}")));
+            return Err(err(
+                ErrorCode::AutostartFailed,
+                format!("开机启动注册失败: {e}"),
+            ));
         }
     }
     let mut m = HashMap::new();
@@ -707,8 +764,12 @@ fn apply_autostart(app: &AppHandle, enable: bool) -> Result<(), tauri_plugin_aut
 
 /// 将文本写入用户选定路径（日志视图「下载」等）；路径由前端 save 对话框提供。
 #[tauri::command(rename = "app.writeTextFile")]
-pub fn app_write_text_file(path: String, contents: String) -> Result<HashMap<&'static str, bool>, IpcError> {
-    std::fs::write(&path, contents).map_err(|e| err(ErrorCode::LogExportFailed, format!("写入文件失败: {e}")))?;
+pub fn app_write_text_file(
+    path: String,
+    contents: String,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
+    std::fs::write(&path, contents)
+        .map_err(|e| err(ErrorCode::LogExportFailed, format!("写入文件失败: {e}")))?;
     let mut m = HashMap::new();
     m.insert("ok", true);
     Ok(m)
@@ -777,7 +838,10 @@ pub fn logs_snapshot(
 }
 
 #[tauri::command(rename = "logs.clearView")]
-pub fn logs_clear_view(state: EngineState<'_>, source: SourceArg) -> Result<HashMap<&'static str, bool>, IpcError> {
+pub fn logs_clear_view(
+    state: EngineState<'_>,
+    source: SourceArg,
+) -> Result<HashMap<&'static str, bool>, IpcError> {
     let src = match source.kind.as_str() {
         "script" => LogSourceKind::Script,
         "system" => LogSourceKind::System,
@@ -785,7 +849,10 @@ pub fn logs_clear_view(state: EngineState<'_>, source: SourceArg) -> Result<Hash
         _ => LogSourceKind::Service,
     };
     state
-        .clear_logs(&LogSource { kind: src, id: source.id })
+        .clear_logs(&LogSource {
+            kind: src,
+            id: source.id,
+        })
         .map_err(ipc_err)?;
     let mut m = HashMap::new();
     m.insert("ok", true);
@@ -872,7 +939,9 @@ pub fn templates_create(
         state::save_appdata(&appdata)?;
         Ok(json_into(serde_json::json!({ "workspace_id": ws }))?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
 
 /// 组合模板预览（纯计算，无副作用）：组合选择 → 将生成的 services / 文件清单 / 警告。
@@ -919,8 +988,12 @@ pub fn git_clone(
     let appdata = appdata.inner().clone();
     let target = PathBuf::from(&target_path);
     let op_id = hub.spawn("git.clone", move |_ctx| {
-        let canonical =
-            git::clone(&git::ProcessRunner::default(), &url, &target, branch.as_deref())?;
+        let canonical = git::clone(
+            &git::ProcessRunner::default(),
+            &url,
+            &target,
+            branch.as_deref(),
+        )?;
         let ws = canonical.to_string_lossy().into_owned();
         {
             let mut data = appdata.lock().expect("appdata lock");
@@ -929,7 +1002,9 @@ pub fn git_clone(
         state::save_appdata(&appdata)?;
         Ok(json_into(serde_json::json!({ "workspace_id": ws }))?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
 
 /// 校验 workspace_id 与引擎当前打开的工作区一致，否则 `NoWorkspace`。
@@ -945,7 +1020,10 @@ fn require_current_workspace(state: &EngineState<'_>, workspace_id: &str) -> Res
 }
 
 #[tauri::command(rename = "git.status")]
-pub fn git_status(state: EngineState<'_>, workspace_id: String) -> Result<git::GitStatus, IpcError> {
+pub fn git_status(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<git::GitStatus, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
     git::status(
         &git::ProcessRunner::default(),
@@ -974,7 +1052,11 @@ pub fn git_pull(
     let service_busy = snap.services.values().any(|s| {
         matches!(
             s.state,
-            RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping | RtState::Building
+            RtState::Starting
+                | RtState::Running
+                | RtState::Unhealthy
+                | RtState::Stopping
+                | RtState::Building
         )
     });
     let script_busy = snap
@@ -1015,7 +1097,9 @@ pub fn git_pull(
         )?;
         Ok(json_into(serde_json::json!({ "workspace_id": ws }))?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
 
 #[derive(Serialize)]
@@ -1033,8 +1117,8 @@ pub fn workspace_open_ide(
     ide: String,
 ) -> Result<OpenIdeOut, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
-    let parsed = ide::parse_ide(&ide)
-        .ok_or_else(|| err(ErrorCode::NotFound, format!("未知 IDE: {ide}")))?;
+    let parsed =
+        ide::parse_ide(&ide).ok_or_else(|| err(ErrorCode::NotFound, format!("未知 IDE: {ide}")))?;
     let exe = ide::open(parsed, Path::new(&workspace_id)).map_err(ipc_err)?;
     Ok(OpenIdeOut {
         accepted: true,
@@ -1124,12 +1208,9 @@ pub fn import_taskfile_apply(
 ) -> Result<YamlSaveOut, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
     let current = state.spec().map_err(ipc_err)?;
-    let (merged, _) = supertask_core::taskfile::apply(
-        &current,
-        Path::new(&workspace_id),
-        &selected,
-    )
-    .map_err(ipc_err)?;
+    let (merged, _) =
+        supertask_core::taskfile::apply(&current, Path::new(&workspace_id), &selected)
+            .map_err(ipc_err)?;
     let (spec, hash, warnings) = state.save_form(&merged, &base_hash).map_err(ipc_err)?;
     Ok(YamlSaveOut {
         spec,
@@ -1145,10 +1226,9 @@ pub fn import_taskfile_apply(
 /// `app.update.check` 内核：构建 updater → check → 结果写 pending 供 install 消费。
 /// 网络不可达 / manifest 不合法 / 配置错误统一映射 `UPDATE_FAILED`。
 fn update_check_once(app: &AppHandle) -> supertask_core::error::Result<serde_yaml::Value> {
-    let updater = app
-        .updater_builder()
-        .build()
-        .map_err(|e| supertask_core::Error::new(ErrorCode::UpdateFailed, format!("初始化更新器失败: {e}")))?;
+    let updater = app.updater_builder().build().map_err(|e| {
+        supertask_core::Error::new(ErrorCode::UpdateFailed, format!("初始化更新器失败: {e}"))
+    })?;
     match tauri::async_runtime::block_on(updater.check()) {
         Ok(None) => Ok(json_into(serde_json::json!({ "status": "up_to_date" }))?),
         Ok(Some(update)) => {
@@ -1242,7 +1322,11 @@ fn install_update_windows(
         let service_busy = snap.services.values().any(|s| {
             matches!(
                 s.state,
-                RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping | RtState::Building
+                RtState::Starting
+                    | RtState::Running
+                    | RtState::Unhealthy
+                    | RtState::Stopping
+                    | RtState::Building
             )
         });
         let script_busy = snap
@@ -1299,7 +1383,9 @@ fn install_update_windows(
         }
         Ok(json_into(serde_json::json!({ "status": "installed" }))?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1365,15 +1451,7 @@ pub fn docker_build_cancel(
     Ok(serde_json::json!({ "ok": ok }))
 }
 
-// 1.6：gateway.apply 已转正为真命令（见文件末尾 gateway 命令组）
-#[tauri::command(rename = "cloud.login")]
-pub fn cloud_login() -> Result<(), IpcError> {
-    Err(soon("cloud.login"))
-}
-#[tauri::command(rename = "cloud.sync")]
-pub fn cloud_sync() -> Result<(), IpcError> {
-    Err(soon("cloud.sync"))
-}
+// 1.6：gateway.apply 已转正为真命令；2.0：cloud 命令已转正（见文件末尾命令组）
 #[tauri::command(rename = "ai.complete")]
 pub fn ai_complete() -> Result<(), IpcError> {
     Err(soon("ai.complete"))
@@ -1426,9 +1504,8 @@ pub fn ports_assign(
         .map_err(ipc_err)?;
     Ok(supertask_core::ipc::PortsAssignOutput {
         operation_id: None,
-        spec: serde_yaml::to_value(&view.spec).map_err(|e| {
-            err(ErrorCode::Protocol, format!("序列化 spec 失败: {e}"))
-        })?,
+        spec: serde_yaml::to_value(&view.spec)
+            .map_err(|e| err(ErrorCode::Protocol, format!("序列化 spec 失败: {e}")))?,
         hash: view.hash,
         restart_required: view.restart_required,
         notes: view.notes,
@@ -1504,7 +1581,9 @@ pub fn logs_search(
             "files_scanned": r.files_scanned,
         }))?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
 
 /// `logs.export`（长操作）：text/jsonl 导出，不覆盖已有文件（§8.4）。
@@ -1526,16 +1605,14 @@ pub fn logs_export(
     let dest = PathBuf::from(&destination_path);
     let engine = state.inner().clone();
     let op_id = hub.spawn("logs.export", move |_ctx| {
-        let n = engine.export_logs(
-            src.as_ref(),
-            query.as_deref(),
-            case,
-            &format,
-            &dest,
-        )?;
-        Ok(json_into(serde_json::json!({ "count": n, "destination": dest.to_string_lossy() }))?)
+        let n = engine.export_logs(src.as_ref(), query.as_deref(), case, &format, &dest)?;
+        Ok(json_into(
+            serde_json::json!({ "count": n, "destination": dest.to_string_lossy() }),
+        )?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
 
 /// `logs.retention.run`（长操作）：按顶层 log_retention 清理轮转文件（§8.2）。
@@ -1554,7 +1631,9 @@ pub fn logs_retention_run(
             "deleted_bytes": s.deleted_bytes,
         }))?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
 
 /// `metrics.snapshot`：最近一次采样（§9.2）。
@@ -1649,9 +1728,10 @@ pub fn runtime_build(
             "artifact": artifact.to_string_lossy(),
         }))?)
     });
-    Ok(OperationOut { operation_id: op_id })
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
 }
-
 
 // ---------------------------------------------------------------------------
 // Event bridge: drain Engine events -> Tauri events
@@ -1710,10 +1790,16 @@ pub(crate) fn update_tray(
 ) {
     let tooltip = if workspace.is_none() {
         "SuperTask".to_string()
-    } else if services.values().any(|s| matches!(s.state, RtState::Unhealthy)) {
+    } else if services
+        .values()
+        .any(|s| matches!(s.state, RtState::Unhealthy))
+    {
         "SuperTask — 存在异常".to_string()
     } else if services.values().any(|s| {
-        matches!(s.state, RtState::Starting | RtState::Running | RtState::Stopping)
+        matches!(
+            s.state,
+            RtState::Starting | RtState::Running | RtState::Stopping
+        )
     }) {
         "SuperTask — 运行中".to_string()
     } else {
@@ -1766,7 +1852,10 @@ pub fn spawn_event_bridge(app: AppHandle, engine: Arc<Engine>, hub: HubHandle) {
                     let _ = app.emit(supertask_core::ipc::event::METRICS, &ev);
                     handled = true;
                 }
-                Some(supertask_core::EngineEvent::Logs { workspace_id, items }) => {
+                Some(supertask_core::EngineEvent::Logs {
+                    workspace_id,
+                    items,
+                }) => {
                     let payload = LogsEventPayload {
                         protocol: PROTOCOL,
                         event: supertask_core::ipc::event::LOGS,
@@ -1831,18 +1920,18 @@ pub fn workspace_export_package(
         ));
     }
     let root = std::path::PathBuf::from(&current);
-    let out = supertask_core::pkg::export_package(
-        &root,
-        std::path::Path::new(&dest_path),
-        with_secrets,
-    )
-    .map_err(ipc_err)?;
+    let out =
+        supertask_core::pkg::export_package(&root, std::path::Path::new(&dest_path), with_secrets)
+            .map_err(ipc_err)?;
     Ok(supertask_core::ipc::ExportPackageOut {
         path: out.path.display().to_string(),
         entries: out
             .entries
             .iter()
-            .map(|e| supertask_core::ipc::PkgEntryView { path: e.path.clone(), bytes: e.bytes })
+            .map(|e| supertask_core::ipc::PkgEntryView {
+                path: e.path.clone(),
+                bytes: e.bytes,
+            })
             .collect(),
         warnings: out.warnings,
     })
@@ -1856,15 +1945,11 @@ pub fn workspace_import_package(
 ) -> Result<supertask_core::ipc::ImportPackageOut, IpcError> {
     let dest = match dest_dir {
         Some(d) => std::path::PathBuf::from(d),
-        None => std::env::current_dir().map_err(|e| {
-            err(ErrorCode::NoWorkspace, format!("无法读取 cwd: {e}"))
-        })?,
+        None => std::env::current_dir()
+            .map_err(|e| err(ErrorCode::NoWorkspace, format!("无法读取 cwd: {e}")))?,
     };
-    let out = supertask_core::pkg::import_package(
-        std::path::Path::new(&pkg_path),
-        &dest,
-    )
-    .map_err(ipc_err)?;
+    let out = supertask_core::pkg::import_package(std::path::Path::new(&pkg_path), &dest)
+        .map_err(ipc_err)?;
     Ok(supertask_core::ipc::ImportPackageOut {
         root: out.root.display().to_string(),
         warnings: out.warnings,
@@ -1925,17 +2010,20 @@ pub fn gateway_start(
     ensure_not_exiting(&exiting)?;
     require_current_workspace(&state, &workspace_id)?;
     state.gateway_start().map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 #[tauri::command(rename = "gateway.stop")]
-pub fn gateway_stop(
-    state: EngineState<'_>,
-    workspace_id: String,
-) -> Result<Accepted, IpcError> {
+pub fn gateway_stop(state: EngineState<'_>, workspace_id: String) -> Result<Accepted, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
     state.gateway_stop().map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 #[tauri::command(rename = "gateway.restart")]
@@ -1947,15 +2035,101 @@ pub fn gateway_restart(
     ensure_not_exiting(&exiting)?;
     require_current_workspace(&state, &workspace_id)?;
     state.gateway_restart().map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 #[tauri::command(rename = "gateway.trust")]
-pub fn gateway_trust(
-    state: EngineState<'_>,
-    workspace_id: String,
-) -> Result<Accepted, IpcError> {
+pub fn gateway_trust(state: EngineState<'_>, workspace_id: String) -> Result<Accepted, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
     state.gateway_trust().map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 2.0 云（v2.0 规格 §11）：八条薄适配；业务在 shell cloud.rs + core cloud/
+// ---------------------------------------------------------------------------
+
+#[tauri::command(rename = "cloud.login")]
+pub fn cloud_login(
+    state: State<'_, crate::cloud::CloudHandle>,
+    email: String,
+    password: String,
+) -> Result<crate::cloud::CloudLoginOut, IpcError> {
+    let tokens = crate::cloud::cloud_login(&state, &email, &password).map_err(ipc_err)?;
+    Ok(crate::cloud::CloudLoginOut {
+        account_id: tokens.account_id,
+        email: tokens.email,
+        expires_in_secs: tokens.expires_in_secs,
+    })
+}
+
+#[tauri::command(rename = "cloud.logout")]
+pub fn cloud_logout() -> Result<crate::cloud::CloudOkOut, IpcError> {
+    crate::cloud::cloud_logout().map_err(ipc_err)?;
+    Ok(crate::cloud::CloudOkOut { ok: true })
+}
+
+#[tauri::command(rename = "cloud.status")]
+pub fn cloud_status(
+    state: State<'_, crate::cloud::CloudHandle>,
+) -> Result<crate::cloud::CloudStatusOut, IpcError> {
+    crate::cloud::cloud_status(&state).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "cloud.sync")]
+pub fn cloud_sync(
+    state: State<'_, crate::cloud::CloudHandle>,
+) -> Result<crate::cloud::SyncOut, IpcError> {
+    crate::cloud::cloud_sync(&state).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "cloud.resolve")]
+pub fn cloud_resolve(
+    state: State<'_, crate::cloud::CloudHandle>,
+    entity_id: String,
+    choice: String,
+) -> Result<crate::cloud::SyncOut, IpcError> {
+    crate::cloud::cloud_resolve(&state, &entity_id, &choice).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "cloud.migrate.plan")]
+pub fn cloud_migrate_plan(
+    state: State<'_, crate::cloud::CloudHandle>,
+) -> Result<supertask_core::cloud::migrate::RestorePlan, IpcError> {
+    crate::cloud::cloud_migrate_plan(&state).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "cloud.migrate.apply")]
+pub fn cloud_migrate_apply(
+    state: State<'_, crate::cloud::CloudHandle>,
+    workspaces: Vec<crate::cloud::MigrateWorkspace>,
+    include_templates: Option<bool>,
+    include_settings: Option<bool>,
+) -> Result<crate::cloud::SyncOut, IpcError> {
+    crate::cloud::cloud_migrate_apply(&state, workspaces, include_templates, include_settings)
+        .map_err(ipc_err)
+}
+
+#[tauri::command(rename = "cloud.endpoint.set")]
+pub fn cloud_endpoint_set(
+    state: State<'_, crate::cloud::CloudHandle>,
+    appdata: AppDataRef<'_>,
+    endpoint: String,
+) -> Result<crate::cloud::CloudEndpointOut, IpcError> {
+    crate::cloud::cloud_endpoint_set(&state, appdata.inner(), &endpoint).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "cloud.telemetry.set")]
+pub fn cloud_telemetry_set(
+    state: State<'_, crate::cloud::CloudHandle>,
+    appdata: AppDataRef<'_>,
+    enabled: bool,
+) -> Result<crate::cloud::CloudTelemetryOut, IpcError> {
+    crate::cloud::cloud_telemetry_set(&state, appdata.inner(), enabled).map_err(ipc_err)
 }

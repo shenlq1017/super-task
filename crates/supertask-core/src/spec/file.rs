@@ -118,6 +118,18 @@ pub struct ServiceSpec {
     pub package_manager: Option<PackageManager>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
+    /// 1.7 `kind: python`：脚本入口（相对 dir），与 module 恰一。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// 1.7 `kind: go`：`go run` 的包路径（相对 dir），缺省 "."。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// 1.7 `kind: generic`：程序名（PATH 解析）或工作区内相对路径（含路径分隔符时）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    /// 1.7 `kind: generic`：程序参数（extra_args 仍追加在其后）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -193,7 +205,10 @@ pub struct GatewayConf {
     pub kind: Option<GatewayKind>,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub enabled: bool,
-    #[serde(default = "default_gateway_port", skip_serializing_if = "is_default_gateway_port")]
+    #[serde(
+        default = "default_gateway_port",
+        skip_serializing_if = "is_default_gateway_port"
+    )]
     pub port: u16,
     /// 二进制显式路径（探测的最终 fallback；PATH_ESCAPE 不适用——这是绝对路径值）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,6 +257,11 @@ pub struct ToolchainSpec {
     pub maven: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// 1.7：`major.minor`（如 "3.12" / "1.23"），钉扎语义同 java/node。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub go: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_manager: Option<PackageManager>,
     #[serde(default, flatten)]
@@ -311,6 +331,22 @@ pub struct NpmNetworkSpec {
     #[serde(default, flatten)]
     pub extra: IndexMap<String, Value>,
 }
+/// 1.7：`pip` 镜像（运行时注入 `PIP_INDEX_URL`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PythonNetworkSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_url: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+/// 1.7：Go 模块代理（运行时注入 `GOPROXY`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoNetworkSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goproxy: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkSpec {
@@ -320,6 +356,10 @@ pub struct NetworkSpec {
     pub maven: Option<MavenNetworkSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npm: Option<NpmNetworkSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<PythonNetworkSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub go: Option<GoNetworkSpec>,
     #[serde(default, flatten)]
     pub extra: IndexMap<String, Value>,
 }
@@ -493,6 +533,22 @@ impl SuperTaskFile {
                         });
                     }
                 }
+                // 1.7 §4.4：python 15 / go 60（冷编译宽限）/ generic 15；
+                // health 默认 tcp 仅在有 port 时（无端口服务健康只能 none）。
+                "python" | "go" | "generic" => {
+                    let default_grace = if svc.kind == "go" { 60 } else { 15 };
+                    if svc.grace_secs.is_none() {
+                        svc.grace_secs = Some(default_grace);
+                    }
+                    if svc.health.is_none() && svc.port.is_some() {
+                        svc.health = Some(HealthSpec {
+                            r#type: HealthType::Tcp,
+                            http: None,
+                            interval_secs: 2,
+                            timeout_secs: 2,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -504,7 +560,7 @@ impl SuperTaskFile {
     }
 
     pub fn runnable_kind(kind: &str) -> bool {
-        matches!(kind, "spring-boot" | "node")
+        matches!(kind, "spring-boot" | "node" | "python" | "go" | "generic")
     }
 }
 

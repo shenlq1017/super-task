@@ -1,0 +1,42 @@
+# 内置组合模板清单（1.7 §10）：Go 后端 + Node 前端，blocks 组合
+# 组合模板不携带 supertask.yaml——生成物由选中块的 services 片段拼装；
+# 片段中 {{port}} 占位在端口分配时一并替换。
+id: go-node-fullstack
+version: "1"
+name: Go + Node（自由组合）
+description: 按需组合 Go 后端（go run）与 Node 前端，向导中勾选服务块并分配端口
+stacks:
+  - go
+  - node
+blocks:
+  - id: backend
+    label: Go 后端
+    kind: go
+    requires: []
+    default_port: 8081
+    files:
+      - go.mod
+      - cmd/server/main.go
+    services:
+      backend:
+        kind: go
+        package: ./cmd/server
+        health:
+          type: tcp
+  - id: web
+    label: Node 前端
+    kind: node
+    requires:
+      - backend
+    default_port: 5173
+    files:
+      - web/package.json
+      - web/server.js
+    services:
+      web:
+        kind: node
+        dir: web
+        depends_on:
+          - backend
+        health:
+          type: tcp

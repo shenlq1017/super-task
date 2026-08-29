@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/supertask-core", "crates/supertask-cli", "src-tauri"]
+members = ["crates/supertask-core", "crates/supertask-cli", "crates/supertask-cloud-server", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

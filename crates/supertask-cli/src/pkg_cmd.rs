@@ -2,9 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::output;
 use supertask_core::pkg;
 use supertask_core::Error;
-use crate::output;
 
 /// 缺省输出名：`supertask-<目录名>-<yyyymmdd-HHmm>.zip`（UTC 时间，避免引日期库）。
 pub fn default_export_name(root: &Path) -> String {
@@ -19,7 +19,11 @@ pub fn default_export_name(root: &Path) -> String {
     let days = secs / 86_400;
     let (y, m, d) = civil_from_days(days as i64);
     let rem = secs % 86_400;
-    format!("supertask-{dir}-{y:04}{m:02}{d:02}-{:02}{:02}.zip", rem / 3600, (rem % 3600) / 60)
+    format!(
+        "supertask-{dir}-{y:04}{m:02}{d:02}-{:02}{:02}.zip",
+        rem / 3600,
+        (rem % 3600) / 60
+    )
 }
 
 /// Howard Hinnant civil_from_days：epoch 天数 → (y, m, d)。
@@ -46,7 +50,10 @@ pub fn run_export(
         Some(p) => p.to_path_buf(),
         None => std::env::current_dir()
             .map_err(|e| {
-                Error::new(supertask_core::ErrorCode::NoWorkspace, format!("无法读取 cwd: {e}"))
+                Error::new(
+                    supertask_core::ErrorCode::NoWorkspace,
+                    format!("无法读取 cwd: {e}"),
+                )
             })?
             .join(default_export_name(root)),
     };
@@ -106,7 +113,9 @@ mod tests {
         assert!(name.starts_with("supertask-whatever-"), "{name}");
         assert!(name.ends_with(".zip"), "{name}");
         // yyyymmdd-HHmm 段长度
-        let core = name.trim_start_matches("supertask-whatever-").trim_end_matches(".zip");
+        let core = name
+            .trim_start_matches("supertask-whatever-")
+            .trim_end_matches(".zip");
         assert_eq!(core.len(), 13, "{core}");
     }
 
@@ -122,14 +131,23 @@ mod tests {
         fs::write(root.join(".env.local"), "DB_PASSWORD=hunter2\n").unwrap();
         fs::write(root.join(".env.shared"), "LOG_LEVEL=info\n").unwrap();
 
-        let zip = root.parent().unwrap().join(format!("st-cli-pkg-{}-rt.zip", std::process::id()));
-        let imported = root.parent().unwrap().join(format!("st-cli-pkg-{}-in", std::process::id()));
+        let zip = root
+            .parent()
+            .unwrap()
+            .join(format!("st-cli-pkg-{}-rt.zip", std::process::id()));
+        let imported = root
+            .parent()
+            .unwrap()
+            .join(format!("st-cli-pkg-{}-in", std::process::id()));
         let _ = fs::remove_dir_all(&imported);
 
         run_export(false, &root, Some(&zip), true).unwrap();
         run_import(false, &zip, &imported).unwrap();
 
-        assert_eq!(fs::read(imported.join("supertask.yaml")).unwrap(), yaml.as_bytes());
+        assert_eq!(
+            fs::read(imported.join("supertask.yaml")).unwrap(),
+            yaml.as_bytes()
+        );
         assert_eq!(
             fs::read_to_string(imported.join(".env.local")).unwrap(),
             "DB_PASSWORD=hunter2\n"

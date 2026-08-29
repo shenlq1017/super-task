@@ -60,11 +60,17 @@ impl ValidateRunner for ProcessValidateRunner {
         let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait().map_err(|e| {
-                Error::new(ErrorCode::GatewayConfigInvalid, format!("等待校验进程失败: {e}"))
+                Error::new(
+                    ErrorCode::GatewayConfigInvalid,
+                    format!("等待校验进程失败: {e}"),
+                )
             })? {
                 Some(_) => {
                     let out = child.wait_with_output().map_err(|e| {
-                        Error::new(ErrorCode::GatewayConfigInvalid, format!("读取校验输出失败: {e}"))
+                        Error::new(
+                            ErrorCode::GatewayConfigInvalid,
+                            format!("读取校验输出失败: {e}"),
+                        )
                     })?;
                     return Ok(ValidateOutcome {
                         code: out.status.code().unwrap_or(-1),
@@ -106,7 +112,10 @@ pub fn conf_file_name(kind: GatewayKind) -> &'static str {
 pub fn write_conf(root: &Path, ir: &ResolvedGateway) -> Result<PathBuf> {
     let dir = gateway_dir(root);
     std::fs::create_dir_all(&dir).map_err(|e| {
-        Error::new(ErrorCode::GatewayConfigInvalid, format!("无法创建 {}: {e}", dir.display()))
+        Error::new(
+            ErrorCode::GatewayConfigInvalid,
+            format!("无法创建 {}: {e}", dir.display()),
+        )
     })?;
     // apache 模块目录：引擎侧由 bin 位置注入（bin 同级 modules/，XAMPP 与
     // 官方 zip 布局一致）；未注入时回落产物目录内 modules（校验会原文报错）
@@ -114,14 +123,13 @@ pub fn write_conf(root: &Path, ir: &ResolvedGateway) -> Result<PathBuf> {
         .apache_modules_dir
         .clone()
         .unwrap_or_else(|| dir.join("modules").to_string_lossy().into_owned());
-    let (name, content) = super::render::render_conf(
-        ir,
-        &dir.to_string_lossy(),
-        &modules_dir,
-    )?;
+    let (name, content) = super::render::render_conf(ir, &dir.to_string_lossy(), &modules_dir)?;
     let conf = dir.join(name);
     std::fs::write(&conf, content).map_err(|e| {
-        Error::new(ErrorCode::GatewayConfigInvalid, format!("写入 {} 失败: {e}", conf.display()))
+        Error::new(
+            ErrorCode::GatewayConfigInvalid,
+            format!("写入 {} 失败: {e}", conf.display()),
+        )
     })?;
     Ok(conf)
 }
@@ -130,7 +138,13 @@ pub fn write_conf(root: &Path, ir: &ResolvedGateway) -> Result<PathBuf> {
 /// `caddy validate --config <conf> --adapter caddyfile` / `httpd -t -f <conf>`。
 pub fn validate_argv(kind: GatewayKind, conf: &Path, prefix: &Path) -> Vec<String> {
     let conf = conf.to_string_lossy().into_owned();
-    let prefix = format!("{}/", prefix.to_string_lossy().replace('\\', "/").trim_end_matches('/'));
+    let prefix = format!(
+        "{}/",
+        prefix
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+    );
     match kind {
         GatewayKind::Nginx => vec![
             "-t".into(),
@@ -156,12 +170,10 @@ pub fn validate_argv(kind: GatewayKind, conf: &Path, prefix: &Path) -> Vec<Strin
 /// （Unix `-DFOREGROUND`；Windows 父子进程由 Job Object 收编，不加该参数）。
 pub fn start_argv(kind: GatewayKind, conf: &Path, prefix: &Path) -> Vec<String> {
     match kind {
-        GatewayKind::Nginx => {
-            validate_argv(kind, conf, prefix)
-                .into_iter()
-                .filter(|s| s != "-t")
-                .collect::<Vec<_>>()
-        }
+        GatewayKind::Nginx => validate_argv(kind, conf, prefix)
+            .into_iter()
+            .filter(|s| s != "-t")
+            .collect::<Vec<_>>(),
         GatewayKind::Caddy => vec![
             "run".into(),
             "--config".into(),
@@ -223,23 +235,25 @@ pub fn validate_gateway(
     } else {
         format!("{} 校验未通过：\n{detail}", ir.kind.as_str())
     };
-    Err(Error::new(ErrorCode::GatewayConfigInvalid, message).details(
-        serde_yaml::to_value(&serde_yaml::Mapping::from_iter([
-            (
-                serde_yaml::Value::String("stderr".into()),
-                serde_yaml::Value::String(stderr.into()),
-            ),
-            (
-                serde_yaml::Value::String("stdout".into()),
-                serde_yaml::Value::String(stdout.into()),
-            ),
-            (
-                serde_yaml::Value::String("engine".into()),
-                serde_yaml::Value::String(ir.kind.as_str().into()),
-            ),
-        ]))
-        .unwrap_or(serde_yaml::Value::Null),
-    ))
+    Err(
+        Error::new(ErrorCode::GatewayConfigInvalid, message).details(
+            serde_yaml::to_value(&serde_yaml::Mapping::from_iter([
+                (
+                    serde_yaml::Value::String("stderr".into()),
+                    serde_yaml::Value::String(stderr.into()),
+                ),
+                (
+                    serde_yaml::Value::String("stdout".into()),
+                    serde_yaml::Value::String(stdout.into()),
+                ),
+                (
+                    serde_yaml::Value::String("engine".into()),
+                    serde_yaml::Value::String(ir.kind.as_str().into()),
+                ),
+            ]))
+            .unwrap_or(serde_yaml::Value::Null),
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -273,7 +287,12 @@ mod tests {
     }
 
     impl ValidateRunner for FakeValidate {
-        fn run(&self, _program: &Path, _args: &[String], _timeout: Duration) -> Result<ValidateOutcome> {
+        fn run(
+            &self,
+            _program: &Path,
+            _args: &[String],
+            _timeout: Duration,
+        ) -> Result<ValidateOutcome> {
             self.outcomes
                 .lock()
                 .unwrap()
@@ -302,8 +321,15 @@ mod tests {
     #[test]
     fn validate_ok_writes_conf_file() {
         let root = ws_root("ok");
-        let ir = ir_of("  kind: nginx\n  port: 8080\n  routes:\n    - path: /\n      target: api\n");
-        let conf = validate_gateway(&root, &ir, Path::new("C:/bin/nginx.exe"), &FakeValidate::ok()).unwrap();
+        let ir =
+            ir_of("  kind: nginx\n  port: 8080\n  routes:\n    - path: /\n      target: api\n");
+        let conf = validate_gateway(
+            &root,
+            &ir,
+            Path::new("C:/bin/nginx.exe"),
+            &FakeValidate::ok(),
+        )
+        .unwrap();
         assert_eq!(conf, gateway_dir(&root).join("nginx.conf"));
         let text = std::fs::read_to_string(&conf).unwrap();
         assert!(text.contains("proxy_pass http://127.0.0.1:8081;"), "{text}");
@@ -351,7 +377,14 @@ mod tests {
         assert_eq!(a[1], "-f");
 
         let n = validate_argv(GatewayKind::Nginx, &conf_a, &gateway_dir(&root));
-        assert_eq!(&n[0..3], &["-t".to_string(), "-c".to_string(), conf_a.to_string_lossy().into_owned()]);
+        assert_eq!(
+            &n[0..3],
+            &[
+                "-t".to_string(),
+                "-c".to_string(),
+                conf_a.to_string_lossy().into_owned()
+            ]
+        );
         assert!(n.contains(&"-p".to_string()) && n.contains(&"-e".to_string()));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -368,7 +401,10 @@ mod tests {
         assert_eq!(c[0], "run");
         let a = start_argv(GatewayKind::Apache, conf, prefix);
         #[cfg(windows)]
-        assert_eq!(a, vec!["-f".to_string(), conf.to_string_lossy().into_owned()]);
+        assert_eq!(
+            a,
+            vec!["-f".to_string(), conf.to_string_lossy().into_owned()]
+        );
         #[cfg(not(windows))]
         assert_eq!(a[0], "-DFOREGROUND");
     }

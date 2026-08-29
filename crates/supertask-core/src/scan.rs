@@ -57,6 +57,8 @@ pub fn scan_draft_with_runner(
     let mut warnings = Vec::new();
     let mut services = IndexMap::new();
     let mut port_java = 8080u16;
+    let mut port_python = 8000u16;
+    let mut port_go = 8080u16;
     let mut spring_ids = Vec::new();
 
     // ---- Maven：递归找所有 reactor 根（工作区根可以是普通容器目录） ----
@@ -71,7 +73,9 @@ pub fn scan_draft_with_runner(
         let reactor_dir = root.join(&reactor.rel);
         let parent_text = fs::read_to_string(reactor_dir.join("pom.xml")).unwrap_or_default();
         for module in &reactor.modules {
-            let child_pom = reactor_dir.join(module.replace('/', std::path::MAIN_SEPARATOR_STR)).join("pom.xml");
+            let child_pom = reactor_dir
+                .join(module.replace('/', std::path::MAIN_SEPARATOR_STR))
+                .join("pom.xml");
             if !child_pom.is_file() {
                 warnings.push(format!("跳过 {module}：无 pom.xml"));
                 continue;
@@ -139,13 +143,17 @@ pub fn scan_draft_with_runner(
 
     scan_node_roots(root, &reactors, &mut services, &mut warnings);
 
+    // 1.7 §6：Python / Go 工程识别（pyproject|requirements / go.mod）
+    scan_python_roots(root, &mut services, &mut port_python, &mut warnings);
+    scan_go_roots(root, &mut services, &mut port_go, &mut warnings);
+
     // 1.3 §7：compose 文件发现 → kind: compose 服务草稿（Docker 不可用 → 警告跳过）
     let docker_spec = scan_compose(root, runner, &mut services, &mut warnings);
 
     if services.is_empty() {
         return Err(Error::new(
             ErrorCode::NoYaml,
-            "未扫描到 spring-boot 模块或 package.json。已支持多层 Maven 工程与嵌套 Node 项目；若服务在更深的目录（>4 层），请直接打开其父工程。",
+            "未扫描到 spring-boot 模块、package.json、pyproject.toml/requirements.txt 或 go.mod。已支持多层 Maven/Gradle 工程、嵌套 Node 项目与 Python/Go 工程；若服务在更深的目录（>4 层），请直接打开其父工程。",
         ));
     }
 
@@ -222,6 +230,10 @@ impl ServiceSpec {
             dir: None,
             package_manager: None,
             script: None,
+            entry: None,
+            package: None,
+            program: None,
+            args: vec![],
             logging: None,
             resources: None,
             build_args: vec![],
@@ -266,7 +278,11 @@ fn insert_spring_with_cwd(
 ) {
     let id = unique_id(&sanitize_id(artifact), services);
     // -pl 在 reactor 根执行；reactor 不在工作区根时 cwd 必须指向它
-    let cwd = if reactor_rel == "." { None } else { Some(reactor_rel) };
+    let cwd = if reactor_rel == "." {
+        None
+    } else {
+        Some(reactor_rel)
+    };
     services.insert(
         id.clone(),
         ServiceSpec {
@@ -318,7 +334,12 @@ fn pom_declares_boot_plugin(pom: &str) -> bool {
 
 /// 可启动判定：boot 插件（用户可能有自定义 main，不强求启动类）
 /// 或 存在 @SpringBootApplication 启动类。纯库模块两者皆无 → 跳过并 warning。
-fn is_launchable_module(pom: &str, module_dir: &Path, warnings: &mut Vec<String>, label: &str) -> bool {
+fn is_launchable_module(
+    pom: &str,
+    module_dir: &Path,
+    warnings: &mut Vec<String>,
+    label: &str,
+) -> bool {
     if pom_declares_boot_plugin(pom) {
         return true;
     }
@@ -369,7 +390,11 @@ fn visit_java_files(dir: &Path, depth: usize, f: &mut impl FnMut(&Path)) {
 
 /// BFS 收集工作区内所有 Maven reactor 根（含 `<modules>` 的 pom）。
 /// 工作区根本身没 pom 也能下钻 —— 典型如后端在 server/ 子目录的单仓库。
-fn collect_reactors(root: &Path, budget: &mut ScanBudget, warnings: &mut Vec<String>) -> Vec<Reactor> {
+fn collect_reactors(
+    root: &Path,
+    budget: &mut ScanBudget,
+    warnings: &mut Vec<String>,
+) -> Vec<Reactor> {
     let mut out = Vec::new();
     let mut queue: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), ".".into())];
 
@@ -392,7 +417,10 @@ fn collect_reactors(root: &Path, budget: &mut ScanBudget, warnings: &mut Vec<Str
             }
         };
         let modules = pom_modules(&text);
-        out.push(Reactor { rel: rel.clone(), modules: modules.clone() });
+        out.push(Reactor {
+            rel: rel.clone(),
+            modules: modules.clone(),
+        });
         // 聚合模块要探；同时兄弟目录可能藏着独立工程，也入队
         push_children_filtered(&dir, &rel, &modules, &mut queue);
     }
@@ -415,7 +443,10 @@ fn push_children_filtered(
             continue;
         }
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) || is_pom_hinted_module(&name, exclude) {
+        if name.starts_with('.')
+            || SKIP_DIRS.contains(&name.as_str())
+            || is_pom_hinted_module(&name, exclude)
+        {
             continue;
         }
         let child_rel = join_rel(rel, &name);
@@ -444,7 +475,11 @@ fn join_rel(base: &str, seg: &str) -> String {
 }
 
 fn rel_depth(rel: &str) -> usize {
-    if rel == "." { 0 } else { rel.split('/').count() }
+    if rel == "." {
+        0
+    } else {
+        rel.split('/').count()
+    }
 }
 
 #[derive(Default)]
@@ -493,7 +528,13 @@ fn first_artifact_id(pom: &str) -> Option<String> {
 fn sanitize_id(raw: &str) -> String {
     let mut s: String = raw
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     if s.is_empty() || !s.as_bytes()[0].is_ascii_alphabetic() {
         s = format!("svc-{s}");
@@ -563,7 +604,11 @@ fn scan_node_roots(
         } else if pkg_has_script(&txt, "start") {
             "start"
         } else {
-            warnings.push(format!("{}{} 无 dev/start script，生成后需手选", display_rel("."), rel));
+            warnings.push(format!(
+                "{}{} 无 dev/start script，生成后需手选",
+                display_rel("."),
+                rel
+            ));
             "dev"
         };
         let pm = detect_pm(root, Path::new(&rel), &txt);
@@ -598,7 +643,9 @@ fn collect_pkg_dirs(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>
         return;
     }
     if dir.join("package.json").is_file() {
-        out.push(if depth == 0 { ".".into() } else {
+        out.push(if depth == 0 {
+            ".".into()
+        } else {
             dir.strip_prefix(root)
                 .unwrap_or(dir)
                 .to_string_lossy()
@@ -612,7 +659,10 @@ fn collect_pkg_dirs(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>
         if !p.is_dir() {
             continue;
         }
-        let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
             continue;
         }
@@ -622,6 +672,199 @@ fn collect_pkg_dirs(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>
 
 fn pkg_has_script(txt: &str, name: &str) -> bool {
     txt.contains(&format!("\"{name}\"")) && txt.contains("\"scripts\"")
+}
+
+// ============================================================================
+// 1.7 §6：Python / Go 工程识别
+// ============================================================================
+
+/// BFS 收集含任一 marker 文件的目录相对路径（"." 代表根）。浅层优先、稳定排序。
+fn collect_marker_dirs(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    markers: &[&str],
+    out: &mut Vec<String>,
+) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    if markers.iter().any(|m| dir.join(m).is_file()) {
+        out.push(if depth == 0 {
+            ".".into()
+        } else {
+            dir.strip_prefix(root)
+                .unwrap_or(dir)
+                .to_string_lossy()
+                .replace('\\', "/")
+        });
+    }
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut children: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+    children.sort();
+    for p in children {
+        if !p.is_dir() {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        collect_marker_dirs(root, &p, depth + 1, markers, out);
+    }
+}
+
+/// 已被 node/python/go 服务占用的 dir（避免同一目录重复生成服务）。
+fn used_dirs(services: &IndexMap<String, ServiceSpec>) -> Vec<String> {
+    services
+        .values()
+        .filter(|s| s.kind == "node" || s.kind == "python" || s.kind == "go")
+        .filter_map(|s| s.dir.clone())
+        .collect()
+}
+
+/// Python 入口猜测顺序：manage.py（Django，附 runserver）> main.py > app.py >
+/// server.py > app/main.py。全不中 → entry 留空 + 警告（用户手写 entry/module）。
+const PYTHON_ENTRY_CANDIDATES: &[&str] = &["main.py", "app.py", "server.py", "app/main.py"];
+
+fn guess_python_entry(dir_path: &Path) -> (Option<String>, Vec<String>) {
+    if dir_path.join("manage.py").is_file() {
+        return (Some("manage.py".into()), vec!["runserver".into()]);
+    }
+    for cand in PYTHON_ENTRY_CANDIDATES {
+        if dir_path
+            .join(cand.replace('/', std::path::MAIN_SEPARATOR_STR))
+            .is_file()
+        {
+            return (Some((*cand).into()), vec![]);
+        }
+    }
+    (None, vec![])
+}
+
+fn scan_python_roots(
+    root: &Path,
+    services: &mut IndexMap<String, ServiceSpec>,
+    port_start: &mut u16,
+    warnings: &mut Vec<String>,
+) {
+    const MARKERS: &[&str] = &["pyproject.toml", "requirements.txt"];
+    let mut dirs: Vec<String> = Vec::new();
+    collect_marker_dirs(root, root, 0, MARKERS, &mut dirs);
+    let used = used_dirs(services);
+
+    for rel in dirs {
+        if used.iter().any(|d| *d == rel) {
+            continue;
+        }
+        let dir_path = if rel == "." {
+            root.to_path_buf()
+        } else {
+            root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+        };
+        // 每目录只取一个特征：pyproject 优先于 requirements
+        if !dir_path.join("pyproject.toml").is_file()
+            && !dir_path.join("requirements.txt").is_file()
+        {
+            continue;
+        }
+        let (entry, extra) = guess_python_entry(&dir_path);
+        if entry.is_none() {
+            warnings.push(format!(
+                "{} 未识别入口（manage/main/app/server.py 均缺），生成后需手写 entry 或 module",
+                display_rel(&rel)
+            ));
+        }
+        let id_src = if rel == "." {
+            "py-app".to_string()
+        } else {
+            rel.rsplit('/').next().unwrap_or(&rel).to_string()
+        };
+        let id = unique_id(&sanitize_id(&id_src), services);
+        let mut spec = ServiceSpec::default_service();
+        spec.kind = "python".into();
+        spec.dir = Some(rel);
+        spec.entry = entry;
+        spec.port = Some(*port_start);
+        spec.extra_args = extra;
+        // grace/health 交给 apply_defaults（python 15 / tcp-with-port）
+        services.insert(id, spec);
+        *port_start = port_start.saturating_add(1);
+    }
+}
+
+/// Go 包路径猜测：`cmd/` 下恰一个子目录 → `./cmd/<name>`；多个 → "." + 警告；
+/// 无 cmd → "."（`go run .` 即工程根 main 包）。
+fn guess_go_package(dir_path: &Path, warnings: &mut Vec<String>, label: &str) -> String {
+    let cmd = dir_path.join("cmd");
+    if !cmd.is_dir() {
+        return ".".into();
+    }
+    let mut subs: Vec<String> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&cmd) {
+        for e in rd.flatten() {
+            if e.path().is_dir() {
+                if let Some(n) = e.file_name().to_str() {
+                    subs.push(n.to_string());
+                }
+            }
+        }
+    }
+    subs.sort();
+    match subs.len() {
+        1 => format!("./cmd/{}", subs[0]),
+        0 => ".".into(),
+        _ => {
+            warnings.push(format!(
+                "{label} 含多个 cmd 子包（{}），生成后需手写 package",
+                subs.join(", ")
+            ));
+            ".".into()
+        }
+    }
+}
+
+fn scan_go_roots(
+    root: &Path,
+    services: &mut IndexMap<String, ServiceSpec>,
+    port_start: &mut u16,
+    warnings: &mut Vec<String>,
+) {
+    let mut dirs: Vec<String> = Vec::new();
+    collect_marker_dirs(root, root, 0, &["go.mod"], &mut dirs);
+    let used = used_dirs(services);
+
+    for rel in dirs {
+        if used.iter().any(|d| *d == rel) {
+            continue;
+        }
+        let dir_path = if rel == "." {
+            root.to_path_buf()
+        } else {
+            root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+        };
+        if !dir_path.join("go.mod").is_file() {
+            continue;
+        }
+        let id_src = if rel == "." {
+            "go-app".to_string()
+        } else {
+            rel.rsplit('/').next().unwrap_or(&rel).to_string()
+        };
+        let id = unique_id(&sanitize_id(&id_src), services);
+        let package = guess_go_package(&dir_path, warnings, display_rel(&rel));
+        let mut spec = ServiceSpec::default_service();
+        spec.kind = "go".into();
+        spec.dir = Some(rel);
+        spec.package = Some(package);
+        spec.port = Some(*port_start);
+        // grace/health 交给 apply_defaults（go 60 / tcp-with-port）
+        services.insert(id, spec);
+        *port_start = port_start.saturating_add(1);
+    }
 }
 
 // ============================================================================
@@ -709,10 +952,17 @@ fn parse_gradle_includes(text: &str, warnings: &mut Vec<String>) -> Vec<String> 
             continue;
         };
         // includeFlat / includeFolders：暂不支持，警告跳过
-        if let Some(_) = rest.strip_prefix("Flat").or_else(|| rest.strip_prefix("Folders")) {
+        if let Some(_) = rest
+            .strip_prefix("Flat")
+            .or_else(|| rest.strip_prefix("Folders"))
+        {
             warnings.push(format!(
                 "settings.gradle 的 include{label} 暂不支持，已跳过: {line}",
-                label = if rest.starts_with("Flat") { "Flat" } else { "Folders" }
+                label = if rest.starts_with("Flat") {
+                    "Flat"
+                } else {
+                    "Folders"
+                }
             ));
             continue;
         }
@@ -879,7 +1129,10 @@ fn compose_config_model(
                     "未找到 docker。请安装 Docker Desktop 并确保在 PATH 中。",
                 )
             } else {
-                Error::new(ErrorCode::ComposeConfigFailed, format!("docker compose config 执行失败: {e}"))
+                Error::new(
+                    ErrorCode::ComposeConfigFailed,
+                    format!("docker compose config 执行失败: {e}"),
+                )
             }
         })?;
     if out.code != 0 {
@@ -1027,7 +1280,11 @@ mod tests {
         let a = file.services.get("knife4j-demo-openapi3").unwrap();
         assert_eq!(a.module.as_deref(), Some("demo-a"));
         assert_eq!(
-            file.services.get("knife4j-demo-openapi2").unwrap().module.as_deref(),
+            file.services
+                .get("knife4j-demo-openapi2")
+                .unwrap()
+                .module
+                .as_deref(),
             Some("demo-b")
         );
         assert_eq!(a.health.as_ref().unwrap().r#type, HealthType::Tcp);
@@ -1053,7 +1310,10 @@ mod tests {
         let svc = file.services.get("demo-app").unwrap();
         assert_eq!(svc.module.as_deref(), Some("."));
         assert_eq!(svc.cwd, None);
-        assert_eq!(file.scripts.get("bootstrap").map(|s| s.cwd.clone()), Some(None));
+        assert_eq!(
+            file.scripts.get("bootstrap").map(|s| s.cwd.clone()),
+            Some(None)
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1085,10 +1345,17 @@ mod tests {
         .unwrap();
         let app_java = root.join("server/nest-store-bootstrap/src/main/java/com/neststore");
         fs::create_dir_all(&app_java).unwrap();
-        fs::write(app_java.join("NestStoreApplication.java"), "@SpringBootApplication\npublic class NestStoreApplication {}").unwrap();
+        fs::write(
+            app_java.join("NestStoreApplication.java"),
+            "@SpringBootApplication\npublic class NestStoreApplication {}",
+        )
+        .unwrap();
 
         let (file, _warnings) = scan_draft(&root).unwrap();
-        let boot = file.services.get("nest-store-bootstrap").expect("bootstrap 未被识别");
+        let boot = file
+            .services
+            .get("nest-store-bootstrap")
+            .expect("bootstrap 未被识别");
         // cwd 指向 reactor 子目录；-pl 路径相对 reactor
         assert_eq!(boot.cwd.as_deref(), Some("server"));
         assert_eq!(boot.module.as_deref(), Some("nest-store-bootstrap"));
@@ -1105,13 +1372,28 @@ mod tests {
         let root = std::env::temp_dir().join(format!("st-scan-monorepo-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("apps/web")).unwrap();
-        fs::write(root.join("package.json"), r#"{"name":"repo","workspaces":["apps/*"]}"#).unwrap();
-        fs::write(root.join("apps/web/package.json"), r#"{"name":"web","scripts":{"dev":"vite"}}"#).unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"repo","workspaces":["apps/*"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps/web/package.json"),
+            r#"{"name":"web","scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
         let (file, _) = scan_draft(&root).unwrap();
         // workspaces 根自身不是服务；只有 apps/web 一个 node 服务
         assert_eq!(file.services.len(), 1);
-        assert!(!file.services.values().any(|s| s.dir.as_deref() == Some(".")));
-        let web = file.services.values().find(|s| s.kind == "node").expect("深层 web 未识别");
+        assert!(!file
+            .services
+            .values()
+            .any(|s| s.dir.as_deref() == Some(".")));
+        let web = file
+            .services
+            .values()
+            .find(|s| s.kind == "node")
+            .expect("深层 web 未识别");
         assert_eq!(web.dir.as_deref(), Some("apps/web"));
         let _ = fs::remove_dir_all(&root);
     }
@@ -1122,7 +1404,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("st-scan-lib-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("core-lib")).unwrap();
-        fs::write(root.join("pom.xml"), r#"<project><modules><module>core-lib</module></modules></project>"#).unwrap();
+        fs::write(
+            root.join("pom.xml"),
+            r#"<project><modules><module>core-lib</module></modules></project>"#,
+        )
+        .unwrap();
         fs::write(
             root.join("core-lib/pom.xml"),
             r#"<project><artifactId>core-lib</artifactId>
@@ -1192,7 +1478,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("st-scan-comp-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:7\n",
+        )
+        .unwrap();
         let fake = crate::docker::FakeDockerRunner::new();
         fake.push_ok(compose_config_fixture());
         let (file, warnings) = scan_draft_with_runner(&root, &fake).unwrap();
@@ -1207,7 +1497,10 @@ mod tests {
         assert_eq!(redis.service.as_deref(), Some("redis"));
         assert_eq!(redis.port, Some(6379));
         assert_eq!(
-            redis.labels.get("supertask.docker.build").map(String::as_str),
+            redis
+                .labels
+                .get("supertask.docker.build")
+                .map(String::as_str),
             Some("true")
         );
 
@@ -1234,7 +1527,12 @@ mod tests {
         let root = std::env::temp_dir().join(format!("st-scan-comppri-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        for name in ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"] {
+        for name in [
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+        ] {
             fs::write(root.join(name), "services:\n  redis:\n    image: redis:7\n").unwrap();
         }
         let fake = crate::docker::FakeDockerRunner::new();
@@ -1244,7 +1542,9 @@ mod tests {
             file.docker.as_ref().unwrap().compose_file.as_deref(),
             Some("compose.yaml")
         );
-        assert!(warnings.iter().any(|w| w.contains("docker-compose.yaml") && w.contains("compose.yaml")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("docker-compose.yaml") && w.contains("compose.yaml")));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1264,13 +1564,20 @@ mod tests {
             r#"<project><artifactId>api</artifactId><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>"#,
         )
         .unwrap();
-        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:7\n",
+        )
+        .unwrap();
         // PATH 无 docker → DOCKER_NOT_FOUND 警告，其余扫描照常
         let fake = crate::docker::FakeDockerRunner::new();
         fake.push_err(std::io::ErrorKind::NotFound);
         let (file, warnings) = scan_draft_with_runner(&root, &fake).unwrap();
         assert!(file.docker.is_none(), "Docker 不可用时不写 docker 段");
-        assert!(warnings.iter().any(|w| w.contains("DOCKER_NOT_FOUND")), "{warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("DOCKER_NOT_FOUND")),
+            "{warnings:?}"
+        );
         assert!(file.services.contains_key("api"), "其余扫描照常");
         assert!(!file.services.values().any(|s| s.kind == "compose"));
         let _ = fs::remove_dir_all(&root);
@@ -1281,14 +1588,21 @@ mod tests {
         let root = std::env::temp_dir().join(format!("st-scan-compbad-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:7\n",
+        )
+        .unwrap();
         let fake = crate::docker::FakeDockerRunner::new();
         fake.push_fail(1, "invalid compose file");
         // compose 段被跳过后无任何服务：既有工作区走 NoYaml 错误路径，二者都合法
         match scan_draft_with_runner(&root, &fake) {
             Ok((file, warnings)) => {
                 assert!(file.docker.is_none());
-                assert!(warnings.iter().any(|w| w.contains("invalid compose file")), "{warnings:?}");
+                assert!(
+                    warnings.iter().any(|w| w.contains("invalid compose file")),
+                    "{warnings:?}"
+                );
             }
             Err(e) => assert_eq!(e.code(), ErrorCode::NoYaml),
         }
@@ -1360,9 +1674,16 @@ includedBuild 'other-repo'
             "plugins {\n  id 'org.springframework.boot'\n  id 'io.spring.dependency-management'\n}\ndependencies { implementation 'org.springframework.boot:spring-boot-starter-actuator' }\n",
         )
         .unwrap();
-        fs::write(root.join("lib/build.gradle"), "plugins { id 'java-library' }\n").unwrap();
+        fs::write(
+            root.join("lib/build.gradle"),
+            "plugins { id 'java-library' }\n",
+        )
+        .unwrap();
         let (file, warnings) = scan_draft(&root).unwrap();
-        let api = file.services.get("user-service").expect("boot 模块应生成草稿");
+        let api = file
+            .services
+            .get("user-service")
+            .expect("boot 模块应生成草稿");
         assert_eq!(api.kind, "spring-boot");
         assert_eq!(api.build_tool.as_deref(), Some("gradle"));
         assert_eq!(api.module.as_deref(), Some("user-service"));
@@ -1410,7 +1731,11 @@ includedBuild 'other-repo'
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("api")).unwrap();
         fs::write(root.join("settings.gradle"), "include 'api'\n").unwrap();
-        fs::write(root.join("api/build.gradle"), "id 'org.springframework.boot'\n").unwrap();
+        fs::write(
+            root.join("api/build.gradle"),
+            "id 'org.springframework.boot'\n",
+        )
+        .unwrap();
         let (draft, _) = scan_draft(&root).unwrap();
         let current = crate::spec::parse_yaml(
             "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    build_tool: maven\n    port: 9090\n",
@@ -1442,12 +1767,127 @@ includedBuild 'other-repo'
         let root = std::env::temp_dir().join(format!("st-scan-componly-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("compose.yaml"), "services:\n  redis:\n    image: redis:7\n").unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            "services:\n  redis:\n    image: redis:7\n",
+        )
+        .unwrap();
         let fake = crate::docker::FakeDockerRunner::new();
         fake.push_ok(compose_config_fixture());
         let (file, _) = scan_draft_with_runner(&root, &fake).unwrap();
         assert_eq!(file.services.len(), 3);
         assert!(file.docker.as_ref().unwrap().compose_file.is_some());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- 1.7 §6：Python / Go 识别 ----
+
+    #[test]
+    fn python_pyproject_guesses_main_entry() {
+        let root = std::env::temp_dir().join(format!("st-scan-py1-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let backend = root.join("backend");
+        fs::create_dir_all(&backend).unwrap();
+        fs::write(backend.join("pyproject.toml"), "[project]\nname='x'\n").unwrap();
+        fs::write(backend.join("main.py"), b"").unwrap();
+        let (file, _) = scan_draft(&root).unwrap();
+        let (id, svc) = file
+            .services
+            .iter()
+            .find(|(_, s)| s.kind == "python")
+            .unwrap();
+        assert_eq!(svc.dir.as_deref(), Some("backend"));
+        assert_eq!(svc.entry.as_deref(), Some("main.py"));
+        assert!(svc.extra_args.is_empty());
+        assert_eq!(svc.port, Some(8000));
+        assert!(!id.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_manage_py_gets_runserver() {
+        let root = std::env::temp_dir().join(format!("st-scan-py2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("requirements.txt"), "django\n").unwrap();
+        fs::write(root.join("manage.py"), b"").unwrap();
+        let (file, _) = scan_draft(&root).unwrap();
+        let (_, svc) = file
+            .services
+            .iter()
+            .find(|(_, s)| s.kind == "python")
+            .unwrap();
+        assert_eq!(svc.entry.as_deref(), Some("manage.py"));
+        assert_eq!(svc.extra_args, ["runserver"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_no_entry_warns() {
+        let root = std::env::temp_dir().join(format!("st-scan-py3-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let be = root.join("svc");
+        fs::create_dir_all(&be).unwrap();
+        fs::write(be.join("pyproject.toml"), "").unwrap();
+        let (_, warnings) = scan_draft(&root).unwrap();
+        assert!(
+            warnings.iter().any(|w| w.contains("未识别入口")),
+            "{warnings:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn go_single_cmd_guesses_package_multi_warns() {
+        let root = std::env::temp_dir().join(format!("st-scan-go1-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("cmd/server")).unwrap();
+        fs::write(root.join("go.mod"), "module x\n\ngo 1.23\n").unwrap();
+        let (file, warnings) = scan_draft(&root).unwrap();
+        let (_, svc) = file.services.iter().find(|(_, s)| s.kind == "go").unwrap();
+        assert_eq!(svc.package.as_deref(), Some("./cmd/server"));
+        assert_eq!(svc.port, Some(8080));
+        // 多候选 → "." + 警告
+        fs::create_dir_all(root.join("cmd/worker")).unwrap();
+        let (_, warnings2) = scan_draft(&root).unwrap();
+        assert!(
+            warnings2.iter().any(|w| w.contains("多个 cmd 子包")),
+            "{warnings2:?}"
+        );
+        let (f2, _) = scan_draft(&root).unwrap();
+        let svc2 = f2
+            .services
+            .values()
+            .find(|s| s.kind == "go")
+            .unwrap()
+            .clone();
+        assert_eq!(svc2.package.as_deref(), Some("."));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_go_same_dir_dedup() {
+        // 同目录 pyproject + go.mod：python 先扫占用 "."，go 扫描按 dir 去重跳过
+        let root = std::env::temp_dir().join(format!("st-scan-mix-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("pyproject.toml"), "").unwrap();
+        fs::write(root.join("go.mod"), "module x\n").unwrap();
+        fs::write(root.join("main.py"), b"").unwrap();
+        let (file, _) = scan_draft(&root).unwrap();
+        let kinds: Vec<&str> = file.services.values().map(|s| s.kind.as_str()).collect();
+        assert!(kinds.contains(&"python"));
+        assert!(
+            !kinds.contains(&"go"),
+            "同 dir 已被 python 占用，go 不重复生成"
+        );
+        // 分目录则两者共存
+        let be = root.join("be");
+        fs::create_dir_all(&be).unwrap();
+        fs::write(be.join("go.mod"), "module y\n").unwrap();
+        let (file2, _) = scan_draft(&root).unwrap();
+        let kinds2: Vec<&str> = file2.services.values().map(|s| s.kind.as_str()).collect();
+        assert!(kinds2.contains(&"python") && kinds2.contains(&"go"));
         let _ = fs::remove_dir_all(&root);
     }
 }

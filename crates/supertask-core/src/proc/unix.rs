@@ -39,7 +39,9 @@ pub struct UnixProcessGroup {
 
 impl UnixProcessGroup {
     pub fn new() -> Self {
-        Self { pgid: Mutex::new(None) }
+        Self {
+            pgid: Mutex::new(None),
+        }
     }
 
     fn pgid(&self) -> Option<i32> {
@@ -186,7 +188,11 @@ fn group_cpu_ms(pgid: i32) -> Option<u64> {
     if pids.is_empty() {
         return None;
     }
-    let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+    let list = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let out = std::process::Command::new("ps")
         .args(["-o", "cputime=", "-p", &list])
         .output()
@@ -233,7 +239,11 @@ fn group_memory_bytes(pgid: i32) -> Option<u64> {
     if pids.is_empty() {
         return None;
     }
-    let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+    let list = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let out = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &list])
         .output()

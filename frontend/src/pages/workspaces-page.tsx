@@ -14,6 +14,7 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "../providers/workspace-provider";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
+import { WorkspacePkgCard } from "../components/workspace-pkg-card";
 import { isTauri } from "../ipc/invoke";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
@@ -101,6 +102,12 @@ export function WorkspacesPage() {
             <Button variant="outline" size="sm" onClick={() => void pickDirectory()} disabled={busy} className="gap-1">
               <FolderSearch /> {t("workspace.openOther")}
             </Button>
+          </div>
+
+          {/* 工作区包（1.7 §9.1：导出/导入入口归位工作区模块） */}
+          <div>
+            <div className="mb-2 text-[0.68rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">{t("pages.workspaces.pkgLabel")}</div>
+            <WorkspacePkgCard />
           </div>
 
           {/* 当前工作区 */}

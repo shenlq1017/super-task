@@ -71,8 +71,12 @@ fn load_taskfile(root: &Path) -> Result<String> {
                 ),
             )
         })?;
-    std::fs::read_to_string(root.join(candidate))
-        .map_err(|e| Error::new(ErrorCode::TaskfileInvalid, format!("读取 Taskfile 失败: {e}")))
+    std::fs::read_to_string(root.join(candidate)).map_err(|e| {
+        Error::new(
+            ErrorCode::TaskfileInvalid,
+            format!("读取 Taskfile 失败: {e}"),
+        )
+    })
 }
 
 fn parse_yaml_value(text: &str) -> Result<Value> {
@@ -91,7 +95,10 @@ fn parse_yaml_value(text: &str) -> Result<Value> {
 
 /// §7.2 `import.taskfilePreview`：纯内存计算，无落盘。
 /// `current_scripts` 来自当前 supertask.yaml，用于标记 id_conflict。
-pub fn preview(root: &Path, current_scripts: Option<&IndexMap<String, ScriptSpec>>) -> Result<TaskfilePreview> {
+pub fn preview(
+    root: &Path,
+    current_scripts: Option<&IndexMap<String, ScriptSpec>>,
+) -> Result<TaskfilePreview> {
     let (tasks, warnings) = build_items(root, current_scripts)?;
     Ok(TaskfilePreview {
         tasks: tasks.into_iter().map(|b| b.item).collect(),
@@ -137,10 +144,19 @@ pub fn apply(
     if !missing.is_empty() {
         return Err(Error::new(
             ErrorCode::NotFound,
-            format!("预览项不存在: {}", missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
+            format!(
+                "预览项不存在: {}",
+                missing
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         ));
     }
-    warnings.push(format!("已导入 {applied} 个脚本（一次性迁移，之后不跟随 Taskfile 变化）"));
+    warnings.push(format!(
+        "已导入 {applied} 个脚本（一次性迁移，之后不跟随 Taskfile 变化）"
+    ));
     Ok((out, warnings))
 }
 
@@ -150,9 +166,9 @@ fn build_items(
 ) -> Result<(Vec<BuiltTask>, Vec<String>)> {
     let text = load_taskfile(root)?;
     let value = parse_yaml_value(&text)?;
-    let map = value.as_mapping().ok_or_else(|| {
-        Error::new(ErrorCode::TaskfileInvalid, "Taskfile 顶层必须是映射")
-    })?;
+    let map = value
+        .as_mapping()
+        .ok_or_else(|| Error::new(ErrorCode::TaskfileInvalid, "Taskfile 顶层必须是映射"))?;
 
     // version 必须是 '3'（字符串或数字）
     match map.get(Value::from("version")) {
@@ -201,10 +217,7 @@ fn build_items(
         Some(Value::Mapping(m)) => m,
         Some(Value::Null) | None => &empty_map,
         _ => {
-            return Err(Error::new(
-                ErrorCode::TaskfileInvalid,
-                "tasks 段必须是映射",
-            ));
+            return Err(Error::new(ErrorCode::TaskfileInvalid, "tasks 段必须是映射"));
         }
     };
 
@@ -216,7 +229,16 @@ fn build_items(
             warnings.push("tasks 存在非字符串任务名，已跳过".to_string());
             continue;
         };
-        build_one_task(root, &task_name, value, &global_env, current_scripts, &mut used_ids, &mut built, &mut warnings);
+        build_one_task(
+            root,
+            &task_name,
+            value,
+            &global_env,
+            current_scripts,
+            &mut used_ids,
+            &mut built,
+            &mut warnings,
+        );
     }
     Ok((built, warnings))
 }
@@ -250,7 +272,10 @@ fn build_one_task(
     if let Some(shell) = task_map.get(Value::from("shell")) {
         let shell_name = shell.as_str().unwrap_or("");
         if !matches!(shell_name, "bash" | "sh") {
-            skip(format!("指定了非默认 shell（{shell_name}），执行 shell 不一致"), warnings);
+            skip(
+                format!("指定了非默认 shell（{shell_name}），执行 shell 不一致"),
+                warnings,
+            );
             return;
         }
     }
@@ -264,7 +289,10 @@ fn build_one_task(
     let mut item_warnings: Vec<String> = Vec::new();
 
     // 忽略字段警告（§7.1）
-    if task_map.get(Value::from("deps")).is_some_and(|v| !v.is_null()) {
+    if task_map
+        .get(Value::from("deps"))
+        .is_some_and(|v| !v.is_null())
+    {
         item_warnings.push("deps 忽略（scripts.depends_on 预留）".to_string());
     }
     for field in ["sources", "generates", "method", "status"] {
@@ -354,10 +382,7 @@ fn build_one_task(
     // id 合法化 + 导入内冲突 → -task 后缀
     let script_id = unique_id(legalize_id(task_name), used_ids);
     if script_id != task_name {
-        item_warnings.insert(
-            0,
-            format!("任务名 {task_name} 合法化为脚本 id {script_id}"),
-        );
+        item_warnings.insert(0, format!("任务名 {task_name} 合法化为脚本 id {script_id}"));
     }
 
     let id_conflict = current_scripts
@@ -658,7 +683,10 @@ mod tests {
         assert!(tasks[0].internal && !tasks[0].selected);
         assert!(tasks[0].warnings.iter().any(|w| w.contains("internal")));
         let merged = merged_spec(&demo_spec(), &dir, &["helper"]);
-        assert!(merged.scripts.get("helper").is_none(), "internal 不可被选中导入");
+        assert!(
+            merged.scripts.get("helper").is_none(),
+            "internal 不可被选中导入"
+        );
     }
 
     #[test]
@@ -678,7 +706,10 @@ mod tests {
         let merged = merged_spec(&demo_spec(), &dir, &["deploy"]);
         let script = merged.scripts.get("deploy").unwrap();
         assert_eq!(script.cmds[0], "echo {{.TARGET}}");
-        assert_eq!(script.env.get("TOKEN").map(String::as_str), Some("$DEPLOY_TOKEN"));
+        assert_eq!(
+            script.env.get("TOKEN").map(String::as_str),
+            Some("$DEPLOY_TOKEN")
+        );
     }
 
     #[test]
@@ -739,7 +770,14 @@ mod tests {
         assert!(out.warnings.iter().any(|w| w.contains("includes")));
         let item = &out.tasks[0];
         let w = item.warnings.join("\n");
-        for token in ["deps", "sources", "generates", "method", "status", "platforms"] {
+        for token in [
+            "deps",
+            "sources",
+            "generates",
+            "method",
+            "status",
+            "platforms",
+        ] {
             assert!(w.contains(token), "{token} 缺警告: {w}");
         }
         assert!(item.selected);
@@ -818,7 +856,11 @@ mod tests {
     #[test]
     fn taskfile_yaml_ext_is_found() {
         let dir = temp_ws("yaml-ext");
-        fs::write(dir.join("Taskfile.yaml"), "version: '3'\ntasks:\n  a:\n    cmds: [echo hi]\n").unwrap();
+        fs::write(
+            dir.join("Taskfile.yaml"),
+            "version: '3'\ntasks:\n  a:\n    cmds: [echo hi]\n",
+        )
+        .unwrap();
         let tasks = preview_tasks(&dir);
         assert_eq!(tasks.len(), 1);
     }

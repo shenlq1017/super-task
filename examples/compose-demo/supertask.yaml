@@ -1,0 +1,20 @@
+version: 1
+name: compose-demo
+description: "Docker 容器测试工作区（1.3 场景：compose up/stop、ps/images、镜像构建）"
+services:
+  redis:
+    kind: compose
+    service: redis
+    port: 6379
+  whoami:
+    kind: compose
+    service: whoami
+    port: 8083
+docker:
+  compose_file: compose.yaml
+  project_name: compose-demo
+  builds:
+    - name: demo-node
+      context: .
+      tags:
+        - demo-node:local

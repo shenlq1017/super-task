@@ -25,10 +25,12 @@ fn workspace_id_has_no_verbatim_prefix() {
         !id.contains(r"\\?\"),
         "workspace_id 仍带 verbatim 前缀: {id}"
     );
-    assert!(id.to_lowercase() == dir.to_string_lossy().to_lowercase() || {
-        // temp 在 Windows 上可能是短路径/软链接规范化后的差异，退一步只断言盘符形态
-        id.as_bytes().get(1) == Some(&b':')
-    });
+    assert!(
+        id.to_lowercase() == dir.to_string_lossy().to_lowercase() || {
+            // temp 在 Windows 上可能是短路径/软链接规范化后的差异，退一步只断言盘符形态
+            id.as_bytes().get(1) == Some(&b':')
+        }
+    );
 
     engine.close().expect("close");
     let _ = std::fs::remove_dir_all(&dir);

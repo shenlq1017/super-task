@@ -112,7 +112,11 @@ fn candidate_dirs(ide: Ide) -> Vec<PathBuf> {
         // explorer 系统必有：PATH 之外再兜底 %SystemRoot%\explorer.exe
         Ide::Explorer => push_env(&mut dirs, "SystemRoot", &[]),
         Ide::Cursor => push_env(&mut dirs, "LOCALAPPDATA", &["Programs", "cursor"]),
-        Ide::Code => push_env(&mut dirs, "LOCALAPPDATA", &["Programs", "Microsoft VS Code"]),
+        Ide::Code => push_env(
+            &mut dirs,
+            "LOCALAPPDATA",
+            &["Programs", "Microsoft VS Code"],
+        ),
         Ide::Idea => {
             push_env(&mut dirs, "ProgramFiles", &["JetBrains"]);
             push_env(&mut dirs, "LOCALAPPDATA", &["Programs", "JetBrains"]);
@@ -136,7 +140,9 @@ pub fn resolve(ide: Ide) -> Option<PathBuf> {
     }
     match ide {
         // IDEA 的候选是 `<JetBrains 父目录>/IntelliJ IDEA*/bin/idea64.exe`
-        Ide::Idea => candidate_dirs(ide).iter().find_map(|base| find_jetbrains(base)),
+        Ide::Idea => candidate_dirs(ide)
+            .iter()
+            .find_map(|base| find_jetbrains(base)),
         _ => find_in(&candidate_dirs(ide), file_names),
     }
 }
@@ -166,8 +172,12 @@ where
         )
     })?;
     let argv = argv_for(ide, &exe, root);
-    launch(&exe, &argv)
-        .map_err(|e| Error::new(ErrorCode::Spawn, format!("启动 {} 失败: {e}", exe.display())))?;
+    launch(&exe, &argv).map_err(|e| {
+        Error::new(
+            ErrorCode::Spawn,
+            format!("启动 {} 失败: {e}", exe.display()),
+        )
+    })?;
     Ok(exe)
 }
 
@@ -225,9 +235,15 @@ mod tests {
         let dir = temp_dir("find");
         fs::write(dir.join("fake-ide.exe"), b"").unwrap();
         // 无扩展名自动补 .exe
-        assert_eq!(find_in(&[dir.clone()], &["fake-ide"]), Some(dir.join("fake-ide.exe")));
+        assert_eq!(
+            find_in(&[dir.clone()], &["fake-ide"]),
+            Some(dir.join("fake-ide.exe"))
+        );
         // 已带扩展名的名字原样匹配
-        assert_eq!(find_in(&[dir.clone()], &["fake-ide.exe"]), Some(dir.join("fake-ide.exe")));
+        assert_eq!(
+            find_in(&[dir.clone()], &["fake-ide.exe"]),
+            Some(dir.join("fake-ide.exe"))
+        );
         // 未命中
         assert_eq!(find_in(&[dir.clone()], &["nope"]), None);
         assert_eq!(find_in(&[], &["fake-ide"]), None);
@@ -260,7 +276,10 @@ mod tests {
     #[test]
     fn launcher_error_maps_to_spawn_without_starting_gui() {
         let err = open_with_launcher(Ide::Explorer, Path::new("."), |_exe, _argv| {
-            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fake launcher"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "fake launcher",
+            ))
         })
         .unwrap_err();
         assert_eq!(err.code(), ErrorCode::Spawn);

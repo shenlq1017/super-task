@@ -66,7 +66,9 @@ fn engine_start_demo_and_call_api() {
     );
 
     let yaml_path = PathBuf::from(PARENT).join("supertask.yaml");
-    let yaml_backup = yaml_path.exists().then(|| fs::read_to_string(&yaml_path).unwrap());
+    let yaml_backup = yaml_path
+        .exists()
+        .then(|| fs::read_to_string(&yaml_path).unwrap());
     let yaml = r#"version: 1
 name: knife4j-demo-openapi3
 services:
@@ -104,7 +106,10 @@ services:
     let eng = Engine::new();
     let (warnings, snap) = eng.open(Path::new(PARENT)).expect("workspace.open");
     eprintln!("open warnings: {:?}", warnings);
-    eprintln!("initial snapshot: {:?}", snap.services.get("knife4j-demo-openapi3"));
+    eprintln!(
+        "initial snapshot: {:?}",
+        snap.services.get("knife4j-demo-openapi3")
+    );
 
     eng.subscribe_logs().expect("logs.subscribe");
     eng.start_one("knife4j-demo-openapi3")
@@ -125,7 +130,11 @@ services:
                 }
             }
         }
-        if let Some(s) = eng.snapshot().ok().and_then(|s| s.services.get(id).cloned()) {
+        if let Some(s) = eng
+            .snapshot()
+            .ok()
+            .and_then(|s| s.services.get(id).cloned())
+        {
             if s.state == RtState::Running {
                 break;
             }

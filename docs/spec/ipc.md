@@ -204,9 +204,9 @@
 
 下列调用一律 `FEATURE_SOON`，不要未注册导致前端 catch 不到 code：
 
-`cloud.login` · `cloud.sync` · `ai.complete`
+`ai.complete`
 
-（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6；1.3 起已转 live：`docker.probe` / `docker.ps` / `docker.images` / `docker.build` / `docker.buildCancel`，见 §4.6.1；1.6 起已转 live：`gateway.apply` 及全部 `gateway.*`，见 §10.10。）
+（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6；1.3 起已转 live：`docker.probe` / `docker.ps` / `docker.images` / `docker.build` / `docker.buildCancel`，见 §4.6.1；1.6 起已转 live：`gateway.apply` 及全部 `gateway.*`，见 §10.10；2.0 起已转 live：全部 `cloud.*`，见 §10.12。）
 
 ---
 
@@ -653,3 +653,47 @@ gateway.trust     input:  { workspace_id } → { accepted }
 | `GATEWAY_START_FAILED` | 校验通过但 spawn 失败 / 进程立即退出（last_error 进网关日志与状态） |
 
 其余复用现有码（`YAML_CONFLICT`、`ALREADY_IN_PROGRESS`、`JOB_KILL`、`NO_WORKSPACE` 等）。
+
+### 10.11 横向扩展（1.7，feature spec §4–§7）
+
+**零新增命令。** python / go / generic 三 kind 走既有 `runtime.*` / `logs.*` / CLI / MCP 全链路；
+服务分组是纯呈现层（`services.*.group` 字段自 reserved 转 live）；崩溃通知是壳层/前端行为
+（`st.runtime` 状态迁移 → Toast / 系统通知），均不新增 IPC。
+
+- `toolchain.probe` 输出 additive 扩展：`python` / `go`（`ToolProbe`，旧前端忽略缺省字段）；
+  `toolchain.install`/`upgrade` 的 `tool` 参数接受 `python` / `go`（winget：`Python.Python.<maj.min>` / `GoLang.Go`）。
+- `yaml.saveForm` 的 `network` 段新增 `python.index_url` / `go.goproxy`（URL 校验同 mirror/registry）。
+- 启动 env 注入（`runtime.start`/`up` 链路，优先级最低，显式 env 永远赢）：
+  `npm_config_registry`、`PIP_INDEX_URL`、`GOPROXY`、`MAVEN_ARGS="-s <.supertask/maven-settings.xml 绝对路径>"`、
+  代理键（`HTTP(S)_PROXY`/`NO_PROXY` 等，off 不注入；健康检查 loopback 始终剥除代理键）。
+- 新错误码：`ENTRY_NOT_FOUND`（python entry 文件不存在）、`PACKAGE_NOT_FOUND`（go package 目录不存在）——
+  打开时 warning，启动硬错误。其余复用：`SPEC_INVALID`（字段矩阵）、`MISSING_TOOL`、`KIND_UNSUPPORTED`。
+
+### 10.12 云（2.0，feature spec §11）
+
+当前已注册/接线的九条云命令（本地优先：未登录/离线时全部既有功能零变化）：
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `cloud.login` | `{email, password}` | 会话建立（DPAPI 静态加密存储）；失败 `CLOUD_AUTH_FAILED`；密码不得进入返回值/日志 |
+| `cloud.logout` | — | 清会话，保留本地数据与同步状态 |
+| `cloud.status` | — | `{logged_in, email, device, endpoint, last_synced_ms, conflicts, conflict_ids, telemetry_enabled, quota}`；配额读取失败不阻塞状态展示 |
+| `cloud.sync` | — | 两阶段 pull→push；返回 `{pushed, pulled, pending, skipped, conflicts}`；打开中的工作区或无目标目录时 pending |
+| `cloud.resolve` | `{entity_id, choice}` | choice ∈ `local` / `server` / `both`（两端内容都保留） |
+| `cloud.migrate.plan` | — | 当前实现返回工具链差量；实体清单完整返回仍待补齐 |
+| `cloud.migrate.apply` | `{workspaces:[{entity_id, dir}], include_templates?, include_settings?}` | 设定落盘目录并执行一次同步；安装经既有 `toolchain.install`，模板拉取仍 pending |
+| `cloud.telemetry.set` | `{enabled}` | `{enabled}`；持久化到 app data 的 `cloud_telemetry`，默认 false；关闭 = 零网络请求 |
+| `cloud.endpoint.set` | `{endpoint}` | `{endpoint}`；只允许绝对 `http`/`https` URL，禁止 userinfo、空 host、空白、query 和 fragment；成功后持久化到 app data 的 `cloud_endpoint` 并让后续请求使用新 provider，失败映射 `CLOUD_PROTOCOL_ERROR`。 |
+
+同步状态约束：`cloud.sync` 与 `cloud.migrate.apply` 仅在同步成功后更新时间 `last_synced_ms` 并写入 `cloud/state.json`；同步返回错误时不更新时间、不保存本次同步状态。
+
+云实体相关约束（详见 `docs/spec/cloud.md`）：PUT 必须传 `{type, data, base_rev, updated_by?}`；
+实体 id 由客户端提供，是账号范围内稳定 opaque id。客户端解析实体列表必须逐项处理未知 type：
+加入 `skipped` 并报告，不能令整个列表失败。需要认证的 HTTP 请求遇 401 时，只 refresh 一次
+并只重放一次原请求；refresh 失效清 session 并返回 `CLOUD_AUTH_FAILED`。
+
+- 错误码：`CLOUD_NOT_LOGGED_IN` / `CLOUD_AUTH_FAILED` / `CLOUD_OFFLINE` / `CLOUD_SYNC_CONFLICT` / `CLOUD_ENCRYPT_REQUIRED` / `CLOUD_QUOTA_EXCEEDED` / `CLOUD_PROTOCOL_ERROR`。
+- 不新增事件流（同步为短命令）；向导安装进度复用既有 operation 事件桥。
+- 协议真源：`docs/spec/cloud.md`；CI/测试全走 `FakeCloudProvider`，零真实网络。自托管参考服务
+  的现状与启动约束见 `docs/spec/cloud-server.md`；该 server crate 的本地 HTTP router/API 与 in-process
+  集成测试已完成，正式 HTTPS 部署、运营端点和真机验收仍未完成。

@@ -99,10 +99,6 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-button {
-  font: inherit;
-}
-
 code,
 .mono {
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;

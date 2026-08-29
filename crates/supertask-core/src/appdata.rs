@@ -32,6 +32,11 @@ pub struct AppNetwork {
     pub http: Option<String>,
     pub https: Option<String>,
     pub no_proxy: Vec<String>,
+    /// 1.7 §7：app 级镜像默认（workspace network.* 覆盖）。
+    pub maven_mirror: Option<String>,
+    pub npm_registry: Option<String>,
+    pub pip_index: Option<String>,
+    pub go_goproxy: Option<String>,
 }
 
 impl Default for AppNetwork {
@@ -41,6 +46,10 @@ impl Default for AppNetwork {
             http: None,
             https: None,
             no_proxy: vec!["127.0.0.1".into(), "localhost".into(), "::1".into()],
+            maven_mirror: None,
+            npm_registry: None,
+            pip_index: None,
+            go_goproxy: None,
         }
     }
 }
@@ -69,6 +78,12 @@ pub struct AppData {
     pub system_notifications: bool,
     #[serde(default = "default_true")]
     pub metrics_enabled: bool,
+    /// 2.0 §18：云端点（自托管；None = 内置占位端点，官方运营方待拍板）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_endpoint: Option<String>,
+    /// 2.0 §9：遥测开关（默认关；不在同步白名单内）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cloud_telemetry: bool,
     /// Unknown keys preserved across v1 to v2 migrate and save.
     #[serde(default, flatten)]
     pub extra: IndexMap<String, Value>,
@@ -92,9 +107,20 @@ impl Default for AppData {
             log_notifications: true,
             system_notifications: true,
             metrics_enabled: true,
+            cloud_endpoint: None,
+            cloud_telemetry: false,
             extra: IndexMap::new(),
         }
     }
+}
+
+/// 2.0：应用数据目录（`%APPDATA%/SuperTask`）。云会话/同步状态/遥测缓冲共用。
+/// APPDATA 缺失（非 Windows / 服务上下文）时回退临时目录——云端功能降级但本地功能不受影响。
+pub fn appdata_dir() -> PathBuf {
+    if let Some(base) = std::env::var_os("APPDATA") {
+        return PathBuf::from(base).join("SuperTask");
+    }
+    std::env::temp_dir().join("SuperTask")
 }
 
 pub fn load_at(path: &Path) -> AppData {

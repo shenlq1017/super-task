@@ -34,14 +34,26 @@ fn http_get(host: &str, port: u16, path: &str) -> Option<String> {
 
 fn tail_log(path: &Path, n: usize) -> String {
     match std::fs::read_to_string(path) {
-        Ok(t) => t.lines().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"),
+        Ok(t) => t
+            .lines()
+            .rev()
+            .take(n)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n"),
         Err(e) => format!("(no log: {e})"),
     }
 }
 
 fn main() {
-    let knife4j = std::env::args().nth(1).expect("arg1 = knife4j workspace dir");
-    let springapp = std::env::args().nth(2).expect("arg2 = springapp workspace dir");
+    let knife4j = std::env::args()
+        .nth(1)
+        .expect("arg1 = knife4j workspace dir");
+    let springapp = std::env::args()
+        .nth(2)
+        .expect("arg2 = springapp workspace dir");
 
     println!("=== [1] IMPORT: open real knife4j-demo-openapi3 supertask.yaml ===");
     let eng_imp = Engine::new();
@@ -77,7 +89,11 @@ fn main() {
             let mut final_state = RtState::Starting;
             loop {
                 if let Ok(snap) = eng_k.snapshot() {
-                    final_state = snap.services.get("knife4j-demo-openapi3").map(|s| s.state).unwrap_or(final_state);
+                    final_state = snap
+                        .services
+                        .get("knife4j-demo-openapi3")
+                        .map(|s| s.state)
+                        .unwrap_or(final_state);
                     if matches!(final_state, RtState::Exited | RtState::Stopped) {
                         break;
                     }
@@ -88,7 +104,9 @@ fn main() {
                 std::thread::sleep(Duration::from_millis(1000));
             }
             let err = eng_k.snapshot().ok().and_then(|s| {
-                s.services.get("knife4j-demo-openapi3").and_then(|x| x.last_error.clone())
+                s.services
+                    .get("knife4j-demo-openapi3")
+                    .and_then(|x| x.last_error.clone())
             });
             println!("  final state: {:?}", final_state);
             println!("  last_error: {:?}", err);
@@ -103,7 +121,11 @@ fn main() {
     let eng = Engine::new();
     let (_w, snap) = eng.open(Path::new(&springapp)).expect("open springapp");
     println!("  services: {:?}", snap.services.keys().collect::<Vec<_>>());
-    println!("  port {} open before start? {}", PORT, port_open("127.0.0.1", PORT));
+    println!(
+        "  port {} open before start? {}",
+        PORT,
+        port_open("127.0.0.1", PORT)
+    );
 
     println!("  start_one('app') ...");
     let t0 = Instant::now();
@@ -140,7 +162,10 @@ fn main() {
         if tick % 5 == 0 {
             if let Ok(snap) = eng.snapshot() {
                 if let Some(s) = snap.services.get("app") {
-                    println!("  ... waiting ({}s) state={:?} health={:?}", tick, s.state, s.health);
+                    println!(
+                        "  ... waiting ({}s) state={:?} health={:?}",
+                        tick, s.state, s.health
+                    );
                 }
             }
         }
@@ -149,8 +174,15 @@ fn main() {
     println!("  time-to-ready: {:?}", t0.elapsed());
     let snap = eng.snapshot().expect("snapshot");
     let s = snap.services.get("app").unwrap();
-    println!("  state={:?} pid={:?} health={:?}", s.state, s.pid, s.health);
-    println!("  port {} open after start? {}", PORT, port_open("127.0.0.1", PORT));
+    println!(
+        "  state={:?} pid={:?} health={:?}",
+        s.state, s.pid, s.health
+    );
+    println!(
+        "  port {} open after start? {}",
+        PORT,
+        port_open("127.0.0.1", PORT)
+    );
 
     let http = http_get("127.0.0.1", PORT, "/ping");
     let serves = match &http {

@@ -126,12 +126,20 @@ pub fn parse_images(stdout: &str) -> Vec<ImageSummary> {
         };
         let id = str_of(&v, "ID").unwrap_or_default();
         let size = size_bytes_of(&v);
-        let created_ms = v.get("CreatedAt").and_then(Value::as_str).and_then(created_ms_of);
+        let created_ms = v
+            .get("CreatedAt")
+            .and_then(Value::as_str)
+            .and_then(created_ms_of);
         // 形状 A：RepoTags 数组；形状 B：Repository/Tag 单字段
         let mut tags: Vec<String> = v
             .get("RepoTags")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default();
         if tags.is_empty() {
             if let (Some(r), Some(t)) = (str_of(&v, "Repository"), str_of(&v, "Tag")) {
@@ -190,7 +198,9 @@ fn size_bytes_of(v: &Value) -> Option<u64> {
 /// "194MB" → 194_000_000。SI（kB/MB/GB/TB）与二进制（KiB/MiB/GiB/TiB）都认。
 fn parse_human_size(s: &str) -> Option<u64> {
     let s = s.trim();
-    let split = s.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(s.len());
+    let split = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
     let val: f64 = s[..split].trim().parse().ok()?;
     let mult = match s[split..].trim().to_ascii_lowercase().as_str() {
         "" | "b" => 1.0,
@@ -217,7 +227,13 @@ fn created_ms_of(s: &str) -> Option<u64> {
 /// "2026-08-26 16:46:11 +0800 CST" → epoch ms。时区 `±HHMM`/`±HH:MM`，时区名忽略。
 fn parse_docker_created_at_ms(s: &str) -> Option<u64> {
     let b = s.as_bytes();
-    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[10] != b' ' || b[13] != b':' || b[16] != b':' {
+    if b.len() < 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b' '
+        || b[13] != b':'
+        || b[16] != b':'
+    {
         return None;
     }
     let year: i64 = s.get(0..4)?.parse().ok()?;
@@ -242,7 +258,11 @@ fn parse_offset_min(tok: &str) -> Option<i64> {
     }
     let sign: i64 = if b[0] == b'+' { 1 } else { -1 };
     let oh: i64 = tok.get(1..3)?.parse().ok()?;
-    let om: i64 = if b[3] == b':' { tok.get(4..6)?.parse().ok()? } else { tok.get(3..5)?.parse().ok()? };
+    let om: i64 = if b[3] == b':' {
+        tok.get(4..6)?.parse().ok()?
+    } else {
+        tok.get(3..5)?.parse().ok()?
+    };
     Some(sign * (oh * 60 + om))
 }
 

@@ -84,7 +84,9 @@ pub fn apply(
         let item = items
             .iter()
             .find(|i| i.service_id == choice.id)
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("预览项不存在: {}", choice.id)))?;
+            .ok_or_else(|| {
+                Error::new(ErrorCode::NotFound, format!("预览项不存在: {}", choice.id))
+            })?;
         match choice.action {
             MergeAction::Keep => {}
             MergeAction::Add => {
@@ -103,7 +105,10 @@ pub fn apply(
                     .clone()
                     .unwrap_or_else(|| item.service_id.clone());
                 if out.services.contains_key(&key) {
-                    return Err(Error::new(ErrorCode::SpecInvalid, format!("id 已存在: {key}")));
+                    return Err(Error::new(
+                        ErrorCode::SpecInvalid,
+                        format!("id 已存在: {key}"),
+                    ));
                 }
                 out.services.insert(key, spec.clone());
             }
@@ -565,8 +570,14 @@ mod tests {
         )
         .unwrap();
         // 现有 app 保留，冲突发现项以 candidate_id 入表
-        assert_eq!(out.services.get("app").unwrap().module.as_deref(), Some("mod-a"));
-        assert_eq!(out.services.get("app-2").unwrap().module.as_deref(), Some("mod-b"));
+        assert_eq!(
+            out.services.get("app").unwrap().module.as_deref(),
+            Some("mod-a")
+        );
+        assert_eq!(
+            out.services.get("app-2").unwrap().module.as_deref(),
+            Some("mod-b")
+        );
     }
 
     #[test]
@@ -607,7 +618,10 @@ mod tests {
         let (reparsed, _) = crate::spec::parse_yaml(current_text).unwrap();
         assert_eq!(current.templates, reparsed.templates);
         assert_eq!(current.git, reparsed.git);
-        assert_eq!(current.extra.get("x-custom"), reparsed.extra.get("x-custom"));
+        assert_eq!(
+            current.extra.get("x-custom"),
+            reparsed.extra.get("x-custom")
+        );
 
         let discovered = parse(
             "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: server-api\n    port: 8080\n  web:\n    kind: node\n    dir: web\n    port: 5173\n",
@@ -673,9 +687,8 @@ mod tests {
         assert!(m.field_diffs.is_empty());
 
         // service 不同 → 不是同一服务（Added + Missing）
-        let discovered2 = parse(
-            "version: 1\nservices:\n  redis:\n    kind: compose\n    service: mysql\n",
-        );
+        let discovered2 =
+            parse("version: 1\nservices:\n  redis:\n    kind: compose\n    service: mysql\n");
         let p2 = preview(&current, &discovered2, vec![]);
         assert_eq!(item(&p2, "redis").status, MergeStatus::IdConflict);
 
@@ -753,7 +766,10 @@ mod tests {
         let err = apply(
             &current,
             &discovered,
-            &[choice("web", MergeAction::Add), choice("web", MergeAction::Add)],
+            &[
+                choice("web", MergeAction::Add),
+                choice("web", MergeAction::Add),
+            ],
         )
         .unwrap_err();
         assert_eq!(err.code(), ErrorCode::SpecInvalid);

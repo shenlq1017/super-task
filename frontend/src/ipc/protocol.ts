@@ -78,6 +78,16 @@ export const cmd = {
   GATEWAY_STOP: "gateway.stop",
   GATEWAY_RESTART: "gateway.restart",
   GATEWAY_TRUST: "gateway.trust",
+  // 2.0（ipc.md §10.12）：云账号 / 同步 / 迁移
+  CLOUD_LOGIN: "cloud.login",
+  CLOUD_LOGOUT: "cloud.logout",
+  CLOUD_STATUS: "cloud.status",
+  CLOUD_SYNC: "cloud.sync",
+  CLOUD_RESOLVE: "cloud.resolve",
+  CLOUD_MIGRATE_PLAN: "cloud.migrate.plan",
+  CLOUD_MIGRATE_APPLY: "cloud.migrate.apply",
+  CLOUD_ENDPOINT_SET: "cloud.endpoint.set",
+  CLOUD_TELEMETRY_SET: "cloud.telemetry.set",
   APP_IMPORT_RECENTS: "app.importRecents",
   APP_UPDATE_CHECK: "app.update.check",
   APP_UPDATE_INSTALL: "app.update.install",
@@ -122,6 +132,9 @@ export type ToolchainProbe = {
   npm: ToolProbe;
   pnpm: ToolProbe;
   yarn: ToolProbe;
+  /** 1.7 §5：python / go 探测（旧后端可能缺省）。 */
+  python?: ToolProbe;
+  go?: ToolProbe;
   /** 1.6 §6.2：网关三引擎探测（旧后端可能缺省）。 */
   gateway?: GatewayProbe;
 };
@@ -338,7 +351,29 @@ export type ServiceSpec = {
   dir?: string | null;
   package_manager?: PackageManager | null;
   script?: string | null;
+  /** 1.7 kind: python：脚本入口（相对 dir），与 module 恰一。 */
+  entry?: string | null;
+  /** 1.7 kind: go：go run 包路径（相对 dir），缺省 "."。 */
+  package?: string | null;
+  /** 1.7 kind: generic：程序名（PATH）或工作区内相对路径。 */
+  program?: string | null;
+  /** 1.7 kind: generic：程序参数。 */
+  args?: string[];
   logging?: LoggingSpec | null;
+};
+
+/** 1.2 §7 顶层 network 段（proxy/镜像）；1.7 增 pip index 与 GOPROXY。 */
+export type NetworkSpec = {
+  proxy?: {
+    mode?: "off" | "system" | "custom" | null;
+    http?: string | null;
+    https?: string | null;
+    no_proxy?: string[];
+  } | null;
+  maven?: { mirror?: string | null } | null;
+  npm?: { registry?: string | null } | null;
+  python?: { index_url?: string | null } | null;
+  go?: { goproxy?: string | null } | null;
 };
 
 export type ScriptSpec = {
@@ -356,6 +391,9 @@ export type ToolchainSpec = {
   java?: string | null;
   maven?: string | null;
   node?: string | null;
+  /** 1.7：major.minor（如 "3.12" / "1.23"）。 */
+  python?: string | null;
+  go?: string | null;
   package_manager?: PackageManager | null;
 };
 
@@ -405,6 +443,7 @@ export type SuperTaskFile = {
   scripts: Record<string, ScriptSpec>;
   logging?: LoggingSpec | null;
   toolchain?: ToolchainSpec | null;
+  network?: NetworkSpec | null;
   docker?: DockerSpec | null;
   gateway?: GatewayConf | null;
   secrets?: { backend?: string | null; file?: string | null; required?: string[] } | null;
@@ -774,5 +813,45 @@ export type GatewayApplyOut = {
   restarted: boolean;
   warnings: string[];
 };
+
+// ---------------------------------------------------------------------------
+// 2.0 DTOs — cloud account, sync, migration and telemetry
+// ---------------------------------------------------------------------------
+
+export type CloudStatusOut = {
+  logged_in: boolean;
+  email?: string | null;
+  device: string;
+  endpoint: string;
+  last_synced_ms?: number | null;
+  conflicts: number;
+  /** Additive field; older engines may omit it. */
+  conflict_ids?: string[];
+  quota?: { entities: number; entities_max: number; bytes: number; bytes_max: number } | null;
+  telemetry_enabled?: boolean;
+};
+
+/** Deliberately excludes access/refresh tokens from the UI-facing DTO. */
+export type CloudLoginOut = { account_id: string; email: string; expires_in_secs: number };
+export type CloudSyncOut = {
+  pushed: number;
+  pulled: number;
+  pending: [string, string][];
+  skipped: string[];
+  conflicts: string[];
+};
+export type CloudResolveChoice = "local" | "server" | "both";
+export type CloudResolveOut = CloudSyncOut;
+export type CloudEntitySummary = { id: string; type: string; name?: string | null };
+export type CloudMigratePlanOut = {
+  /** Older/current backend returns only toolchain_gaps; entities is additive. */
+  entities?: CloudEntitySummary[];
+  toolchain_gaps: { status: string; tool: string; version?: string | null; required?: string; found?: string }[];
+};
+export type CloudMigrateApplyOut = CloudSyncOut & { applied?: string[]; warnings?: string[] };
+export type CloudTelemetryOut = { enabled: boolean };
+
+/** Endpoint editing is intentionally local-only until a backend setting exists. */
+export type CloudEndpointSetOut = { endpoint: string; supported?: boolean; local_only?: boolean };
 
 

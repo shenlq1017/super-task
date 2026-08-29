@@ -1,0 +1,9 @@
+[project]
+name = "python-fastapi"
+version = "0.1.0"
+description = "SuperTask demo: FastAPI on kind: python"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]

@@ -60,7 +60,12 @@ pub fn probe_docker(runner: &dyn DockerRunner) -> DockerProbe {
 /// （非零退出）时兜底 `docker compose version` 纯文本解析。
 fn probe_compose_version(runner: &dyn DockerRunner) -> Option<String> {
     let json_spec = DockerSpawn {
-        args: vec!["compose".into(), "version".into(), "--format".into(), "json".into()],
+        args: vec![
+            "compose".into(),
+            "version".into(),
+            "--format".into(),
+            "json".into(),
+        ],
         cwd: None,
         timeout: PROBE_TIMEOUT,
     };
@@ -127,9 +132,7 @@ fn parse_compose_version_json(stdout: &str) -> Option<String> {
 /// "compose version" 字样，避免把任意 stderr 文本当版本号。
 fn parse_compose_version_text(stdout: &str) -> Option<String> {
     let re = regex::Regex::new(r"(?i)compose version\s+v?(\d+(?:\.\d+)*)").ok()?;
-    re.captures(stdout)?
-        .get(1)
-        .map(|m| m.as_str().to_string())
+    re.captures(stdout)?.get(1).map(|m| m.as_str().to_string())
 }
 
 fn normalize_compose_version(s: &str) -> Option<String> {
@@ -253,7 +256,10 @@ mod tests {
         fake.push_err(io::ErrorKind::NotFound);
         let probe = probe_docker(&fake);
         assert!(!probe.found && !probe.running);
-        assert_eq!(ensure_compose_ready(&probe).unwrap_err().code(), ErrorCode::DockerNotFound);
+        assert_eq!(
+            ensure_compose_ready(&probe).unwrap_err().code(),
+            ErrorCode::DockerNotFound
+        );
 
         // 2) Docker Desktop 已装未运行：version 退出 1，Server null
         let fake = FakeDockerRunner::new();
@@ -261,7 +267,10 @@ mod tests {
         let probe = probe_docker(&fake);
         assert!(probe.found && !probe.running);
         assert_eq!(probe.version.as_deref(), Some("27.1.1"));
-        assert_eq!(ensure_compose_ready(&probe).unwrap_err().code(), ErrorCode::DockerEngineUnreachable);
+        assert_eq!(
+            ensure_compose_ready(&probe).unwrap_err().code(),
+            ErrorCode::DockerEngineUnreachable
+        );
 
         // 3) 有 docker 有 daemon，无 compose 插件（compose version 退出 1）
         let fake = FakeDockerRunner::new();
@@ -269,7 +278,10 @@ mod tests {
         fake.push_fail(1, "docker: 'compose' is not a docker command.");
         let probe = probe_docker(&fake);
         assert!(probe.found && probe.running && probe.compose_version.is_none());
-        assert_eq!(ensure_compose_ready(&probe).unwrap_err().code(), ErrorCode::DockerComposeMissing);
+        assert_eq!(
+            ensure_compose_ready(&probe).unwrap_err().code(),
+            ErrorCode::DockerComposeMissing
+        );
     }
 
     #[test]
@@ -286,7 +298,10 @@ mod tests {
         let calls = fake.calls();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].args, vec!["version", "--format", "json"]);
-        assert_eq!(calls[1].args, vec!["compose", "version", "--format", "json"]);
+        assert_eq!(
+            calls[1].args,
+            vec!["compose", "version", "--format", "json"]
+        );
     }
 
     #[test]

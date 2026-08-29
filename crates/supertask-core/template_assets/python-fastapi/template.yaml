@@ -1,0 +1,19 @@
+# 内置模板清单（1.7 §10）：Python FastAPI，kind: python + entry 模式
+# 本文件是模板元数据真源；files 与目录内实际文件的双向一致性由单元测试兜底。
+id: python-fastapi
+version: "1"
+name: Python FastAPI
+description: "最小的 FastAPI 应用：kind python + entry main.py，venv 存在时自动优先"
+stacks:
+  - python
+files:
+  - pyproject.toml
+  - requirements.txt
+  - main.py
+  - supertask.yaml
+params:
+  - key: project_name
+    label: 项目名
+    required: false
+    apply_to:
+      - yaml.name

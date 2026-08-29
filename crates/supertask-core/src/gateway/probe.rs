@@ -65,10 +65,7 @@ pub fn resolve_gateway_bin(
         }
         return Err(Error::new(
             ErrorCode::GatewayBinaryMissing,
-            format!(
-                "gateway.bin 指向的 {} 不存在: {bin}",
-                kind.as_str()
-            ),
+            format!("gateway.bin 指向的 {} 不存在: {bin}", kind.as_str()),
         ));
     }
     for name in candidate_names(kind) {
@@ -86,11 +83,7 @@ pub fn resolve_gateway_bin(
     }
     Err(Error::new(
         ErrorCode::GatewayBinaryMissing,
-        format!(
-            "未找到 {}。{}",
-            kind.as_str(),
-            install_hint(kind)
-        ),
+        format!("未找到 {}。{}", kind.as_str(), install_hint(kind)),
     ))
 }
 
@@ -116,8 +109,12 @@ pub fn install_hint(kind: crate::spec::GatewayKind) -> &'static str {
     {
         match kind {
             crate::spec::GatewayKind::Nginx => "Linux：`apt install nginx` 或对应发行版包管理器。",
-            crate::spec::GatewayKind::Caddy => "Linux：参照 caddyserver.com 安装仓库或 `apt install caddy`。",
-            crate::spec::GatewayKind::Apache => "Linux：`apt install apache2` / `dnf install httpd`。",
+            crate::spec::GatewayKind::Caddy => {
+                "Linux：参照 caddyserver.com 安装仓库或 `apt install caddy`。"
+            }
+            crate::spec::GatewayKind::Apache => {
+                "Linux：`apt install apache2` / `dnf install httpd`。"
+            }
         }
     }
 }
@@ -172,11 +169,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("my-nginx");
         std::fs::write(&bin, b"stub").unwrap();
-        let resolved = resolve_gateway_bin(GatewayKind::Nginx, Some(&bin.display().to_string())).unwrap();
+        let resolved =
+            resolve_gateway_bin(GatewayKind::Nginx, Some(&bin.display().to_string())).unwrap();
         assert_eq!(resolved, bin);
         // 显式路径不存在 → GATEWAY_BINARY_MISSING（不回落 PATH，避免静默换引擎）
-        let e = resolve_gateway_bin(GatewayKind::Nginx, Some(dir.join("nope").display().to_string().as_str()))
-            .unwrap_err();
+        let e = resolve_gateway_bin(
+            GatewayKind::Nginx,
+            Some(dir.join("nope").display().to_string().as_str()),
+        )
+        .unwrap_err();
         assert_eq!(e.code(), ErrorCode::GatewayBinaryMissing);
         assert!(e.message().contains("gateway.bin"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -187,7 +188,9 @@ mod tests {
     fn missing_binary_message_carries_install_hint() {
         let e = resolve_gateway_bin(GatewayKind::Nginx, None).unwrap_err();
         assert_eq!(e.code(), ErrorCode::GatewayBinaryMissing);
-        assert!(e.message().contains("brew install nginx") || e.message().contains("apt install nginx"));
+        assert!(
+            e.message().contains("brew install nginx") || e.message().contains("apt install nginx")
+        );
     }
 
     #[test]

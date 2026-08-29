@@ -25,6 +25,10 @@ pub enum ToolKind {
     Npm,
     Pnpm,
     Yarn,
+    /// 1.7
+    Python,
+    /// 1.7
+    Go,
 }
 
 impl ToolKind {
@@ -36,6 +40,8 @@ impl ToolKind {
             "npm" => Some(Self::Npm),
             "pnpm" => Some(Self::Pnpm),
             "yarn" => Some(Self::Yarn),
+            "python" => Some(Self::Python),
+            "go" => Some(Self::Go),
             _ => None,
         }
     }
@@ -48,6 +54,8 @@ impl ToolKind {
             Self::Npm => "npm",
             Self::Pnpm => "pnpm",
             Self::Yarn => "yarn",
+            Self::Python => "python",
+            Self::Go => "go",
         }
     }
 
@@ -60,6 +68,8 @@ impl ToolKind {
             Self::Npm => &["npm.cmd", "npm.exe", "npm"],
             Self::Pnpm => &["pnpm.cmd", "pnpm.exe", "pnpm"],
             Self::Yarn => &["yarn.cmd", "yarn.exe", "yarn"],
+            Self::Python => &["python.exe", "python", "python3"],
+            Self::Go => &["go.exe", "go"],
         }
     }
 }

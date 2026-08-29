@@ -90,6 +90,33 @@ export function scriptStateLabel(view: Pick<ScriptRuntimeView, "state" | "last_e
 }
 
 // ---------------------------------------------------------------------------
+// 1.6 网关托管状态（GatewayRuntimeView）：chip 配色 + 状态点，文案走
+// `pages.gateway.state_*`。网关页与运行页代理 Tab 共用。
+// ---------------------------------------------------------------------------
+
+/** 网关状态 chip 底色（tint + 深字，与服务状态 chip 同一视觉语言）。 */
+export const GATEWAY_STATE_TINT: Record<RtState, string> = {
+  running: "bg-[#e9f7ed] text-[#1e7e35]",
+  starting: "bg-[#fff8e1] text-[#9a6700]",
+  building: "bg-[#fff8e1] text-[#9a6700]",
+  stopping: "bg-[#fff8e1] text-[#9a6700]",
+  unhealthy: "bg-[#fdecec] text-[#dc2626]",
+  exited: "bg-[#fdecec] text-[#dc2626]",
+  stopped: "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]",
+};
+
+/** 网关状态点颜色（chip 内小圆点）。 */
+export const GATEWAY_STATE_DOT: Record<RtState, string> = {
+  running: "bg-[#27a644]",
+  starting: "bg-[#d9a514]",
+  building: "bg-[#d9a514]",
+  stopping: "bg-[#d9a514]",
+  unhealthy: "bg-[#dc2626]",
+  exited: "bg-[#dc2626]",
+  stopped: "bg-[#8a8f98]",
+};
+
+// ---------------------------------------------------------------------------
 // 1.1 长操作错误码 → 本地化文案（模板 / Git / 更新，ipc.md §7、§10）
 // 映射真源在 `lib/error-messages.ts` + 资源 `errors.<CODE>`；后端 message 保持中文作详情。
 // ---------------------------------------------------------------------------

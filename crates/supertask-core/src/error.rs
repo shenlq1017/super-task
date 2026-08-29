@@ -111,6 +111,17 @@ pub enum ErrorCode {
     GatewayBinaryMissing,
     GatewayConfigInvalid,
     GatewayStartFailed,
+    // ---- 1.7 ----
+    EntryNotFound,
+    PackageNotFound,
+    // ---- 2.0 ----
+    CloudNotLoggedIn,
+    CloudAuthFailed,
+    CloudOffline,
+    CloudSyncConflict,
+    CloudEncryptRequired,
+    CloudQuotaExceeded,
+    CloudProtocolError,
 }
 
 #[derive(Debug, Error)]

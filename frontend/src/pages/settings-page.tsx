@@ -1,24 +1,22 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, PackageOpen } from "lucide-react";
+import { Cloud, Loader2, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { useSession } from "../providers/session-provider";
 import { useRuntime } from "../providers/runtime-provider";
 import { useOperations } from "../providers/operation-provider";
-import { useWorkspace } from "../providers/workspace-provider";
-import { apiSavePrefs, apiUpdateCheck, apiUpdateInstall, apiWorkspaceExportPackage } from "../ipc/api";
+import { apiCloudSetEndpoint, apiCloudStatus, apiCloudTelemetrySet, apiSavePrefs, apiUpdateCheck, apiUpdateInstall } from "../ipc/api";
 import { IpcFailure } from "../ipc/protocol";
-import type { UpdateCheckResult } from "../ipc/protocol";
+import type { CloudStatusOut, UpdateCheckResult } from "../ipc/protocol";
 import { opErrorLabel } from "../lib/status";
 import { errorDisplayText } from "@/lib/error-messages";
 import { useToast } from "@/components/ui/toast";
 import { applyLocalePreference } from "@/i18n";
 import { isSupportedLocale, resolveLocale, SUPPORTED_LOCALES } from "@/i18n/resolve-locale";
-import { isTauri } from "../ipc/invoke";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 /** 偏好开关行：与既有 checkbox 样式一致，说明文案放第二行。 */
 function PrefRow({
@@ -227,96 +225,118 @@ function UpdateCard() {
   );
 }
 
-/** 1.5 §11：导出工作区包（zip）。只读操作；含密钥需显式确认（§9.2）。 */
-function ExportPkgCard() {
-  const { state } = useWorkspace();
-  const workspaceId = state.workspaceId;
+function CloudSettingsCard() {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const [withSecrets, setWithSecrets] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<CloudStatusOut | null>(null);
+  const [endpoint, setEndpoint] = useState("");
+  const [endpointError, setEndpointError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<"endpoint" | "telemetry" | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const doExport = async (destPath: string) => {
-    setBusy(true);
+  const loadStatus = async () => {
+    setLoading(true);
+    setLoadError(null);
     try {
-      const out = await apiWorkspaceExportPackage({
-        workspaceId: workspaceId ?? "",
-        destPath,
-        withSecrets,
-      });
-      toast(t("pages.settings.exportDoneToast", { n: out.entries.length }), "ok");
-    } catch (e) {
-      toast(e instanceof IpcFailure ? errorDisplayText(e.code, e.message) : String(e), "err");
+      const next = await apiCloudStatus();
+      setStatus(next);
+      setEndpoint(next.endpoint);
+    } catch (error) {
+      setLoadError(error instanceof IpcFailure ? opErrorLabel(error.code) : String(error));
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   };
 
-  const onExport = async () => {
-    if (!workspaceId) {
-      toast(t("pages.settings.exportNoWs"), "err");
+  useEffect(() => {
+    void loadStatus();
+  }, []);
+
+  const saveEndpoint = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = endpoint.trim().replace(/\/$/, "");
+    if (!/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(value)) {
+      setEndpointError(t("pages.settings.cloudEndpointInvalid"));
       return;
     }
-    if (withSecrets) {
-      setConfirmOpen(true);
-      return;
+    setEndpointError(null);
+    setSaving("endpoint");
+    try {
+      const out = await apiCloudSetEndpoint(value);
+      setEndpoint(out.endpoint);
+      setStatus((current) => current ? { ...current, endpoint: out.endpoint } : current);
+      toast(out.supported === false || out.local_only === true ? t("pages.settings.cloudEndpointSavedLocal") : t("pages.settings.cloudEndpointSaved"), "ok");
+    } catch (error) {
+      setEndpointError(error instanceof IpcFailure ? opErrorLabel(error.code) : String(error));
+    } finally {
+      setSaving(null);
     }
-    if (!isTauri()) {
-      const p = window.prompt(t("pages.settings.exportPathPrompt"));
-      if (p) await doExport(p);
-      return;
+  };
+
+  const toggleTelemetry = async (enabled: boolean) => {
+    setSaving("telemetry");
+    try {
+      const out = await apiCloudTelemetrySet(enabled);
+      setStatus((current) => current ? { ...current, telemetry_enabled: out.enabled } : current);
+      toast(t("pages.settings.telemetrySaved"), "ok");
+    } catch (error) {
+      toast(error instanceof IpcFailure ? opErrorLabel(error.code) : String(error), "err");
+    } finally {
+      setSaving(null);
     }
-    const sel = await saveDialog({
-      title: t("pages.settings.exportPkg"),
-      defaultPath: "supertask-export.zip",
-      filters: [{ name: "SuperTask 导出包", extensions: ["zip"] }],
-    });
-    if (typeof sel === "string" && sel) await doExport(sel);
   };
 
   return (
     <Card className="p-4">
-      <h3 className="mb-3 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">
-        <PackageOpen className="size-4" /> {t("pages.settings.exportPkg")}
+      <h3 className="mb-1 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">
+        <Cloud className="size-4 text-[var(--st-accent,#5e6ad2)]" /> {t("pages.settings.cloudTitle")}
       </h3>
-      <p className="mb-2 text-[0.75rem] leading-relaxed text-[var(--t3,#8a8f98)]">
-        {t("pages.settings.exportPkgHint")}
-      </p>
-      <PrefRow
-        label={t("pages.settings.exportWithSecrets")}
-        desc={t("pages.settings.exportWithSecretsDesc")}
-        checked={withSecrets}
-        onChange={setWithSecrets}
-      />
-      <div className="mt-2">
-        <Button variant="soft" size="sm" onClick={onExport} disabled={busy} className="gap-1">
-          <PackageOpen /> {t("pages.settings.exportBtn")}
-        </Button>
-      </div>
-      <ConfirmDialog
-        open={confirmOpen}
-        title={t("pages.settings.exportConfirmTitle")}
-        description={t("pages.settings.exportConfirmDesc")}
-        destructive
-        onConfirm={() => {
-          setConfirmOpen(false);
-          if (!isTauri()) {
-            const p = window.prompt(t("pages.settings.exportPathPrompt"));
-            if (p) void doExport(p);
-            return;
-          }
-          void (async () => {
-            const sel = await saveDialog({
-              title: t("pages.settings.exportPkg"),
-              defaultPath: "supertask-export.zip",
-              filters: [{ name: "SuperTask 导出包", extensions: ["zip"] }],
-            });
-            if (typeof sel === "string" && sel) await doExport(sel);
-          })();
-        }}
-        onCancel={() => setConfirmOpen(false)}
-      />
+      <p className="mb-3 text-[0.75rem] leading-relaxed text-[var(--t3,#8a8f98)]">{t("pages.settings.cloudDesc")}</p>
+      {loading ? (
+        <div className="flex items-center gap-2 text-[0.75rem] text-[var(--t3,#8a8f98)]" role="status">
+          <Loader2 className="size-3.5 animate-spin text-[var(--st-accent,#5e6ad2)]" /> {t("pages.settings.cloudLoading")}
+        </div>
+      ) : loadError ? (
+        <div className="flex flex-wrap items-center gap-2" role="alert">
+          <p className="min-w-0 flex-1 text-[0.75rem] text-[#DC2626]">{loadError}</p>
+          <Button variant="soft" size="sm" onClick={() => void loadStatus()}>{t("common.retry")}</Button>
+        </div>
+      ) : (
+        <>
+          <form onSubmit={(event) => void saveEndpoint(event)} className="flex flex-col gap-2">
+            <label htmlFor="settings-cloud-endpoint" className="flex items-center gap-2 text-[0.75rem] text-[var(--t2,#62666d)]">
+              <Settings2 className="size-3.5" /> {t("pages.settings.cloudEndpoint")}
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                id="settings-cloud-endpoint"
+                value={endpoint}
+                onChange={(event) => { setEndpoint(event.target.value); setEndpointError(null); }}
+                type="url"
+                inputMode="url"
+                aria-invalid={!!endpointError}
+                aria-describedby={endpointError ? "settings-cloud-endpoint-error" : "settings-cloud-endpoint-help"}
+                disabled={saving !== null}
+              />
+              <Button variant="success" size="sm" type="submit" disabled={saving !== null || !endpoint.trim()}>
+                {saving === "endpoint" ? t("common.loading") : t("pages.settings.saveCloudEndpoint")}
+              </Button>
+            </div>
+            <p id="settings-cloud-endpoint-help" className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.settings.cloudEndpointHint")}</p>
+            {endpointError ? <p id="settings-cloud-endpoint-error" className="text-[0.72rem] text-[#DC2626]" role="alert">{endpointError}</p> : null}
+          </form>
+          <div className="mt-4 border-t border-[var(--line,#e6e6e6)] pt-3">
+            <PrefRow
+              label={t("pages.settings.telemetry")}
+              desc={t("pages.settings.telemetryDesc")}
+              checked={!!status?.telemetry_enabled}
+              onChange={(enabled) => void toggleTelemetry(enabled)}
+            />
+            {saving === "telemetry" ? <p className="mt-1 flex items-center gap-1.5 text-[0.72rem] text-[var(--t3,#8a8f98)]" role="status"><Loader2 className="size-3 animate-spin" /> {t("common.loading")}</p> : null}
+          </div>
+        </>
+      )}
     </Card>
   );
 }
@@ -331,6 +351,8 @@ function SettingsPageInner() {
   const [closeToTray, setCloseToTray] = useState(state.app?.prefs.closeToTray ?? true);
   const [startOnLogin, setStartOnLogin] = useState(state.app?.prefs.startOnLogin ?? false);
   const [updateCheck, setUpdateCheck] = useState(state.app?.prefs.updateCheck ?? true);
+  // 1.7 §8.2：崩溃通知开关（localStorage，读端在 crash-notifier）
+  const [crashNotify, setCrashNotify] = useState(() => localStorage.getItem("st:crashNotify") !== "off");
 
   useEffect(() => {
     setTheme(state.app?.prefs.theme ?? "light");
@@ -343,6 +365,7 @@ function SettingsPageInner() {
 
   const save = async () => {
     try {
+      localStorage.setItem("st:crashNotify", crashNotify ? "on" : "off");
       await apiSavePrefs({ theme, locale, restoreLast: restore, closeToTray, startOnLogin, updateCheck });
       toast(t("operations.prefsSaved"), "ok");
     } catch (e) {
@@ -382,6 +405,12 @@ function SettingsPageInner() {
                 desc={t("pages.settings.restoreLastDesc")}
                 checked={restore}
                 onChange={setRestore}
+              />
+              <PrefRow
+                label={t("pages.settings.crashNotify")}
+                desc={t("pages.settings.crashNotifyDesc")}
+                checked={crashNotify}
+                onChange={setCrashNotify}
               />
               <PrefRow
                 label={t("pages.settings.closeToTray")}
@@ -462,8 +491,9 @@ function SettingsPageInner() {
             ) : null}
           </Card>
 
-          <ExportPkgCard />
+          <CloudSettingsCard />
 
+          {/* 1.7 §9.1：导出卡已迁至 /workspaces（工作区包归位） */}
           <UpdateCard />
 
           <Card className="p-4">

@@ -9,10 +9,13 @@ pub mod probe;
 pub mod render;
 pub mod validate;
 
-pub use model::{resolve, parse_upstream, GatewayLocation, GatewayServerGroup, ResolvedGateway, UpstreamAddr, MAX_ROUTES};
+pub use model::{
+    parse_upstream, resolve, GatewayLocation, GatewayServerGroup, ResolvedGateway, UpstreamAddr,
+    MAX_ROUTES,
+};
 
 use crate::error::{Error, ErrorCode, Result};
-use crate::spec::{SuperTaskFile, GatewayConf};
+use crate::spec::{GatewayConf, SuperTaskFile};
 
 /// 一条静态校验问题（§4.1）：`route` 为路由序号（0 基），全局问题为 None。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,10 +59,7 @@ pub fn validate_static(file: &SuperTaskFile, conf: &GatewayConf) -> Vec<GatewayI
         }
     }
     if conf.routes.len() > MAX_ROUTES {
-        issues.push(GatewayIssue::new(
-            None,
-            format!("路由数超过 {MAX_ROUTES}"),
-        ));
+        issues.push(GatewayIssue::new(None, format!("路由数超过 {MAX_ROUTES}")));
     }
     let mut seen: Vec<(String, String)> = Vec::new();
     for (i, route) in conf.routes.iter().enumerate() {
@@ -84,7 +84,11 @@ pub fn validate_static(file: &SuperTaskFile, conf: &GatewayConf) -> Vec<GatewayI
                 Some(i),
                 format!(
                     "路由 (host={:?}, path={:?}) 重复",
-                    if key_host.is_empty() { None } else { Some(key_host.clone()) },
+                    if key_host.is_empty() {
+                        None
+                    } else {
+                        Some(key_host.clone())
+                    },
                     route.path
                 ),
             ));
@@ -94,10 +98,7 @@ pub fn validate_static(file: &SuperTaskFile, conf: &GatewayConf) -> Vec<GatewayI
         let has_target = route.target.as_deref().map(str::trim).unwrap_or("").len() > 0;
         let has_upstream = route.upstream.as_deref().map(str::trim).unwrap_or("").len() > 0;
         if has_target == has_upstream {
-            issues.push(GatewayIssue::new(
-                Some(i),
-                "target 与 upstream 必须二选一",
-            ));
+            issues.push(GatewayIssue::new(Some(i), "target 与 upstream 必须二选一"));
             continue;
         }
         if has_target {
@@ -237,7 +238,9 @@ mod tests {
         // port 越界
         let text = format!("{BASE}gateway:\n  kind: nginx\n  port: 80\n");
         let issues = validate_static(&ws(&text), &conf_of(&ws(&text)));
-        assert!(issues.iter().any(|i| i.route.is_none() && i.message.contains("1024")));
+        assert!(issues
+            .iter()
+            .any(|i| i.route.is_none() && i.message.contains("1024")));
 
         // 与服务端口冲突
         let text = format!("{BASE}gateway:\n  kind: nginx\n  port: 8081\n");
@@ -252,12 +255,16 @@ mod tests {
         assert!(issues.iter().any(|i| i.message.contains("重复")));
 
         // path 非法
-        let text = format!("{BASE}gateway:\n  kind: nginx\n  routes:\n    - path: api\n      target: user-api\n");
+        let text = format!(
+            "{BASE}gateway:\n  kind: nginx\n  routes:\n    - path: api\n      target: user-api\n"
+        );
         let issues = validate_static(&ws(&text), &conf_of(&ws(&text)));
         assert!(issues.iter().any(|i| i.message.contains("path")));
 
         // target 不存在 / 无端口 / 互斥缺失 / 双填
-        let text = format!("{BASE}gateway:\n  kind: nginx\n  routes:\n    - path: /\n      target: ghost\n");
+        let text = format!(
+            "{BASE}gateway:\n  kind: nginx\n  routes:\n    - path: /\n      target: ghost\n"
+        );
         let issues = validate_static(&ws(&text), &conf_of(&ws(&text)));
         assert!(issues.iter().any(|i| i.message.contains("ghost")));
 
@@ -288,7 +295,9 @@ mod tests {
 
     #[test]
     fn ensure_static_details_carry_messages() {
-        let text = format!("{BASE}gateway:\n  kind: nginx\n  routes:\n    - path: /\n      target: ghost\n");
+        let text = format!(
+            "{BASE}gateway:\n  kind: nginx\n  routes:\n    - path: /\n      target: ghost\n"
+        );
         let file = ws(&text);
         let conf = conf_of(&file);
         let e = ensure_static(&file, &conf).unwrap_err();

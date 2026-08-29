@@ -155,18 +155,16 @@ enum TemplateKind {
 /// 解析并校验 template.yaml；id 必须与所在目录名一致，files 必须是
 /// 安全的相对路径且不得包含清单自身。
 fn parse_manifest(dir_name: &str, bytes: &[u8]) -> Result<TemplateManifest> {
-    let text = std::str::from_utf8(bytes).map_err(|_| {
-        Error::new(ErrorCode::TemplateInvalid, "template.yaml 不是 UTF-8")
-    })?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| Error::new(ErrorCode::TemplateInvalid, "template.yaml 不是 UTF-8"))?;
     let manifest: TemplateManifest = serde_yaml::from_str(text).map_err(|e| {
         Error::new(
             ErrorCode::TemplateInvalid,
             format!("template.yaml 解析失败: {e}"),
         )
     })?;
-    let invalid = |why: String| {
-        Error::new(ErrorCode::TemplateInvalid, format!("template.yaml: {why}"))
-    };
+    let invalid =
+        |why: String| Error::new(ErrorCode::TemplateInvalid, format!("template.yaml: {why}"));
     if manifest.id != dir_name {
         return Err(invalid(format!(
             "id {:?} 与目录名 {dir_name:?} 不一致",
@@ -177,7 +175,9 @@ fn parse_manifest(dir_name: &str, bytes: &[u8]) -> Result<TemplateManifest> {
         return Err(invalid("version/name 不能为空".into()));
     }
     if manifest.files.is_empty() && manifest.blocks.is_empty() {
-        return Err(invalid("files 不能为空（组合模板可用 blocks 携带文件）".into()));
+        return Err(invalid(
+            "files 不能为空（组合模板可用 blocks 携带文件）".into(),
+        ));
     }
     if manifest.files.iter().any(|f| f == MANIFEST_FILE) {
         return Err(invalid(format!("files 不得包含 {MANIFEST_FILE}")));
@@ -202,7 +202,10 @@ fn parse_manifest(dir_name: &str, bytes: &[u8]) -> Result<TemplateManifest> {
 /// supertask.yaml/template.yaml、services 为非空映射、服务 id 跨块唯一。
 fn validate_blocks(blocks: &[TemplateBlock]) -> Result<()> {
     let invalid = |id: &str, why: String| {
-        Error::new(ErrorCode::TemplateInvalid, format!("template.yaml blocks[{id}]: {why}"))
+        Error::new(
+            ErrorCode::TemplateInvalid,
+            format!("template.yaml blocks[{id}]: {why}"),
+        )
     };
     let mut ids = HashSet::new();
     let mut service_ids = HashSet::new();
@@ -267,14 +270,22 @@ fn block_summaries(blocks: &[TemplateBlock]) -> Vec<TemplateBlockSummary> {
         .iter()
         .map(|b| TemplateBlockSummary {
             id: b.id.clone(),
-            label: if b.label.is_empty() { b.id.clone() } else { b.label.clone() },
+            label: if b.label.is_empty() {
+                b.id.clone()
+            } else {
+                b.label.clone()
+            },
             kind: b.kind.clone(),
             requires: b.requires.clone(),
             default_port: b.default_port,
             services: b
                 .services
                 .as_mapping()
-                .map(|m| m.keys().filter_map(|k| k.as_str().map(|s| s.to_string())).collect())
+                .map(|m| {
+                    m.keys()
+                        .filter_map(|k| k.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
         })
         .collect()
@@ -298,14 +309,18 @@ fn validate_params(params: &[TemplateParam]) -> Result<()> {
         {
             // 命名合法
         } else {
-            return Err(invalid("key 只允许小写字母/数字/下划线且不以数字开头".into()));
+            return Err(invalid(
+                "key 只允许小写字母/数字/下划线且不以数字开头".into(),
+            ));
         }
         if !seen.insert(p.key.clone()) {
             return Err(invalid("key 重复".into()));
         }
         for target in &p.apply_to {
             if target != "yaml.name" {
-                return Err(invalid(format!("apply_to 目标 {target:?} 不存在（仅支持 yaml.name）")));
+                return Err(invalid(format!(
+                    "apply_to 目标 {target:?} 不存在（仅支持 yaml.name）"
+                )));
             }
         }
     }
@@ -353,8 +368,16 @@ fn entry_from_manifest(manifest: TemplateManifest, kind: TemplateKind) -> Templa
             source,
             invalid: false,
             invalid_reason: None,
-            params: if params.is_empty() { None } else { Some(params.clone()) },
-            blocks: if blocks.is_empty() { None } else { Some(block_summaries(&blocks)) },
+            params: if params.is_empty() {
+                None
+            } else {
+                Some(params.clone())
+            },
+            blocks: if blocks.is_empty() {
+                None
+            } else {
+                Some(block_summaries(&blocks))
+            },
         },
         params,
         blocks,
@@ -371,7 +394,11 @@ fn builtin_entry(dir: &'static Dir<'static>) -> Option<TemplateEntry> {
     match parse_manifest(dir_name, bytes) {
         Ok(manifest) => Some(entry_from_manifest(manifest, TemplateKind::Builtin(dir))),
         Err(e) => Some(TemplateEntry {
-            summary: invalid_summary(dir_name, TemplateSourceKind::Builtin, e.message().to_string()),
+            summary: invalid_summary(
+                dir_name,
+                TemplateSourceKind::Builtin,
+                e.message().to_string(),
+            ),
             params: Vec::new(),
             blocks: Vec::new(),
             kind: TemplateKind::Builtin(dir),
@@ -392,7 +419,10 @@ fn builtin_entries() -> Vec<TemplateEntry> {
 }
 
 /// 扫描本地模板目录；返回 (条目, 与 builtin 冲突被跳过的 id 列表)。
-fn local_entries(local_dir: &Path, builtin_ids: &HashSet<String>) -> (Vec<TemplateEntry>, Vec<String>) {
+fn local_entries(
+    local_dir: &Path,
+    builtin_ids: &HashSet<String>,
+) -> (Vec<TemplateEntry>, Vec<String>) {
     let mut entries = Vec::new();
     let mut skipped = Vec::new();
     let Ok(read) = fs::read_dir(local_dir) else {
@@ -452,10 +482,7 @@ fn builtin_ids() -> HashSet<String> {
 /// 枚举模板（IPC `templates.list`）：builtin 恒在，`local_dir` 提供本地模板。
 /// 与 builtin 同 id 的 local 模板被跳过（builtin 优先）。
 pub fn list_templates(local_dir: Option<&Path>) -> Vec<TemplateSummary> {
-    let mut out: Vec<TemplateSummary> = builtin_entries()
-        .into_iter()
-        .map(|e| e.summary)
-        .collect();
+    let mut out: Vec<TemplateSummary> = builtin_entries().into_iter().map(|e| e.summary).collect();
     if let Some(dir) = local_dir {
         let ids = out.iter().map(|s| s.id.clone()).collect::<HashSet<_>>();
         let (locals, _) = local_entries(dir, &ids);
@@ -471,12 +498,10 @@ fn resolve_entry(
     local_dir: Option<&Path>,
 ) -> Result<TemplateEntry> {
     match source {
-        TemplateSourceKind::Builtin => {
-            builtin_entries()
-                .into_iter()
-                .find(|e| e.summary.id == template_id)
-                .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("模板不存在: {template_id}")))
-        }
+        TemplateSourceKind::Builtin => builtin_entries()
+            .into_iter()
+            .find(|e| e.summary.id == template_id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("模板不存在: {template_id}"))),
         TemplateSourceKind::Local => {
             if builtin_ids().contains(template_id) {
                 return Err(Error::new(
@@ -484,9 +509,8 @@ fn resolve_entry(
                     format!("本地模板 id {template_id:?} 与内置模板冲突"),
                 ));
             }
-            let dir = local_dir.ok_or_else(|| {
-                Error::new(ErrorCode::NotFound, "本地模板目录不可用".to_string())
-            })?;
+            let dir = local_dir
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "本地模板目录不可用".to_string()))?;
             let (entries, _) = local_entries(dir, &builtin_ids());
             entries
                 .into_iter()
@@ -519,7 +543,10 @@ pub fn create_template(
     if entry.summary.invalid {
         return Err(Error::new(
             ErrorCode::TemplateInvalid,
-            entry.summary.invalid_reason.unwrap_or_else(|| "模板清单损坏".into()),
+            entry
+                .summary
+                .invalid_reason
+                .unwrap_or_else(|| "模板清单损坏".into()),
         ));
     }
 
@@ -593,9 +620,7 @@ pub fn create_template(
             .iter()
             .find(|(rel, _)| rel == "supertask.yaml")
             .map(|(_, bytes)| bytes.as_slice())
-            .ok_or_else(|| {
-                Error::new(ErrorCode::TemplateInvalid, "模板缺少 supertask.yaml")
-            })?;
+            .ok_or_else(|| Error::new(ErrorCode::TemplateInvalid, "模板缺少 supertask.yaml"))?;
         build_workspace_yaml(template_yaml, &entry, params)?
     };
     let yaml_path = target.join("supertask.yaml");
@@ -659,8 +684,8 @@ fn validate_directory_name(name: &str) -> Result<()> {
         return Err(reject("包含 Windows 文件名非法字符".into()));
     }
     const RESERVED: &[&str] = &[
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     let base = name.split('.').next().unwrap_or("");
     if RESERVED.contains(&base.to_ascii_uppercase().as_str()) {
@@ -748,11 +773,7 @@ fn collect_embedded_files(dir: &'static Dir<'static>, out: &mut Vec<(String, &'s
 }
 
 /// 递归收集本地模板目录内的文件（相对模板根、`/` 分隔）。
-fn collect_local_files(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<(String, Vec<u8>)>,
-) -> Result<()> {
+fn collect_local_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<()> {
     let read = fs::read_dir(dir).map_err(|e| {
         Error::new(
             ErrorCode::TemplateInvalid,
@@ -956,7 +977,10 @@ fn plan_blocks(
         }
         let mapping = b.services.as_mapping().expect("validate_blocks 已保证映射");
         for (k, item_value) in mapping {
-            let svc_id = k.as_str().expect("validate_blocks 已保证字符串键").to_string();
+            let svc_id = k
+                .as_str()
+                .expect("validate_blocks 已保证字符串键")
+                .to_string();
             let port = match ports.get(&svc_id).copied() {
                 Some(p) => p,
                 None => b.default_port.ok_or_else(|| {
@@ -975,11 +999,19 @@ fn plan_blocks(
             used_ports.insert(port, svc_id.clone());
             // 片段里的 {{port}} 占位一并替换（如 health URL），再回填 port 字段
             let mut item = {
-                let rendered = serde_yaml::to_string(&item_value)
-                    .map_err(|e| Error::new(ErrorCode::TemplateInvalid, format!("块 {} services 序列化失败: {e}", b.id)))?;
+                let rendered = serde_yaml::to_string(&item_value).map_err(|e| {
+                    Error::new(
+                        ErrorCode::TemplateInvalid,
+                        format!("块 {} services 序列化失败: {e}", b.id),
+                    )
+                })?;
                 let replaced = rendered.replace("{{port}}", &port.to_string());
-                serde_yaml::from_str::<Value>(&replaced)
-                    .map_err(|e| Error::new(ErrorCode::TemplateInvalid, format!("块 {} services 占位替换失败: {e}", b.id)))?
+                serde_yaml::from_str::<Value>(&replaced).map_err(|e| {
+                    Error::new(
+                        ErrorCode::TemplateInvalid,
+                        format!("块 {} services 占位替换失败: {e}", b.id),
+                    )
+                })?
             };
             if let Some(item_map) = item.as_mapping_mut() {
                 item_map.insert(Value::from("port"), Value::from(port));
@@ -1061,7 +1093,10 @@ pub fn preview_template(
     if entry.summary.invalid {
         return Err(Error::new(
             ErrorCode::TemplateInvalid,
-            entry.summary.invalid_reason.unwrap_or_else(|| "模板清单损坏".into()),
+            entry
+                .summary
+                .invalid_reason
+                .unwrap_or_else(|| "模板清单损坏".into()),
         ));
     }
     validate_param_values(&entry, params)?;
@@ -1096,8 +1131,9 @@ pub fn preview_template(
                 .find(|(rel, _)| rel == "supertask.yaml")
                 .map(|(_, b)| b.as_slice())
                 .ok_or_else(|| Error::new(ErrorCode::TemplateInvalid, "模板缺少 supertask.yaml"))?;
-            let text = std::str::from_utf8(yaml)
-                .map_err(|_| Error::new(ErrorCode::TemplateInvalid, "模板 supertask.yaml 不是 UTF-8"))?;
+            let text = std::str::from_utf8(yaml).map_err(|_| {
+                Error::new(ErrorCode::TemplateInvalid, "模板 supertask.yaml 不是 UTF-8")
+            })?;
             let raw: Value = serde_yaml::from_str(text)
                 .map_err(|e| Error::new(ErrorCode::TemplateInvalid, format!("解析失败: {e}")))?;
             raw.get("services").cloned().unwrap_or(Value::Null)
@@ -1105,7 +1141,9 @@ pub fn preview_template(
     };
     Ok(TemplatePreviewOut {
         services,
-        files: plan.map(|p| p.files).unwrap_or_else(|| entry.summary.files.clone()),
+        files: plan
+            .map(|p| p.files)
+            .unwrap_or_else(|| entry.summary.files.clone()),
         warnings,
     })
 }
@@ -1156,12 +1194,15 @@ mod tests {
         let entries = builtin_entries();
         assert!(entries.len() >= 2);
         for entry in &entries {
-            assert!(!entry.summary.invalid, "内置模板清单损坏: {:?}", entry.summary.invalid_reason);
+            assert!(
+                !entry.summary.invalid,
+                "内置模板清单损坏: {:?}",
+                entry.summary.invalid_reason
+            );
             let actual = verify_entry_files(entry)
                 .unwrap_or_else(|e| panic!("模板 {} 校验失败: {e}", entry.summary.id));
             // files 概览与实际文件集合完全一致（双向）
-            let mut expected: Vec<&str> =
-                entry.summary.files.iter().map(|s| s.as_str()).collect();
+            let mut expected: Vec<&str> = entry.summary.files.iter().map(|s| s.as_str()).collect();
             expected.sort_unstable();
             let mut actual_paths: Vec<&str> = actual.iter().map(|(p, _)| p.as_str()).collect();
             actual_paths.sort_unstable();
@@ -1175,8 +1216,16 @@ mod tests {
         // 嵌入根下不允许出现清单之外的散落模板目录
         let known: HashSet<String> = entries.iter().map(|e| e.summary.id.clone()).collect();
         for dir in TEMPLATE_ASSETS.dirs() {
-            let name = dir.path().file_name().unwrap().to_string_lossy().into_owned();
-            assert!(known.contains(&name), "嵌入目录 {name} 缺少 template.yaml 清单");
+            let name = dir
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                known.contains(&name),
+                "嵌入目录 {name} 缺少 template.yaml 清单"
+            );
         }
     }
 
@@ -1227,7 +1276,11 @@ mod tests {
                 &BTreeMap::new(),
             )
             .unwrap_err();
-            assert_eq!(err.code(), ErrorCode::PathEscape, "目录名 {name:?} 应被拒绝");
+            assert_eq!(
+                err.code(),
+                ErrorCode::PathEscape,
+                "目录名 {name:?} 应被拒绝"
+            );
         }
         for ok in ["demo-app", "my_workspace", "项目01", "a.b.c"] {
             validate_directory_name(ok).unwrap_or_else(|e| panic!("目录名 {ok:?} 应合法: {e}"));
@@ -1298,7 +1351,9 @@ mod tests {
             "supertask.yaml",
         ] {
             assert!(
-                target.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR)).is_file(),
+                target
+                    .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+                    .is_file(),
                 "缺少 {rel}"
             );
         }
@@ -1363,7 +1418,10 @@ mod tests {
         assert_eq!(err.code(), ErrorCode::TargetNotEmpty);
 
         // 原目录内容一字未动，也没有混入模板文件
-        assert_eq!(fs::read_to_string(dst.join("keep.txt")).unwrap(), "原样内容");
+        assert_eq!(
+            fs::read_to_string(dst.join("keep.txt")).unwrap(),
+            "原样内容"
+        );
         assert_eq!(
             fs::read_to_string(dst.join("keep-dir").join("nested.txt")).unwrap(),
             "嵌套"
@@ -1391,7 +1449,11 @@ mod tests {
         // 结构化断言：模板自带 yaml 的 backend 不含 health 键（注释里的文字不算）
         let raw: Value = serde_yaml::from_str(text).unwrap();
         assert!(
-            raw.get("services").and_then(|s| s.get("backend")).unwrap().get("health").is_none(),
+            raw.get("services")
+                .and_then(|s| s.get("backend"))
+                .unwrap()
+                .get("health")
+                .is_none(),
             "最小模板 backend 不应自带 health 字段"
         );
 
@@ -1410,7 +1472,10 @@ mod tests {
         write_local_template(&local_root, "my-node-api", "");
 
         let list = list_templates(Some(&local_root));
-        let mine = list.iter().find(|t| t.id == "my-node-api").expect("local 模板应被列出");
+        let mine = list
+            .iter()
+            .find(|t| t.id == "my-node-api")
+            .expect("local 模板应被列出");
         assert_eq!(mine.source, TemplateSourceKind::Local);
         assert!(!mine.invalid);
         // builtin 仍在
@@ -1480,9 +1545,16 @@ mod tests {
         fs::write(dir.join(MANIFEST_FILE), "name: 缺少 id 与 files\n").unwrap();
 
         let list = list_templates(Some(&local_root));
-        let broken = list.iter().find(|t| t.id == "broken-tpl").expect("损坏条目应列出");
+        let broken = list
+            .iter()
+            .find(|t| t.id == "broken-tpl")
+            .expect("损坏条目应列出");
         assert!(broken.invalid);
-        assert!(broken.invalid_reason.as_deref().unwrap_or_default().contains("template.yaml"));
+        assert!(broken
+            .invalid_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("template.yaml"));
 
         let err = create_template(
             "broken-tpl",
@@ -1594,9 +1666,17 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(fs::read_to_string(target.join("README.md")).unwrap(), "# my-app\n");
-        let (file, _) = parse_yaml(&fs::read_to_string(target.join("supertask.yaml")).unwrap()).unwrap();
-        assert_eq!(file.name.as_deref(), Some("my-app"), "apply_to yaml.name 应覆写 name");
+        assert_eq!(
+            fs::read_to_string(target.join("README.md")).unwrap(),
+            "# my-app\n"
+        );
+        let (file, _) =
+            parse_yaml(&fs::read_to_string(target.join("supertask.yaml")).unwrap()).unwrap();
+        assert_eq!(
+            file.name.as_deref(),
+            Some("my-app"),
+            "apply_to yaml.name 应覆写 name"
+        );
         let _ = fs::remove_dir_all(&local_root);
         let _ = fs::remove_dir_all(&parent);
     }
@@ -1677,7 +1757,11 @@ mod tests {
     #[test]
     fn combo_template_summary_exposes_blocks() {
         let entry = combo_entry();
-        let blocks = entry.summary.blocks.as_ref().expect("组合模板应暴露 blocks");
+        let blocks = entry
+            .summary
+            .blocks
+            .as_ref()
+            .expect("组合模板应暴露 blocks");
         assert_eq!(blocks.len(), 2);
         let web = blocks.iter().find(|b| b.id == "web").unwrap();
         assert_eq!(web.requires, vec!["backend"]);
@@ -1709,9 +1793,12 @@ mod tests {
         );
         // {{port}} 占位已替换进 health URL
         let url = backend
-            .get("health").unwrap()
-            .get("http").unwrap()
-            .as_str().unwrap();
+            .get("health")
+            .unwrap()
+            .get("http")
+            .unwrap()
+            .as_str()
+            .unwrap();
         assert_eq!(url, "http://127.0.0.1:8081/actuator/health");
         assert!(out.files.iter().any(|f| f == "web/server.js"));
     }
@@ -1733,11 +1820,19 @@ mod tests {
         let services = out.services.as_mapping().unwrap();
         assert_eq!(services.len(), 2, "依赖 backend 应自动闭合");
         assert_eq!(
-            services.get(Value::from("web")).unwrap().get("port").and_then(|p| p.as_u64()),
+            services
+                .get(Value::from("web"))
+                .unwrap()
+                .get("port")
+                .and_then(|p| p.as_u64()),
             Some(6000)
         );
         assert_eq!(
-            services.get(Value::from("backend")).unwrap().get("port").and_then(|p| p.as_u64()),
+            services
+                .get(Value::from("backend"))
+                .unwrap()
+                .get("port")
+                .and_then(|p| p.as_u64()),
             Some(8081)
         );
     }
@@ -1788,9 +1883,16 @@ mod tests {
         )
         .unwrap();
 
-        for rel in ["pom.xml", "backend/pom.xml", "web/server.js", "supertask.yaml"] {
+        for rel in [
+            "pom.xml",
+            "backend/pom.xml",
+            "web/server.js",
+            "supertask.yaml",
+        ] {
             assert!(
-                target.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR)).is_file(),
+                target
+                    .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+                    .is_file(),
                 "缺少 {rel}"
             );
         }
@@ -1806,10 +1908,16 @@ mod tests {
             Some("http://127.0.0.1:9000/actuator/health"),
             "{{port}} 占位应跟随端口分配"
         );
-        assert_eq!(file.services.get("web").unwrap().depends_on, vec!["backend"]);
+        assert_eq!(
+            file.services.get("web").unwrap().depends_on,
+            vec!["backend"]
+        );
         let tpl = file.templates.as_ref().unwrap();
         assert_eq!(
-            tpl.as_mapping().unwrap().get(Value::from("id")).and_then(|v| v.as_str()),
+            tpl.as_mapping()
+                .unwrap()
+                .get(Value::from("id"))
+                .and_then(|v| v.as_str()),
             Some("spring-node-combo")
         );
 
@@ -1853,8 +1961,12 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        let (file, _) = parse_yaml(&fs::read_to_string(target.join("supertask.yaml")).unwrap()).unwrap();
-        assert_eq!(file.services.len(), out.services.as_mapping().unwrap().len());
+        let (file, _) =
+            parse_yaml(&fs::read_to_string(target.join("supertask.yaml")).unwrap()).unwrap();
+        assert_eq!(
+            file.services.len(),
+            out.services.as_mapping().unwrap().len()
+        );
         let _ = fs::remove_dir_all(&parent);
     }
 }

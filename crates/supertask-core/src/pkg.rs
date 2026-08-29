@@ -106,10 +106,11 @@ pub fn export_package(root: &Path, dest: &Path, with_secrets: bool) -> Result<Ex
         .collect();
     let manifest = PkgManifest {
         format: PKG_FORMAT,
-        name: spec
-            .name
-            .clone()
-            .unwrap_or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+        name: spec.name.clone().unwrap_or_else(|| {
+            root.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        }),
         created_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -123,11 +124,15 @@ pub fn export_package(root: &Path, dest: &Path, with_secrets: bool) -> Result<Ex
 
     // ---- zip 写出（Deflate）----
     let mut writer = zip::ZipWriter::new(
-        fs::File::create(dest).map_err(|e| Error::new(ErrorCode::PkgInvalid, format!("无法创建输出文件: {e}")))?,
+        fs::File::create(dest)
+            .map_err(|e| Error::new(ErrorCode::PkgInvalid, format!("无法创建输出文件: {e}")))?,
     );
-    let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    for (path, bytes) in content.iter().chain(std::iter::once(&(MANIFEST_NAME.to_string(), manifest_bytes))) {
+    let opts: zip::write::FileOptions<'_, ()> =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for (path, bytes) in content.iter().chain(std::iter::once(&(
+        MANIFEST_NAME.to_string(),
+        manifest_bytes,
+    ))) {
         writer
             .start_file(path.as_str(), opts)
             .map_err(|e| pkg_err("写入条目失败", path, e))?;
@@ -136,11 +141,15 @@ pub fn export_package(root: &Path, dest: &Path, with_secrets: bool) -> Result<Ex
             .write_all(bytes)
             .map_err(|e| pkg_err("写入内容失败", path, e))?;
     }
-    writer.finish().map_err(|e| {
-        Error::new(ErrorCode::PkgInvalid, format!("zip 收尾失败: {e}"))
-    })?;
+    writer
+        .finish()
+        .map_err(|e| Error::new(ErrorCode::PkgInvalid, format!("zip 收尾失败: {e}")))?;
 
-    Ok(ExportOutcome { path: dest.to_path_buf(), entries: manifest.entries, warnings })
+    Ok(ExportOutcome {
+        path: dest.to_path_buf(),
+        entries: manifest.entries,
+        warnings,
+    })
 }
 
 /// 导入工作区包（只落盘，零执行；dest 已有 supertask.yaml → PKG_TARGET_EXISTS）。
@@ -153,7 +162,8 @@ pub fn import_package(pkg: &Path, dest: &Path) -> Result<ImportOutcome> {
     }
     let mut warnings: Vec<String> = Vec::new();
     let mut archive = zip::ZipArchive::new(
-        fs::File::open(pkg).map_err(|e| Error::new(ErrorCode::PkgNotFound, format!("导出包不可读: {e}")))?,
+        fs::File::open(pkg)
+            .map_err(|e| Error::new(ErrorCode::PkgNotFound, format!("导出包不可读: {e}")))?,
     )
     .map_err(|e| Error::new(ErrorCode::PkgInvalid, format!("zip 解析失败: {e}")))?;
 
@@ -178,10 +188,13 @@ pub fn import_package(pkg: &Path, dest: &Path) -> Result<ImportOutcome> {
             format!("目标目录已有 {SPEC_NAME}，不覆盖: {}", dest.display()),
         ));
     }
-    fs::create_dir_all(dest).map_err(|e| {
-        Error::new(ErrorCode::PkgInvalid, format!("无法创建目标目录: {e}"))
-    })?;
-    let seen_in_manifest = manifest.entries.iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+    fs::create_dir_all(dest)
+        .map_err(|e| Error::new(ErrorCode::PkgInvalid, format!("无法创建目标目录: {e}")))?;
+    let seen_in_manifest = manifest
+        .entries
+        .iter()
+        .map(|e| e.path.clone())
+        .collect::<Vec<_>>();
     for entry in &manifest.entries {
         let rel = safe_rel_path(&entry.path).ok_or_else(|| {
             Error::new(ErrorCode::PkgInvalid, format!("路径不安全: {}", entry.path))
@@ -195,12 +208,14 @@ pub fn import_package(pkg: &Path, dest: &Path) -> Result<ImportOutcome> {
         }
         let abs = dest.join(&rel);
         if let Some(parent) = abs.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                Error::new(ErrorCode::PkgInvalid, format!("无法创建目录: {e}"))
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|e| Error::new(ErrorCode::PkgInvalid, format!("无法创建目录: {e}")))?;
         }
         fs::write(&abs, &bytes).map_err(|e| {
-            Error::new(ErrorCode::PkgInvalid, format!("写入失败 {}: {e}", entry.path))
+            Error::new(
+                ErrorCode::PkgInvalid,
+                format!("写入失败 {}: {e}", entry.path),
+            )
         })?;
     }
 
@@ -217,7 +232,10 @@ pub fn import_package(pkg: &Path, dest: &Path) -> Result<ImportOutcome> {
         warnings.push(format!("包内多余条目已跳过: {name}"));
     }
 
-    Ok(ImportOutcome { root: dest.to_path_buf(), warnings })
+    Ok(ImportOutcome {
+        root: dest.to_path_buf(),
+        warnings,
+    })
 }
 
 /// 条目路径安全检查：拒绝绝对路径、`..`、反斜杠、盘符（zip-slip 防线之一，
@@ -234,7 +252,11 @@ fn safe_rel_path(p: &str) -> Option<PathBuf> {
             c => out.push(c),
         }
     }
-    if out.as_os_str().is_empty() { None } else { Some(out) }
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// 密钥文件读取：必须在 root 内（canonicalize 后前缀校验）且存在。
@@ -335,10 +357,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dest_dir);
         let out = import_package(&dest_zip, &dest_dir).unwrap();
         assert_eq!(out.root, dest_dir);
-        assert_eq!(
-            fs::read(dest_dir.join(SPEC_NAME)).unwrap(),
-            YAML.as_bytes()
-        );
+        assert_eq!(fs::read(dest_dir.join(SPEC_NAME)).unwrap(), YAML.as_bytes());
         assert_eq!(
             fs::read_to_string(dest_dir.join(".env.local")).unwrap(),
             "DB_PASSWORD=hunter2\n"
@@ -364,13 +383,21 @@ mod tests {
 
     #[test]
     fn import_rejects_missing_and_corrupt_pkg() {
-        let missing = std::env::temp_dir().join(format!("st-pkg-missing-{}.zip", std::process::id()));
+        let missing =
+            std::env::temp_dir().join(format!("st-pkg-missing-{}.zip", std::process::id()));
         let dest = temp_root("missing-dest");
-        assert_eq!(import_package(&missing, &dest).unwrap_err().code(), ErrorCode::PkgNotFound);
+        assert_eq!(
+            import_package(&missing, &dest).unwrap_err().code(),
+            ErrorCode::PkgNotFound
+        );
 
-        let corrupt = std::env::temp_dir().join(format!("st-pkg-corrupt-{}.zip", std::process::id()));
+        let corrupt =
+            std::env::temp_dir().join(format!("st-pkg-corrupt-{}.zip", std::process::id()));
         fs::write(&corrupt, b"not a zip").unwrap();
-        assert_eq!(import_package(&corrupt, &dest).unwrap_err().code(), ErrorCode::PkgInvalid);
+        assert_eq!(
+            import_package(&corrupt, &dest).unwrap_err().code(),
+            ErrorCode::PkgInvalid
+        );
         let _ = fs::remove_dir_all(&dest);
         let _ = fs::remove_file(&corrupt);
     }
@@ -379,8 +406,8 @@ mod tests {
     fn write_test_zip(dest: &Path, entries: &[(&str, Vec<u8>)]) {
         let file = fs::File::create(dest).unwrap();
         let mut w = zip::ZipWriter::new(file);
-        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let opts: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (name, bytes) in entries {
             w.start_file(*name, opts).unwrap();
             use std::io::Write as _;
@@ -420,7 +447,10 @@ mod tests {
                 ("../escape.yaml", yaml),
             ],
         );
-        assert_eq!(import_package(&dest_zip, &dest_dir).unwrap_err().code(), ErrorCode::PkgInvalid);
+        assert_eq!(
+            import_package(&dest_zip, &dest_dir).unwrap_err().code(),
+            ErrorCode::PkgInvalid
+        );
         assert!(!root.join("escape.yaml").exists());
         let _ = fs::remove_dir_all(&root);
     }
@@ -440,20 +470,40 @@ mod tests {
         }];
         write_test_zip(
             &dest_zip,
-            &[(MANIFEST_NAME, manifest_json(PKG_FORMAT, entries)), (SPEC_NAME, yaml.clone())],
+            &[
+                (MANIFEST_NAME, manifest_json(PKG_FORMAT, entries)),
+                (SPEC_NAME, yaml.clone()),
+            ],
         );
-        assert_eq!(import_package(&dest_zip, &dest_dir).unwrap_err().code(), ErrorCode::PkgInvalid);
+        assert_eq!(
+            import_package(&dest_zip, &dest_dir).unwrap_err().code(),
+            ErrorCode::PkgInvalid
+        );
 
         // manifest 声明了 zip 里不存在的条目
         let entries = vec![
-            PkgEntry { path: SPEC_NAME.into(), sha256: sha256_hex(&yaml), bytes: yaml.len() as u64 },
-            PkgEntry { path: ".env.local".into(), sha256: sha256_hex(b"x"), bytes: 1 },
+            PkgEntry {
+                path: SPEC_NAME.into(),
+                sha256: sha256_hex(&yaml),
+                bytes: yaml.len() as u64,
+            },
+            PkgEntry {
+                path: ".env.local".into(),
+                sha256: sha256_hex(b"x"),
+                bytes: 1,
+            },
         ];
         write_test_zip(
             &dest_zip,
-            &[(MANIFEST_NAME, manifest_json(PKG_FORMAT, entries)), (SPEC_NAME, yaml)],
+            &[
+                (MANIFEST_NAME, manifest_json(PKG_FORMAT, entries)),
+                (SPEC_NAME, yaml),
+            ],
         );
-        assert_eq!(import_package(&dest_zip, &dest_dir).unwrap_err().code(), ErrorCode::PkgInvalid);
+        assert_eq!(
+            import_package(&dest_zip, &dest_dir).unwrap_err().code(),
+            ErrorCode::PkgInvalid
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -470,16 +520,28 @@ mod tests {
         }];
         write_test_zip(
             &dest_zip,
-            &[(MANIFEST_NAME, manifest_json(PKG_FORMAT + 1, entries)), (SPEC_NAME, yaml)],
+            &[
+                (MANIFEST_NAME, manifest_json(PKG_FORMAT + 1, entries)),
+                (SPEC_NAME, yaml),
+            ],
         );
         let dest_dir = root.join("out");
-        assert_eq!(import_package(&dest_zip, &dest_dir).unwrap_err().code(), ErrorCode::PkgVersion);
+        assert_eq!(
+            import_package(&dest_zip, &dest_dir).unwrap_err().code(),
+            ErrorCode::PkgVersion
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn safe_rel_path_accepts_plain() {
-        assert_eq!(safe_rel_path("supertask.yaml").as_deref(), Some(Path::new("supertask.yaml")));
-        assert_eq!(safe_rel_path(".env.local").as_deref(), Some(Path::new(".env.local")));
+        assert_eq!(
+            safe_rel_path("supertask.yaml").as_deref(),
+            Some(Path::new("supertask.yaml"))
+        );
+        assert_eq!(
+            safe_rel_path(".env.local").as_deref(),
+            Some(Path::new(".env.local"))
+        );
     }
 }

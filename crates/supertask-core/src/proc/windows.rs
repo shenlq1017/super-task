@@ -80,7 +80,10 @@ impl WindowsJob {
         let proc = HANDLE(raw);
         unsafe {
             AssignProcessToJobObject(self.handle, proc).map_err(|e| {
-                Error::new(ErrorCode::JobCreate, format!("AssignProcessToJobObject 失败: {e}"))
+                Error::new(
+                    ErrorCode::JobCreate,
+                    format!("AssignProcessToJobObject 失败: {e}"),
+                )
             })
         }
     }
@@ -115,7 +118,11 @@ impl WindowsJob {
             num_full: u32,
             pids: [usize; 64],
         }
-        let mut list = PidList { num_assigned: 0, num_full: 0, pids: [0; 64] };
+        let mut list = PidList {
+            num_assigned: 0,
+            num_full: 0,
+            pids: [0; 64],
+        };
         let ok = unsafe {
             QueryInformationJobObject(
                 self.handle,

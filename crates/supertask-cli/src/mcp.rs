@@ -129,9 +129,9 @@ impl McpServer {
             }
             TOOL_START | TOOL_STOP | TOOL_RESTART => self.lifecycle(tool, &args),
             TOOL_RUN_SCRIPT => {
-                let id = args["id"].as_str().ok_or_else(|| {
-                    Error::new(ErrorCode::SpecInvalid, "缺少必填参数 id")
-                })?;
+                let id = args["id"]
+                    .as_str()
+                    .ok_or_else(|| Error::new(ErrorCode::SpecInvalid, "缺少必填参数 id"))?;
                 self.run_script(id)
             }
             TOOL_CANCEL_SCRIPT => self.with_engine(|e| {
@@ -214,7 +214,10 @@ impl McpServer {
             let mut services = serde_json::Map::new();
             for (id, s) in &snap.services {
                 if targets.is_empty() || targets.contains(id) {
-                    services.insert(id.clone(), json!({ "state": s.state, "pid": s.pid, "port": s.port }));
+                    services.insert(
+                        id.clone(),
+                        json!({ "state": s.state, "pid": s.pid, "port": s.port }),
+                    );
                 }
             }
             Ok(json!({ "ok": true, "services": services }))
@@ -230,7 +233,10 @@ impl McpServer {
                 let running = e
                     .snapshot()
                     .ok()
-                    .and_then(|s| s.script.map(|sc| sc.state == supertask_core::engine::ScriptState::Running))
+                    .and_then(|s| {
+                        s.script
+                            .map(|sc| sc.state == supertask_core::engine::ScriptState::Running)
+                    })
                     .unwrap_or(false);
                 if !running {
                     break;
@@ -289,7 +295,8 @@ impl ServerHandler for McpServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, ErrorData>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, ErrorData>> + Send + '_
+    {
         let name = request.name.clone();
         let arguments = request
             .arguments
@@ -298,14 +305,14 @@ impl ServerHandler for McpServer {
         async move {
             let res = tokio::task::spawn_blocking(move || this.dispatch(&name, arguments.as_ref()))
                 .await
-                .map_err(|e| rmcp::model::ErrorData::internal_error(format!("join error: {e}"), None))?;
+                .map_err(|e| {
+                    rmcp::model::ErrorData::internal_error(format!("join error: {e}"), None)
+                })?;
             match res {
-                Ok(data) => Ok(
-                    CallToolResult::success(vec![ContentBlock::text(
-                        serde_json::to_string_pretty(&data).unwrap_or_default(),
-                    )])
-                    .into(),
-                ),
+                Ok(data) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&data).unwrap_or_default(),
+                )])
+                .into()),
                 Err(err) => {
                     // 工具级失败：调用方可见的统一错误信封（§5.2）
                     let envelope = json!({
@@ -321,12 +328,10 @@ impl ServerHandler for McpServer {
                             },
                         },
                     });
-                    Ok(
-                        CallToolResult::error(vec![ContentBlock::text(
-                            serde_json::to_string_pretty(&envelope).unwrap_or_default(),
-                        )])
-                        .into(),
-                    )
+                    Ok(CallToolResult::error(vec![ContentBlock::text(
+                        serde_json::to_string_pretty(&envelope).unwrap_or_default(),
+                    )])
+                    .into())
                 }
             }
         }
@@ -383,7 +388,11 @@ mod tests {
     }
 
     fn foreign_alive_pid() -> u32 {
-        if cfg!(windows) { 4 } else { 1 }
+        if cfg!(windows) {
+            4
+        } else {
+            1
+        }
     }
 
     #[test]
@@ -393,7 +402,10 @@ mod tests {
         let out = server.dispatch(TOOL_STATUS, None).unwrap();
         assert!(out["workspace"].is_string());
         assert!(out["lock"].is_null());
-        assert!(lock::query(&root).is_none(), "readonly must not create lock");
+        assert!(
+            lock::query(&root).is_none(),
+            "readonly must not create lock"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -426,7 +438,11 @@ mod tests {
         let root = temp_root("locked");
         let dir = root.join(".supertask");
         std::fs::create_dir_all(&dir).unwrap();
-        let info = lock::LockInfo { pid: foreign_alive_pid(), holder: LockHolder::Desktop, started_at_ms: 0 };
+        let info = lock::LockInfo {
+            pid: foreign_alive_pid(),
+            holder: LockHolder::Desktop,
+            started_at_ms: 0,
+        };
         std::fs::write(lock::lock_path(&root), serde_json::to_vec(&info).unwrap()).unwrap();
         let server = McpServer::new(root.clone());
         let err = server.dispatch(TOOL_START, None).unwrap_err();
@@ -441,7 +457,9 @@ mod tests {
     fn run_script_requires_id() {
         let root = temp_root("script-id");
         let server = McpServer::new(root.clone());
-        let err = server.dispatch(TOOL_RUN_SCRIPT, Some(&json!({}))).unwrap_err();
+        let err = server
+            .dispatch(TOOL_RUN_SCRIPT, Some(&json!({})))
+            .unwrap_err();
         assert_eq!(err.code(), ErrorCode::SpecInvalid);
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -450,7 +468,15 @@ mod tests {
     fn tool_definitions_cover_seven_tools() {
         let names: Vec<&str> = tool_definitions().into_iter().map(|(n, _, _)| n).collect();
         assert_eq!(names.len(), 7);
-        for expected in [TOOL_STATUS, TOOL_START, TOOL_STOP, TOOL_RESTART, TOOL_LOGS, TOOL_RUN_SCRIPT, TOOL_CANCEL_SCRIPT] {
+        for expected in [
+            TOOL_STATUS,
+            TOOL_START,
+            TOOL_STOP,
+            TOOL_RESTART,
+            TOOL_LOGS,
+            TOOL_RUN_SCRIPT,
+            TOOL_CANCEL_SCRIPT,
+        ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
     }
@@ -478,7 +504,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
         assert!(running, "web should reach running after start");
-        assert!(supertask_core::ports::is_serving(ws.port), "stub must be listening before shutdown");
+        assert!(
+            supertask_core::ports::is_serving(ws.port),
+            "stub must be listening before shutdown"
+        );
         assert!(lock::query(&ws.root).is_some(), "mutable tool holds lock");
 
         // 模拟编辑器断开：stdio 关闭路径调用的同一 shutdown()
@@ -494,7 +523,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         assert!(released, "stub process must be killed on disconnect");
-        assert!(lock::query(&ws.root).is_none(), "lock must be released on disconnect");
+        assert!(
+            lock::query(&ws.root).is_none(),
+            "lock must be released on disconnect"
+        );
         node_stub::cleanup(&ws);
     }
 }

@@ -53,7 +53,10 @@ pub fn fail(json: bool, e: &Error) -> i32 {
     } else {
         eprintln!("错误 [{}]: {}", code_str(&e.code()), e.message());
         // holder/pid 等结构化细节人读时并入提示
-        if let supertask_core::Error::App { details: Some(d), .. } = e {
+        if let supertask_core::Error::App {
+            details: Some(d), ..
+        } = e
+        {
             eprintln!("  详情: {d:?}");
         }
     }

@@ -21,7 +21,10 @@ fn list_offers_both_builtin_templates() {
     let list = list_templates(None);
     let ids: Vec<&str> = list.iter().map(|t| t.id.as_str()).collect();
     assert!(ids.contains(&"spring-multimodule-node"), "ids: {ids:?}");
-    assert!(ids.contains(&"spring-multimodule-node-minimal"), "ids: {ids:?}");
+    assert!(
+        ids.contains(&"spring-multimodule-node-minimal"),
+        "ids: {ids:?}"
+    );
     assert!(ids.contains(&"spring-boot-single"), "ids: {ids:?}");
     assert!(ids.contains(&"node-fullstack"), "ids: {ids:?}");
 
@@ -35,18 +38,20 @@ fn list_offers_both_builtin_templates() {
         // 普通模板的文件概览必须包含核心文件；组合模板（blocks）不含
         // supertask.yaml——yaml 由块片段在创建时生成（模板升级后的设计）
         if t.blocks.is_none() {
-            assert!(t.files.iter().any(|f| f == "supertask.yaml"), "{}: {:?}", t.id, t.files);
+            assert!(
+                t.files.iter().any(|f| f == "supertask.yaml"),
+                "{}: {:?}",
+                t.id,
+                t.files
+            );
         }
-        assert!(t.files.iter().all(|f| !f.starts_with('/') && !f.contains('\\')));
+        assert!(t
+            .files
+            .iter()
+            .all(|f| !f.starts_with('/') && !f.contains('\\')));
     }
     // 各模板技术栈抽查
-    let stacks_of = |id: &str| {
-        list.iter()
-            .find(|t| t.id == id)
-            .unwrap()
-            .stacks
-            .clone()
-    };
+    let stacks_of = |id: &str| list.iter().find(|t| t.id == id).unwrap().stacks.clone();
     assert!(stacks_of("spring-boot-single") == vec!["spring-boot".to_string()]);
     assert!(stacks_of("node-fullstack") == vec!["node".to_string()]);
     assert!(stacks_of("spring-multimodule-node").contains(&"spring-boot".to_string()));
@@ -70,13 +75,17 @@ fn create_full_template_and_parse_yaml() {
 
     let text = fs::read_to_string(target.join("supertask.yaml")).unwrap();
     let (file, warnings) = parse_yaml(&text).unwrap();
-    assert!(warnings.is_empty(), "完整模板 YAML 不应产生告警: {warnings:?}");
+    assert!(
+        warnings.is_empty(),
+        "完整模板 YAML 不应产生告警: {warnings:?}"
+    );
 
     // templates 保留段
     let tpl = file.templates.as_ref().expect("templates 段缺失");
     let m = tpl.as_mapping().unwrap();
     assert_eq!(
-        m.get(serde_yaml::Value::from("source")).and_then(|v| v.as_str()),
+        m.get(serde_yaml::Value::from("source"))
+            .and_then(|v| v.as_str()),
         Some("builtin")
     );
 
@@ -86,24 +95,26 @@ fn create_full_template_and_parse_yaml() {
     assert_eq!(backend.kind, "spring-boot");
     assert_eq!(backend.port, Some(8081));
     let health = backend.health.as_ref().unwrap();
-    assert_eq!(health.http.as_deref(), Some("http://127.0.0.1:8081/actuator/health"));
+    assert_eq!(
+        health.http.as_deref(),
+        Some("http://127.0.0.1:8081/actuator/health")
+    );
     let web = file.services.get("web").unwrap();
     assert_eq!(web.depends_on, vec!["backend"]);
     assert_eq!(web.port, Some(5173));
 
     // 未知 id → NOT_FOUND；非空目标 → TARGET_NOT_EMPTY
-    let err =
-        create_template(
-            "nope",
-            TemplateSourceKind::Builtin,
-            &parent,
-            "another",
-            None,
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
-        )
-        .unwrap_err();
+    let err = create_template(
+        "nope",
+        TemplateSourceKind::Builtin,
+        &parent,
+        "another",
+        None,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap_err();
     assert_eq!(err.code(), ErrorCode::NotFound);
     let err = create_template(
         "spring-multimodule-node",
@@ -140,7 +151,11 @@ fn create_minimal_template_backend_health_falls_back() {
     let raw = fs::read_to_string(target.join("supertask.yaml")).unwrap();
     let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
     assert!(
-        doc.get("services").and_then(|s| s.get("backend")).unwrap().get("health").is_none(),
+        doc.get("services")
+            .and_then(|s| s.get("backend"))
+            .unwrap()
+            .get("health")
+            .is_none(),
         "最小模板 backend 不应自带 health 字段"
     );
 
@@ -149,7 +164,10 @@ fn create_minimal_template_backend_health_falls_back() {
     let (file, _) = parse_yaml(&raw).unwrap();
     assert_eq!(file.services.len(), 2);
     let backend = file.services.get("backend").unwrap();
-    let health = backend.health.as_ref().expect("apply_defaults 应兜底 health");
+    let health = backend
+        .health
+        .as_ref()
+        .expect("apply_defaults 应兜底 health");
     assert_eq!(health.r#type, supertask_core::spec::HealthType::Tcp);
     assert!(health.http.is_none());
 

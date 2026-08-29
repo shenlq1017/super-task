@@ -1,12 +1,12 @@
 //! Resolve installed tools. Installer exit 0 is not enough (§4.4).
 
-use std::path::{Path, PathBuf};
-use indexmap::IndexMap;
 use super::provider;
 use super::runner::{run_mapped, ToolRunner};
 use super::{ProviderKind, ToolKind};
 use crate::error::{Error, ErrorCode, Result};
 use crate::probe;
+use indexmap::IndexMap;
+use std::path::{Path, PathBuf};
 
 /// winget 分支解析可执行文件的探测函数；生产用 `probe::find_on_path`，
 /// 测试注入假探针避免依赖真机 PATH。
@@ -39,24 +39,50 @@ pub fn resolve_tool_with(
         ProviderKind::Mise => {
             let spec = provider::which_spec(tool, Some(workspace.to_path_buf()));
             let out = run_mapped(runner, &spec)?;
-            let path = out.stdout.lines().map(|s| s.trim()).find(|s| !s.is_empty()).unwrap_or("");
+            let path = out
+                .stdout
+                .lines()
+                .map(|s| s.trim())
+                .find(|s| !s.is_empty())
+                .unwrap_or("");
             if out.code != 0 || path.is_empty() {
-                return Err(Error::new(ErrorCode::MissingTool, format!("未解析到 {}", tool.as_str())));
+                return Err(Error::new(
+                    ErrorCode::MissingTool,
+                    format!("未解析到 {}", tool.as_str()),
+                ));
             }
             let mut env_delta = IndexMap::new();
             if let Some(parent) = Path::new(path).parent() {
-                env_delta.insert("PATH".into(), format!("{};{}", parent.display(), std::env::var("PATH").unwrap_or_default()));
+                env_delta.insert(
+                    "PATH".into(),
+                    format!(
+                        "{};{}",
+                        parent.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                );
             }
-            Ok(ResolvedTool { program: PathBuf::from(path), version: None, env_delta })
+            Ok(ResolvedTool {
+                program: PathBuf::from(path),
+                version: None,
+                env_delta,
+            })
         }
         ProviderKind::Winget => {
             refresh_process_path();
             for n in tool.path_names() {
                 if let Some(p) = path_probe(n) {
-                    return Ok(ResolvedTool { program: p, version: None, env_delta: IndexMap::new() });
+                    return Ok(ResolvedTool {
+                        program: p,
+                        version: None,
+                        env_delta: IndexMap::new(),
+                    });
                 }
             }
-            Err(Error::new(ErrorCode::MissingTool, format!("未找到 {}", tool.as_str())))
+            Err(Error::new(
+                ErrorCode::MissingTool,
+                format!("未找到 {}", tool.as_str()),
+            ))
         }
     }
 }
@@ -150,15 +176,22 @@ mod tests {
             Some("127.0.0.1:7890".to_string())
         );
         // 其他键的行、无类型标记的行不命中
-        assert_eq!(parse_reg_line("    ProxyEnable    REG_DWORD    0x1", "Path"), None);
-        assert_eq!(parse_reg_line("HKEY_CURRENT_USER\\Environment", "Path"), None);
+        assert_eq!(
+            parse_reg_line("    ProxyEnable    REG_DWORD    0x1", "Path"),
+            None
+        );
+        assert_eq!(
+            parse_reg_line("HKEY_CURRENT_USER\\Environment", "Path"),
+            None
+        );
     }
 
     #[test]
     fn mise_which_failure_is_missing_tool() {
         let fake = crate::toolchain::runner::FakeRunner::new();
         fake.push_fail(1, "");
-        let e = resolve_tool(&fake, ProviderKind::Mise, ToolKind::Java, Path::new("C:/w")).unwrap_err();
+        let e =
+            resolve_tool(&fake, ProviderKind::Mise, ToolKind::Java, Path::new("C:/w")).unwrap_err();
         assert_eq!(e.code(), ErrorCode::MissingTool);
     }
 
@@ -166,9 +199,17 @@ mod tests {
     fn mise_which_returns_program_and_path_env_delta() {
         let fake = crate::toolchain::runner::FakeRunner::new();
         fake.push_ok("C:\\mise\\installs\\java\\21\\bin\\java.exe");
-        let tool = resolve_tool(&fake, ProviderKind::Mise, ToolKind::Java, Path::new("C:/w")).unwrap();
-        assert_eq!(tool.program, PathBuf::from("C:\\mise\\installs\\java\\21\\bin\\java.exe"));
-        assert!(tool.env_delta.get("PATH").unwrap().starts_with("C:\\mise\\installs\\java\\21\\bin;"));
+        let tool =
+            resolve_tool(&fake, ProviderKind::Mise, ToolKind::Java, Path::new("C:/w")).unwrap();
+        assert_eq!(
+            tool.program,
+            PathBuf::from("C:\\mise\\installs\\java\\21\\bin\\java.exe")
+        );
+        assert!(tool
+            .env_delta
+            .get("PATH")
+            .unwrap()
+            .starts_with("C:\\mise\\installs\\java\\21\\bin;"));
     }
 
     #[test]
@@ -177,8 +218,14 @@ mod tests {
             None
         }
         let fake = crate::toolchain::runner::FakeRunner::new();
-        let e = resolve_tool_with(&fake, ProviderKind::Winget, ToolKind::Java, Path::new("C:/w"), never)
-            .unwrap_err();
+        let e = resolve_tool_with(
+            &fake,
+            ProviderKind::Winget,
+            ToolKind::Java,
+            Path::new("C:/w"),
+            never,
+        )
+        .unwrap_err();
         assert_eq!(e.code(), ErrorCode::MissingTool);
     }
 }

@@ -45,7 +45,10 @@ fn reserved_and_extra_round_trip() {
     assert!(file2.gateway.is_some());
     assert!(file2.extra.contains_key("x-custom"));
     assert_eq!(file2.services.get("db").unwrap().kind, "compose");
-    assert_eq!(file2.services.get("db").unwrap().service.as_deref(), Some("mysql"));
+    assert_eq!(
+        file2.services.get("db").unwrap().service.as_deref(),
+        Some("mysql")
+    );
 }
 
 #[test]
