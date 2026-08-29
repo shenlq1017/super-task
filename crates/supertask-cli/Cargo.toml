@@ -1,0 +1,23 @@
+[package]
+name = "supertask-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SuperTask CLI shell: up/down/status/logs/script/doctor/export/import. No business logic."
+
+[[bin]]
+name = "supertask"
+path = "src/main.rs"
+
+[dependencies]
+supertask-core = { path = "../supertask-core" }
+# 1.5 §10 复用清单：clap v4 derive（子命令/帮助/补全事实标准，不手写解析）
+clap = { version = "4", features = ["derive"] }
+# 1.5 §10：termination feature 才覆盖 Unix SIGTERM（Windows 覆盖 CTRL_C/CTRL_CLOSE）
+ctrlc = { version = "3", features = ["termination"] }
+serde_json = "1"
+
+# 1.5 §5：MCP 官方 SDK（Tier-1）。tokio 只存在于本 crate 的 mcp 壳层，
+# 引擎调用经 spawn_blocking 桥接，supertask-core 保持纯同步（§3.2 守恒）。
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+rmcp = { version = "3.1", features = ["server", "client", "transport-io", "transport-async-rw"] }

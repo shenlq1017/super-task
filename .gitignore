@@ -1,4 +1,5 @@
 /target
+/target-cli
 **/*.rs.bk
 .supertask/
 .DS_Store

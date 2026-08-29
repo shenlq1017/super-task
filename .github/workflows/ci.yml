@@ -1,6 +1,7 @@
-# SuperTask CI — 三平台合并门槛（1.4 规格 §12 可靠性）
-# cargo test -p supertask-core 全量 + 壳 cargo check + 前端 tsc/vite build。
+# SuperTask CI — 三平台合并门槛（1.4 §12 / 1.5 §12 可靠性）
+# cargo test -p supertask-core 全量 + CLI/MCP 测试 + 壳 cargo check + 前端 tsc/vite build。
 # Unix 侧跑 proc 平台层契约测试（进程组终止、端口表解析）——Windows 本机已覆盖 Windows 路径。
+# 1.5：CLI 集成（up 拓扑/等待/退出码、锁互斥）与导出包导出→导入往返在三平台各自执行。
 name: ci
 
 on:
@@ -21,6 +22,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: core tests
         run: cargo test -p supertask-core
+      - name: cli + mcp tests
+        run: cargo test -p supertask-cli
+      - name: cli version smoke
+        run: cargo run -p supertask-cli -- version
       - name: tauri shell check
         run: cargo check -p supertask
 
