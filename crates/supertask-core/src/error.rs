@@ -105,6 +105,12 @@ pub enum ErrorCode {
     PkgInvalid,
     PkgVersion,
     PkgTargetExists,
+    // ---- 1.6 ----
+    GatewayNotConfigured,
+    GatewayRouteInvalid,
+    GatewayBinaryMissing,
+    GatewayConfigInvalid,
+    GatewayStartFailed,
 }
 
 #[derive(Debug, Error)]
@@ -240,6 +246,11 @@ mod tests {
             (ErrorCode::PkgInvalid, "PKG_INVALID"),
             (ErrorCode::PkgVersion, "PKG_VERSION"),
             (ErrorCode::PkgTargetExists, "PKG_TARGET_EXISTS"),
+            (ErrorCode::GatewayNotConfigured, "GATEWAY_NOT_CONFIGURED"),
+            (ErrorCode::GatewayRouteInvalid, "GATEWAY_ROUTE_INVALID"),
+            (ErrorCode::GatewayBinaryMissing, "GATEWAY_BINARY_MISSING"),
+            (ErrorCode::GatewayConfigInvalid, "GATEWAY_CONFIG_INVALID"),
+            (ErrorCode::GatewayStartFailed, "GATEWAY_START_FAILED"),
         ];
         for (code, expected) in pairs {
             let value = serde_yaml::to_value(code).expect("serialize ErrorCode");

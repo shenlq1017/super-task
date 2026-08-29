@@ -28,7 +28,7 @@ pub fn features() -> &'static [Feature] {
         Feature { id: "discover", path: "/discover", status: FeatureStatus::Live, since: "1.1" },
         Feature { id: "git", path: "/git", status: FeatureStatus::Live, since: "1.1" },
         Feature { id: "docker", path: "/docker", status: FeatureStatus::Live, since: "1.3" },
-        Feature { id: "gateway", path: "/gateway", status: FeatureStatus::Soon, since: "1.6" },
+        Feature { id: "gateway", path: "/gateway", status: FeatureStatus::Live, since: "1.6" },
         Feature { id: "cloud", path: "/cloud", status: FeatureStatus::Soon, since: "2.0" },
         Feature { id: "ai", path: "/ai", status: FeatureStatus::Soon, since: "2.1" },
         Feature { id: "settings", path: "/settings", status: FeatureStatus::Live, since: "1.0" },
@@ -49,7 +49,6 @@ pub fn require_live(id: &str) -> crate::error::Result<&'static Feature> {
 }
 
 pub const SOON_COMMANDS: &[(&str, &str)] = &[
-    ("gateway.apply", "1.6"),
     ("cloud.login", "2.0"),
     ("cloud.sync", "2.0"),
     ("ai.complete", "2.1"),
@@ -79,5 +78,12 @@ mod tests {
         let f = require_live("docker").unwrap();
         assert_eq!(f.since, "1.3");
         assert!(reject_soon_command("docker.build").is_none());
+    }
+
+    #[test]
+    fn gateway_is_live_since_1_6() {
+        let f = require_live("gateway").unwrap();
+        assert_eq!(f.since, "1.6");
+        assert!(reject_soon_command("gateway.apply").is_none());
     }
 }

@@ -105,6 +105,7 @@ fn source_from_arg(a: Option<SourceArg>) -> Option<LogSource> {
         let kind = match s.kind.as_str() {
             "script" => LogSourceKind::Script,
             "system" => LogSourceKind::System,
+            "gateway" => LogSourceKind::Gateway,
             _ => LogSourceKind::Service,
         };
         LogSource { kind, id: s.id }
@@ -780,6 +781,7 @@ pub fn logs_clear_view(state: EngineState<'_>, source: SourceArg) -> Result<Hash
     let src = match source.kind.as_str() {
         "script" => LogSourceKind::Script,
         "system" => LogSourceKind::System,
+        "gateway" => LogSourceKind::Gateway,
         _ => LogSourceKind::Service,
     };
     state
@@ -1363,10 +1365,7 @@ pub fn docker_build_cancel(
     Ok(serde_json::json!({ "ok": ok }))
 }
 
-#[tauri::command(rename = "gateway.apply")]
-pub fn gateway_apply() -> Result<(), IpcError> {
-    Err(soon("gateway.apply"))
-}
+// 1.6：gateway.apply 已转正为真命令（见文件末尾 gateway 命令组）
 #[tauri::command(rename = "cloud.login")]
 pub fn cloud_login() -> Result<(), IpcError> {
     Err(soon("cloud.login"))
@@ -1672,6 +1671,9 @@ struct RuntimePayloadInner {
     reason: &'static str,
     services: IndexMap<String, supertask_core::ServiceRuntimeView>,
     script: Option<supertask_core::ScriptRuntimeView>,
+    /// 1.6：网关托管状态（未配置时为 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway: Option<supertask_core::GatewayRuntimeView>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1752,6 +1754,7 @@ pub fn spawn_event_bridge(app: AppHandle, engine: Arc<Engine>, hub: HubHandle) {
                             reason: "full",
                             services: snap.services,
                             script: snap.script,
+                            gateway: snap.gateway,
                         },
                     };
                     let _ = app.emit(supertask_core::ipc::event::RUNTIME, &payload);
@@ -1866,4 +1869,93 @@ pub fn workspace_import_package(
         root: out.root.display().to_string(),
         warnings: out.warnings,
     })
+}
+
+// ---------------------------------------------------------------------------
+// 1.6：网关（core 侧实现；这里只做 IPC 适配。gateway.trust 修改系统信任库，
+// UI 层强制确认对话框在前端，本层照常暴露——本地单用户、无网络面）
+// ---------------------------------------------------------------------------
+
+#[tauri::command(rename = "gateway.status")]
+pub fn gateway_status(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::ipc::GatewayStatusOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.gateway_status().map_err(ipc_err)
+}
+
+#[tauri::command(rename = "gateway.preview")]
+pub fn gateway_preview(
+    state: EngineState<'_>,
+    workspace_id: String,
+    gateway: Option<supertask_core::spec::GatewayConf>,
+) -> Result<supertask_core::ipc::GatewayPreviewOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.gateway_preview(gateway).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "gateway.validate")]
+pub fn gateway_validate(
+    state: EngineState<'_>,
+    workspace_id: String,
+    gateway: Option<supertask_core::spec::GatewayConf>,
+) -> Result<supertask_core::ipc::GatewayValidateOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.gateway_validate(gateway).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "gateway.apply")]
+pub fn gateway_apply(
+    state: EngineState<'_>,
+    workspace_id: String,
+    gateway: supertask_core::spec::GatewayConf,
+    base_hash: String,
+) -> Result<supertask_core::ipc::GatewayApplyOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.gateway_apply(gateway, &base_hash).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "gateway.start")]
+pub fn gateway_start(
+    state: EngineState<'_>,
+    exiting: State<'_, Exiting>,
+    workspace_id: String,
+) -> Result<Accepted, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    require_current_workspace(&state, &workspace_id)?;
+    state.gateway_start().map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+#[tauri::command(rename = "gateway.stop")]
+pub fn gateway_stop(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<Accepted, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.gateway_stop().map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+#[tauri::command(rename = "gateway.restart")]
+pub fn gateway_restart(
+    state: EngineState<'_>,
+    exiting: State<'_, Exiting>,
+    workspace_id: String,
+) -> Result<Accepted, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    require_current_workspace(&state, &workspace_id)?;
+    state.gateway_restart().map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
+}
+
+#[tauri::command(rename = "gateway.trust")]
+pub fn gateway_trust(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<Accepted, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.gateway_trust().map_err(ipc_err)?;
+    Ok(Accepted { accepted: true, order: None })
 }

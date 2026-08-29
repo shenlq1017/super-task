@@ -7,6 +7,7 @@ pub mod engine;
 pub mod error;
 pub mod features;
 pub mod git;
+pub mod gateway;
 pub mod graph;pub mod health;
 pub mod ide;
 pub mod ipc;
@@ -32,8 +33,8 @@ pub mod template;
 pub mod toolchain;
 
 pub use engine::{
-    Engine, EngineEvent, ExitView, HealthView, RuntimeSnapshot, ScriptRuntimeView,
-    ServiceRuntimeView, YamlView,
+    Engine, EngineEvent, ExitView, GatewayRuntimeView, HealthView, RuntimeSnapshot,
+    ScriptRuntimeView, ServiceRuntimeView, YamlView,
 };
 pub use error::{Error, ErrorCode};
 pub use features::{features, Feature, FeatureStatus};

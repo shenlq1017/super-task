@@ -53,8 +53,8 @@
 | `log_retention` | 1.2 | object | **顶层**保留策略，不要嵌进 `logging` |
 | `templates` | reserved | object | 1.1 来源模板元数据 |
 | `git` | reserved | object | 1.1 |
-| `docker` | reserved | object | 1.3 |
-| `gateway` | reserved | object | 1.6 |
+| `docker` | 1.3 | object | typed：`compose_file`/`project_name`/`builds`，见 1.3 规格 §5.1 |
+| `gateway` | 1.6 | object | typed：`kind`/`enabled`/`port`/`bin`/`tls`/`routes`，见 §7.1 |
 | `cloud` | reserved | object | 2.0 |
 | `ai` | reserved | object | 2.1 |
 | `logging` | 1.0 | object | 工作区级日志限额，见 §8 |
@@ -228,7 +228,7 @@ docker:
   compose_file: compose.yaml
 
 gateway:
-  kind: nginx             # nginx | apache | caddy
+  kind: nginx             # 1.6 起 typed，见 §7.1
   routes: []
 
 cloud:
@@ -239,6 +239,33 @@ ai:
 ```
 
 JSON Schema 对这些段用 `additionalProperties: true`，避免 1.1 加字段时 1.0 读失败。
+
+### 7.1 `gateway`（1.6 转 typed）
+
+网关是一等能力：路由是意图，SuperTask 把意图编译成对应反代引擎的配置文件，
+校验后像服务一样托管。`gateway: {}`（1.0 reserved 空段）语义不变：读回仍在、
+视为未配置（`GATEWAY_NOT_CONFIGURED`），旧文件零迁移。
+
+```yaml
+gateway:
+  kind: nginx              # nginx | caddy | apache（必填；缺 kind = 未配置）
+  enabled: true            # 缺省 true；false = 配置保留但不启动
+  port: 8080               # 监听端口，缺省 8080，只允许 1024–65535 且不撞服务端口
+  bin: null                # 可选：反代二进制显式路径（探测的最终 fallback）
+  tls: off                 # 仅 caddy 生效：off | internal（本机 CA HTTPS）
+  routes: []               # 路由列表：
+  # - host: api.localhost  #   可空 = 全匹配（catch-all）
+  #   path: /api           #   必填，以 / 开头的前缀；'/' 为根
+  #   target: user-api     #   服务 id（生成时解析为其当前 port）
+  #   # 或 upstream: 127.0.0.1:9000  # 显式上游，与 target 互斥
+  x-experiment: keep       # 未知键 flatten extra round-trip
+```
+
+校验（打开工作区时 warning，apply/start 时硬错误 `GATEWAY_ROUTE_INVALID`）：
+kind 枚举；port 1024–65535 且不与任一服务 port 重复；`(host, path)` 不重复；
+path 以 `/` 开头；host 为空或合法 hostname（含 `*.localhost` 形式子域）；
+target/upstream 恰一且 target 服务存在并有 `port`（或 `ports` 首个）。
+配置产物生成到 `.supertask/gateway/`（磁盘产物是缓存，不是编辑对象）。
 
 ---
 

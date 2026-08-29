@@ -69,6 +69,15 @@ export const cmd = {
   WORKSPACE_SCAN_APPLY: "workspace.scanApply",
   IMPORT_TASKFILE_PREVIEW: "import.taskfilePreview",
   IMPORT_TASKFILE_APPLY: "import.taskfileApply",
+  // 1.6（ipc.md §10.10）：网关
+  GATEWAY_STATUS: "gateway.status",
+  GATEWAY_PREVIEW: "gateway.preview",
+  GATEWAY_VALIDATE: "gateway.validate",
+  GATEWAY_APPLY: "gateway.apply",
+  GATEWAY_START: "gateway.start",
+  GATEWAY_STOP: "gateway.stop",
+  GATEWAY_RESTART: "gateway.restart",
+  GATEWAY_TRUST: "gateway.trust",
   APP_IMPORT_RECENTS: "app.importRecents",
   APP_UPDATE_CHECK: "app.update.check",
   APP_UPDATE_INSTALL: "app.update.install",
@@ -113,6 +122,8 @@ export type ToolchainProbe = {
   npm: ToolProbe;
   pnpm: ToolProbe;
   yarn: ToolProbe;
+  /** 1.6 §6.2：网关三引擎探测（旧后端可能缺省）。 */
+  gateway?: GatewayProbe;
 };
 
 /** 1.2：provider 可用性（toolchain.probe 输出扩展字段）。 */
@@ -121,8 +132,18 @@ export type ManagerAvailability = {
   winget: boolean;
 };
 
+/** 1.6 §6.2：网关三引擎探测（gateway.* 缺省结构对齐 1.4 gradle 项）。 */
+export type GatewayProbe = {
+  nginx: ToolProbe;
+  caddy: ToolProbe;
+  apache: ToolProbe;
+};
+
 /** `toolchain.probe` 输出：原有六工具探测 + managers（§13.1）。 */
-export type ToolchainProbeOut = ToolchainProbe & { managers: ManagerAvailability };
+export type ToolchainProbeOut = ToolchainProbe & {
+  managers: ManagerAvailability;
+  gateway?: GatewayProbe;
+};
 
 /** `toolchain.install` / `toolchain.upgrade` 选项（§13.1：version/manager 缺省走后端默认）。 */
 export type ToolchainInstallOpts = {
@@ -353,6 +374,26 @@ export type DockerSpec = {
   builds: DockerBuild[];
 };
 
+/** 1.6 顶层 `gateway:` 段（typed，yaml.md §7.1）。`gateway: {}` = 未配置。 */
+export type GatewayKind = "nginx" | "caddy" | "apache";
+export type GatewayTls = "off" | "internal";
+
+export type GatewayRouteSpec = {
+  host?: string | null;
+  path: string;
+  target?: string | null;
+  upstream?: string | null;
+};
+
+export type GatewayConf = {
+  kind?: GatewayKind | null;
+  enabled: boolean;
+  port: number;
+  bin?: string | null;
+  tls?: GatewayTls | null;
+  routes: GatewayRouteSpec[];
+};
+
 export type SuperTaskFile = {
   version: number;
   kind?: string | null;
@@ -365,6 +406,7 @@ export type SuperTaskFile = {
   logging?: LoggingSpec | null;
   toolchain?: ToolchainSpec | null;
   docker?: DockerSpec | null;
+  gateway?: GatewayConf | null;
   secrets?: { backend?: string | null; file?: string | null; required?: string[] } | null;
   profiles?: {
     active?: string | null;
@@ -429,6 +471,19 @@ export type ScriptRuntimeView = {
   last_error?: string | null;
 };
 
+/** 1.6：网关托管状态（快照独立字段，非 services 成员）。 */
+export type GatewayRuntimeView = {
+  kind: string;
+  state: RtState;
+  pid?: number | null;
+  port: number;
+  health?: HealthView | null;
+  started_at_ms?: number | null;
+  last_exit?: ExitView | null;
+  last_error?: string | null;
+  exit_reason?: string | null;
+};
+
 export type RuntimeSnapshot = {
   protocol: number;
   workspace_id: string;
@@ -436,13 +491,15 @@ export type RuntimeSnapshot = {
   script?: ScriptRuntimeView | null;
   /** 1.2：最近一次 Job 指标快照；未订阅或无 Job 时为空。 */
   metrics?: Record<string, ServiceMetrics | null>;
+  /** 1.6：网关托管状态（未配置/未启用时缺省）。 */
+  gateway?: GatewayRuntimeView | null;
 };
 
 // ---------------------------------------------------------------------------
 // Logs DTOs — mirror `crates/supertask-core/src/log/ring.rs`
 // ---------------------------------------------------------------------------
 
-export type LogSourceKind = "service" | "script" | "system";
+export type LogSourceKind = "service" | "script" | "system" | "gateway";
 export type LogStream = "stdout" | "stderr" | "system";
 export type LogSource = { kind: LogSourceKind; id: string };
 export type LogLine = {
@@ -682,5 +739,40 @@ export type TaskfileImportItem = {
 };
 
 export type TaskfilePreviewOut = { tasks: TaskfileImportItem[]; warnings: string[] };
+
+// ---------------------------------------------------------------------------
+// 1.6 DTOs — 网关（ipc.md §10.10，mirror `crates/supertask-core/src/ipc/v16.rs`）
+// ---------------------------------------------------------------------------
+
+export type GatewayRouteView = {
+  host?: string | null;
+  path: string;
+  target?: string | null;
+  upstream?: string | null;
+  target_port?: number | null;
+  upstream_alive?: boolean | null;
+};
+
+export type GatewayStatusOut = {
+  configured: boolean;
+  enabled: boolean;
+  kind?: GatewayKind | null;
+  port?: number | null;
+  state?: RtState | null;
+  pid?: number | null;
+  last_error?: string | null;
+  routes: GatewayRouteView[];
+  conf_path?: string | null;
+};
+
+export type GatewayFileView = { name: string; content: string };
+export type GatewayPreviewOut = { files: GatewayFileView[] };
+export type GatewayValidateOut = { ok: boolean; message?: string | null; stderr?: string | null };
+export type GatewayApplyOut = {
+  spec: unknown;
+  hash: string;
+  restarted: boolean;
+  warnings: string[];
+};
 
 

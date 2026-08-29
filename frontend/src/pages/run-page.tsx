@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
-import { useOutletContext, NavLink } from "react-router-dom";
+import { useOutletContext, NavLink, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -1528,6 +1528,7 @@ export function RunPage() {
   const rt = useRuntime();
   const ws = useWorkspace();
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { compact } = useOutletContext<ShellCtx>();
   const [selected, setSelected] = useState<{ kind: "service" | "script"; id: string } | null>(null);
 
@@ -1645,6 +1646,42 @@ export function RunPage() {
                       onOpen={() => setSelected({ kind: "script", id })}
                     />
                   ))}
+                </>
+              ) : null}
+
+              {/* 1.6：网关状态行（独立于 services 列表；点击跳转 /gateway） */}
+              {rt.state.gateway ? (
+                <>
+                  <div className="flex items-center gap-2 px-1 pb-2 pt-4">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.gateway.title")}</span>
+                    <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">
+                      :{rt.state.gateway.port}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigate("/gateway")}
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-3 py-2 text-left transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)]"
+                  >
+                    <span
+                      className={cn(
+                        "size-2 shrink-0 rounded-full",
+                        rt.state.gateway.state === "running"
+                          ? "bg-[#27a644]"
+                          : rt.state.gateway.state === "starting" || rt.state.gateway.state === "stopping"
+                            ? "bg-[#d9a514]"
+                            : rt.state.gateway.state === "exited" || rt.state.gateway.state === "unhealthy"
+                              ? "bg-[#dc2626]"
+                              : "bg-[#8a8f98]",
+                      )}
+                    />
+                    <span className="truncate font-mono text-[0.8rem] text-[var(--t1,#222326)]">
+                      {rt.state.gateway.kind}
+                    </span>
+                    <span className="ml-auto text-[0.7rem] text-[var(--t3,#8a8f98)]">
+                      {t(`pages.gateway.state_${rt.state.gateway.state}`)}
+                    </span>
+                  </button>
                 </>
               ) : null}
             </div>

@@ -50,8 +50,10 @@ pub struct SuperTaskFile {
     pub git: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docker: Option<DockerSpec>,
+    /// 1.6：网关段转正（typed）。`gateway: {}`（1.0 reserved）语义不变：
+    /// kind 为 None 即「未配置」，读回仍在、不产生行为。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gateway: Option<Value>,
+    pub gateway: Option<GatewayConf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,6 +136,92 @@ pub enum PackageManager {
     Npm,
     Pnpm,
     Yarn,
+}
+
+// ---------------------------------------------------------------------------
+// 1.6 顶层 `gateway:` 段（typed，规格 §4.1）
+// ---------------------------------------------------------------------------
+
+/// 反代引擎：nginx 一等公民；caddy 本机 HTTPS；apache 最小反代集。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GatewayKind {
+    Nginx,
+    Caddy,
+    Apache,
+}
+
+impl GatewayKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nginx => "nginx",
+            Self::Caddy => "caddy",
+            Self::Apache => "apache",
+        }
+    }
+}
+
+/// 1.6 `tls`：仅 caddy 生效；internal = Caddy 内置 local CA 的本机 HTTPS。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GatewayTls {
+    #[default]
+    Off,
+    Internal,
+}
+
+/// 单条路由：host（None/空 = 全匹配 catch-all）+ path 前缀 → target 服务 id
+/// 或显式 upstream（互斥，恰一）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayRoute {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+/// 1.6 顶层 `gateway:` 段。缺省字段序列化时跳过，`gateway: {}` round-trip 后
+/// 仍是 `{}`（未配置语义不变）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayConf {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<GatewayKind>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    #[serde(default = "default_gateway_port", skip_serializing_if = "is_default_gateway_port")]
+    pub port: u16,
+    /// 二进制显式路径（探测的最终 fallback；PATH_ESCAPE 不适用——这是绝对路径值）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bin: Option<String>,
+    #[serde(default, skip_serializing_if = "GatewayTls::is_off")]
+    pub tls: GatewayTls,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<GatewayRoute>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+fn default_gateway_port() -> u16 {
+    8080
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+fn is_default_gateway_port(p: &u16) -> bool {
+    *p == 8080
+}
+
+impl GatewayTls {
+    pub fn is_off(tls: &Self) -> bool {
+        *tls == Self::Off
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

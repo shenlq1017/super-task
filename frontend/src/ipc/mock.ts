@@ -23,6 +23,9 @@ import type {
   YamlView,
   YamlSaveOut,
   RtState,
+  GatewayConf,
+  GatewayStatusOut,
+  ToolProbe,
 } from "./protocol";
 import { PROTOCOL } from "./protocol";
 
@@ -227,6 +230,19 @@ function demoSpec(): SuperTaskFile {
         { name: "mall-user", context: "user-service", dockerfile: null, tags: ["mall-user:local"] },
       ],
     },
+    // 1.6：demo 网关（nginx + 3 条路由，§11 mock 要求）
+    gateway: {
+      kind: "nginx",
+      enabled: true,
+      port: 9090,
+      bin: null,
+      tls: "off",
+      routes: [
+        { host: null, path: "/api", target: "gateway", upstream: null },
+        { host: "api.localhost", path: "/", target: "gateway", upstream: null },
+        { host: null, path: "/", target: "web-console", upstream: null },
+      ],
+    },
   };
 }
 
@@ -256,6 +272,10 @@ const state = {
   discover: null as ForeignService[] | null,
   /** 1.2：工具链探测状态（install/upgrade 成功后原地更新） */
   probe: null as ToolchainProbeOut | null,
+  /** 1.6：网关 demo（conf 来自 yaml；state 为托管状态机）。未配置 = null */
+  gateway: (demoSpec().gateway?.kind
+    ? { conf: demoSpec().gateway as GatewayConf, state: "stopped" as RtState, pid: null as number | null, startedAt: null as number | null }
+    : null) as { conf: GatewayConf; state: RtState; pid: number | null; startedAt: number | null } | null,
 };
 
 function defaultDiscover(): ForeignService[] {
@@ -316,7 +336,25 @@ function snapshot(): RuntimeSnapshot {
     workspace_id: state.spec.root,
     services,
     script: state.script ? { ...state.script } : null,
+    gateway: state.gateway
+      ? {
+          kind: state.gateway.conf.kind ?? "nginx",
+          state: state.gateway.state,
+          pid: state.gateway.pid,
+          port: state.gateway.conf.port,
+          health: state.gateway.state === "running" ? { ok: true, at_ms: Date.now(), detail: `tcp ${state.gateway.conf.port}` } : null,
+          started_at_ms: state.gateway.startedAt,
+          last_exit: null,
+          last_error: null,
+          exit_reason: null,
+        }
+      : null,
   };
+}
+
+/** 1.6：网关状态变化 → 广播 st.runtime（对齐引擎 emit_runtime 语义）。 */
+function emitGatewayRuntime() {
+  mockEmit("st.runtime", { reason: "full", services: snapshot().services, script: null, gateway: snapshot().gateway });
 }
 
 function toYaml(spec: SuperTaskFile): string {
@@ -823,7 +861,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         { id: "discover", path: "/discover", status: "live", since: "1.1" },
         { id: "git", path: "/git", status: "live", since: "1.1" },
         { id: "docker", path: "/docker", status: "live", since: "1.3" },
-        { id: "gateway", path: "/gateway", status: "soon", since: "1.6" },
+        { id: "gateway", path: "/gateway", status: "live", since: "1.6" },
         { id: "cloud", path: "/cloud", status: "soon", since: "2.0" },
         { id: "ai", path: "/ai", status: "soon", since: "2.1" },
         { id: "settings", path: "/settings", status: "live", since: "1.0" },
@@ -845,6 +883,11 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         npm: { found: true, version: "10.7.0", path: "/usr/local/bin/npm" },
         pnpm: emptyProbe,
         yarn: emptyProbe,
+        gateway: {
+          nginx: { found: true, version: "1.26.1", path: "C:/mock/nginx/nginx.exe" },
+          caddy: { found: true, version: "2.8.4", path: "C:/mock/caddy/caddy.exe" },
+          apache: emptyProbe,
+        },
       },
       stale: [],
     };
@@ -950,6 +993,11 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
       pnpm: emptyProbe,
       yarn: emptyProbe,
       managers: MOCK_MANAGERS,
+      gateway: {
+        nginx: { found: true, version: "1.26.1", path: "C:/mock/nginx/nginx.exe" },
+        caddy: { found: true, version: "2.8.4", path: "C:/mock/caddy/caddy.exe" },
+        apache: emptyProbe,
+      },
     };
     return state.probe;
   }
@@ -975,7 +1023,9 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
       throw { protocol: PROTOCOL, code: "SPEC_INVALID", message: "persist=true 必须携带 base_hash", retryable: false };
     }
     const probe = ensureProbe();
-    if (command === "toolchain.upgrade" && !probe[tool as keyof ToolchainProbe].found) {
+    const probeSlot = (probe: ToolchainProbeOut, t: string) =>
+      probe[t as keyof Omit<ToolchainProbe, "gateway">] as ToolProbe;
+    if (command === "toolchain.upgrade" && !probeSlot(probe, tool).found) {
       throw { protocol: PROTOCOL, code: "MISSING_TOOL", message: `未安装 ${tool}，请先安装再升级`, retryable: false };
     }
     const opId = `op-${++opSeq}`;
@@ -986,7 +1036,10 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     setTimeout(
       () => {
         const path = `C:\\mock\\tools\\${tool}\\${version}\\bin`;
-        probe[tool as keyof ToolchainProbe] = { found: true, version, path };
+        const slot = probeSlot(probe, tool);
+        slot.found = true;
+        slot.version = version;
+        slot.path = path;
         emitOperation(kind, opId, "succeeded", 1, "完成", null, {
           tool,
           version,
@@ -1313,6 +1366,215 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   }
 
   if (command === "runtime.snapshot") return snapshot();
+
+  // -------------------------------------------------------------------------
+  // 1.6：网关（ipc.md §10.10）。demo：nginx + 3 路由 + 启停状态机 +
+  // 假渲染文本（spec §11 mock 要求：交互全可走）。
+  // -------------------------------------------------------------------------
+
+  function mockGatewayStatus(): GatewayStatusOut {
+    const gw = state.gateway;
+    const routes = (gw?.conf.routes ?? []).map((r) => {
+      const tp = r.target ? (state.spec.services[r.target]?.port ?? null) : null;
+      const upPort = tp ?? (r.upstream ? Number(r.upstream.split(":").pop()) : null);
+      const alive =
+        upPort != null &&
+        Object.values(state.services).some((s) => s.port === upPort && s.state === "running");
+      return {
+        host: r.host ?? null,
+        path: r.path,
+        target: r.target ?? null,
+        upstream: r.upstream ?? null,
+        target_port: tp,
+        upstream_alive: alive,
+      };
+    });
+    return {
+      configured: !!gw,
+      enabled: gw?.conf.enabled ?? true,
+      kind: gw?.conf.kind ?? null,
+      port: gw?.conf.port ?? null,
+      state: gw?.state ?? null,
+      pid: gw?.pid ?? null,
+      last_error: null,
+      routes,
+      conf_path: gw ? "C:/mock/.supertask/gateway/nginx.conf" : null,
+    };
+  }
+
+  if (command === "gateway.status") return mockGatewayStatus();
+
+  if (command === "gateway.preview") {
+    const conf = (args?.gateway as GatewayConf | null | undefined) ?? state.gateway?.conf ?? null;
+    if (!conf?.kind) {
+      throw { protocol: PROTOCOL, code: "GATEWAY_NOT_CONFIGURED", message: "gateway 未配置 kind", retryable: false };
+    }
+    const upstreamOf = (r: { target?: string | null; upstream?: string | null }) => {
+      if (r.upstream) return r.upstream;
+      const p = state.spec.services[r.target ?? ""]?.port;
+      return `127.0.0.1:${p ?? 0}`;
+    };
+    let body: string;
+    if (conf.kind === "nginx") {
+      body = [
+        "# Generated by SuperTask — source of truth is supertask.yaml (gateway section).",
+        "worker_processes 1;",
+        "daemon off;",
+        `pid "C:/mock/.supertask/gateway/nginx.pid";`,
+        `error_log "C:/mock/.supertask/gateway/nginx-error.log";`,
+        "",
+        "http {",
+        `    access_log "C:/mock/.supertask/gateway/nginx-access.log";`,
+        "    map $http_upgrade $connection_upgrade { default upgrade; '' close; }",
+        "",
+        "    server {",
+        `        listen 127.0.0.1:${conf.port} default_server;`,
+        "        server_name _;",
+        ...conf.routes.map(
+          (r) => [
+            `        location ${r.path} {`,
+            `            proxy_pass http://${upstreamOf(r)};`,
+            "            proxy_http_version 1.1;",
+            "            proxy_set_header Host $host;",
+            "            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+            "        }",
+          ].join("\n"),
+        ),
+        "    }",
+        "}",
+      ].join("\n");
+    } else if (conf.kind === "caddy") {
+      body = [
+        "{",
+        "\tadmin off",
+        "}",
+        "",
+        `${conf.tls === "internal" ? "https" : "http"}://localhost:${conf.port} {`,
+        ...(conf.tls === "internal" ? ["\ttls internal"] : []),
+        ...conf.routes.flatMap((r) => [
+          `\t@r${r.path.replace(/\//g, "_")} path ${r.path} ${r.path}/*`,
+          `\thandle @r${r.path.replace(/\//g, "_")} {`,
+          `\t\treverse_proxy ${upstreamOf(r)}`,
+          "\t}",
+        ]),
+        "}",
+      ].join("\n");
+    } else {
+      body = [
+        "# Generated by SuperTask — source of truth is supertask.yaml (gateway section).",
+        "ServerName localhost",
+        `Listen 127.0.0.1:${conf.port}`,
+        "",
+        "ProxyRequests Off",
+        "ProxyPreserveHost On",
+        "",
+        "<VirtualHost 127.0.0.1:" + conf.port + ">",
+        ...conf.routes.flatMap((r) => [
+          `    ProxyPass ${r.path} http://${upstreamOf(r)}${r.path}`,
+          `    ProxyPassReverse ${r.path} http://${upstreamOf(r)}${r.path}`,
+        ]),
+        "</VirtualHost>",
+      ].join("\n");
+    }
+    const name = conf.kind === "nginx" ? "nginx.conf" : conf.kind === "caddy" ? "Caddyfile" : "httpd.conf";
+    return { files: [{ name, content: body }] };
+  }
+
+  if (command === "gateway.validate") {
+    const conf = (args?.gateway as GatewayConf | null | undefined) ?? state.gateway?.conf ?? null;
+    if (!conf?.kind) {
+      throw { protocol: PROTOCOL, code: "GATEWAY_NOT_CONFIGURED", message: "gateway 未配置 kind", retryable: false };
+    }
+    if (!(1024 <= conf.port && conf.port <= 65535)) {
+      return { ok: false, message: "gateway.port 超出 1024–65535", stderr: null };
+    }
+    const dup = Object.values(state.spec.services).some((s) => s.port === conf.port);
+    if (dup) {
+      return { ok: false, message: `gateway.port ${conf.port} 与服务端口重复`, stderr: "[emerg] bind() to 127.0.0.1:PORT failed" };
+    }
+    for (const [i, r] of conf.routes.entries()) {
+      if (!r.path.startsWith("/")) {
+        return { ok: false, message: `第 ${i + 1} 条路由：path 必须以 / 开头`, stderr: null };
+      }
+      if (r.target && !state.spec.services[r.target]) {
+        return { ok: false, message: `第 ${i + 1} 条路由：target 服务 ${r.target} 不存在`, stderr: null };
+      }
+    }
+    return { ok: true, message: null, stderr: null };
+  }
+
+  if (command === "gateway.apply") {
+    const conf = args?.gateway as GatewayConf;
+    const baseHash = args?.baseHash as string;
+    const cur = hashOf(toYaml(state.spec));
+    if (cur !== baseHash) {
+      throw { protocol: PROTOCOL, code: "YAML_CONFLICT", message: "配置已被别处修改，请刷新后再保存", retryable: false };
+    }
+    const wasRunning = state.gateway?.state === "running";
+    state.spec = { ...state.spec, gateway: conf };
+    state.gateway =
+      conf.kind && conf.enabled
+        ? { conf, state: wasRunning ? "running" : "stopped", pid: wasRunning ? ++pidCounter : null, startedAt: wasRunning ? Date.now() : null }
+        : null;
+    emitGatewayRuntime();
+    return { spec: state.spec, hash: cur, restarted: wasRunning && !!conf.kind && conf.enabled, warnings: [] };
+  }
+
+  if (command === "gateway.start") {
+    if (!state.gateway) {
+      throw { protocol: PROTOCOL, code: "GATEWAY_NOT_CONFIGURED", message: "gateway 未配置或未启用", retryable: false };
+    }
+    state.gateway.state = "starting";
+    state.gateway.pid = ++pidCounter;
+    emitGatewayRuntime();
+    pushLog({ kind: "gateway", id: "gateway" }, "system", "[mock] 网关进程启动（前台，进程树托管）");
+    const port = state.gateway.conf.port;
+    setTimeout(() => {
+      if (state.gateway) {
+        state.gateway.state = "running";
+        state.gateway.startedAt = Date.now();
+        emitGatewayRuntime();
+        pushLog({ kind: "gateway", id: "gateway" }, "stderr", `[mock] nginx ready — listening on 127.0.0.1:${port}`);
+      }
+    }, 1200);
+    return { accepted: true, order: null };
+  }
+
+  if (command === "gateway.stop") {
+    if (state.gateway) {
+      state.gateway.state = "stopped";
+      state.gateway.pid = null;
+      state.gateway.startedAt = null;
+      pushLog({ kind: "gateway", id: "gateway" }, "system", "[mock] 网关已停止（进程树终止，无残留）");
+      emitGatewayRuntime();
+    }
+    return { accepted: true, order: null };
+  }
+
+  if (command === "gateway.restart") {
+    if (!state.gateway) {
+      throw { protocol: PROTOCOL, code: "GATEWAY_NOT_CONFIGURED", message: "gateway 未配置或未启用", retryable: false };
+    }
+    state.gateway.state = "starting";
+    state.gateway.pid = ++pidCounter;
+    emitGatewayRuntime();
+    setTimeout(() => {
+      if (state.gateway) {
+        state.gateway.state = "running";
+        state.gateway.startedAt = Date.now();
+        emitGatewayRuntime();
+      }
+    }, 1200);
+    return { accepted: true, order: null };
+  }
+
+  if (command === "gateway.trust") {
+    if (state.gateway?.conf.kind !== "caddy") {
+      throw { protocol: PROTOCOL, code: "GATEWAY_NOT_CONFIGURED", message: "gateway.trust 仅支持 kind: caddy", retryable: false };
+    }
+    pushLog({ kind: "gateway", id: "gateway" }, "system", "[mock] caddy trust 完成（本机 CA 已加入系统信任库）");
+    return { accepted: true, order: null };
+  }
 
   if (command === "runtime.startOne") {
     const id = args?.id as string;

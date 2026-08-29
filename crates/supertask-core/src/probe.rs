@@ -23,6 +23,9 @@ pub struct ToolchainProbe {
     pub npm: ToolProbe,
     pub pnpm: ToolProbe,
     pub yarn: ToolProbe,
+    /// 1.6 §6.2：网关三引擎探测（不代装，缺失给平台指引）。
+    #[serde(default)]
+    pub gateway: crate::gateway::probe::GatewayProbe,
 }
 
 /// Hard ceiling for a single tool probe. A healthy tool answers in <1s; a
@@ -33,7 +36,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 pub fn probe_toolchain() -> ToolchainProbe {
     // Probe every tool on its own thread so the total time is bounded by the
     // slowest single tool, not the sum of them.
-    let (java, maven, gradle, node, npm, pnpm, yarn) = std::thread::scope(|s| {
+    let (java, maven, gradle, node, npm, pnpm, yarn, gw) = std::thread::scope(|s| {
         let java = s.spawn(|| probe_one(&["java.exe", "java"], &["-version"]));
         let maven = s.spawn(|| probe_one(&["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"], &["-v"]));
         let gradle = s.spawn(|| {
@@ -43,6 +46,7 @@ pub fn probe_toolchain() -> ToolchainProbe {
         let npm = s.spawn(|| probe_one(&["npm.cmd", "npm.exe", "npm"], &["-v"]));
         let pnpm = s.spawn(|| probe_one(&["pnpm.cmd", "pnpm.exe", "pnpm"], &["-v"]));
         let yarn = s.spawn(|| probe_one(&["yarn.cmd", "yarn.exe", "yarn"], &["-v"]));
+        let gw = s.spawn(crate::gateway::probe::probe_gateway);
         (
             java.join().unwrap_or_default(),
             maven.join().unwrap_or_default(),
@@ -51,6 +55,7 @@ pub fn probe_toolchain() -> ToolchainProbe {
             npm.join().unwrap_or_default(),
             pnpm.join().unwrap_or_default(),
             yarn.join().unwrap_or_default(),
+            gw.join().unwrap_or_default(),
         )
     });
     ToolchainProbe {
@@ -61,6 +66,7 @@ pub fn probe_toolchain() -> ToolchainProbe {
         npm,
         pnpm,
         yarn,
+        gateway: gw,
     }
 }
 
@@ -188,7 +194,7 @@ fn probe_one(candidates: &[&str], args: &[&str]) -> ToolProbe {
     ToolProbe::default()
 }
 
-fn version_of(path: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn version_of(path: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new(path);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]

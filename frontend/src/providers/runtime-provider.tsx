@@ -8,6 +8,7 @@ import {
   type ServiceRuntimeView,
   type ScriptRuntimeView,
   type ServiceMetrics,
+  type GatewayRuntimeView,
 } from "../ipc/protocol";
 import {
   apiRuntimeSnapshot,
@@ -27,6 +28,8 @@ type RuntimeState = {
   services: Record<string, ServiceRuntimeView>;
   script: ScriptRuntimeView | null;
   metrics: Record<string, ServiceMetrics | null>;
+  /** 1.6：网关托管状态（未配置为 null） */
+  gateway: GatewayRuntimeView | null;
   error: string | null;
 };
 
@@ -54,6 +57,7 @@ async function listenRuntime(cb: (s: RuntimeSnapshot) => void): Promise<() => vo
       services: e.payload.payload.services,
       script: e.payload.payload.script,
       metrics: e.payload.payload.metrics,
+      gateway: e.payload.payload.gateway ?? null,
     });
   });
   return un;
@@ -66,6 +70,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const [services, setServices] = useState<Record<string, ServiceRuntimeView>>({});
   const [script, setScript] = useState<ScriptRuntimeView | null>(null);
   const [metrics, setMetrics] = useState<Record<string, ServiceMetrics | null>>({});
+  const [gateway, setGateway] = useState<GatewayRuntimeView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -89,6 +94,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     setServices(snap.services);
     setScript(snap.script ?? null);
     setMetrics(snap.metrics ?? {});
+    setGateway(snap.gateway ?? null);
   };
 
   useEffect(() => {
@@ -96,6 +102,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       setServices({});
       setScript(null);
       setMetrics({});
+      setGateway(null);
       return;
     }
     let alive = true;
@@ -144,10 +151,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
 
   const value: RuntimeContextValue = {
     state: {
-      snapshot: wsId ? { protocol: 1, workspace_id: wsId, services, script, metrics } : null,
+      snapshot: wsId ? { protocol: 1, workspace_id: wsId, services, script, metrics, gateway } : null,
       services,
       script,
       metrics,
+      gateway,
       error,
     },
     actions: {

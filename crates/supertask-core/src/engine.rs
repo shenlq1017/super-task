@@ -109,6 +109,24 @@ pub struct RuntimeSnapshot {
     /// 1.2 §9：最近一次指标快照（无采样时为空表）
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub metrics: IndexMap<String, Option<crate::ipc::ServiceMetrics>>,
+    /// 1.6：网关托管状态（未配置/未启用时为 None——独立字段，避免前端
+    /// 把网关误当 service 渲染）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayRuntimeView>,
+}
+
+/// 1.6 网关运行时视图（snapshot.gateway）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayRuntimeView {
+    pub kind: String,
+    pub state: RtState,
+    pub pid: Option<u32>,
+    pub port: u16,
+    pub health: Option<HealthView>,
+    pub started_at_ms: Option<u64>,
+    pub last_exit: Option<ExitView>,
+    pub last_error: Option<String>,
+    pub exit_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +199,24 @@ struct ScriptSlot {
     last_error: Option<String>,
 }
 
+/// 1.6 网关托管 slot：与 service slot 同语义的进程树托管
+/// （状态机 / 日志泵 / TCP 健康 / 指标 / 端口排除 / stop_all 清场）。
+struct GatewaySlot {
+    state: RtState,
+    pid: Option<u32>,
+    port: u16,
+    kind: crate::spec::GatewayKind,
+    job: Option<Arc<dyn crate::proc::ProcessTree>>,
+    stop_requested: bool,
+    cancel: Arc<AtomicBool>,
+    started: Option<Instant>,
+    started_at_ms: Option<u64>,
+    health: Option<HealthView>,
+    last_exit: Option<ExitView>,
+    last_error: Option<String>,
+    exit_reason: Option<&'static str>,
+}
+
 struct Inner {
     root: PathBuf,
     workspace_id: String,
@@ -190,6 +226,8 @@ struct Inner {
     yaml_path: PathBuf,
     slots: HashMap<String, Slot>,
     script: Option<ScriptSlot>,
+    /// 1.6：网关 slot（未配置/未启用 = None，零开销路径）
+    gateway: Option<GatewaySlot>,
     logs: LogHub,
     files: HashMap<String, LogFile>,
     script_file: Option<LogFile>,
@@ -244,6 +282,8 @@ pub struct Engine {
     probe_cache: Mutex<Option<crate::docker::DockerProbe>>,
     /// 1.3 §3.2：镜像构建长操作（queued → running → succeeded/failed/cancelled）
     operations: crate::operation::OperationHub,
+    /// 1.6：网关校验命令执行器（测试注入 fake；生产 spawn nginx -t 等）
+    validator: Arc<dyn crate::gateway::validate::ValidateRunner>,
     /// 1.5 §3.1：工作区锁持有者标签（前端身份：desktop/cli/mcp）
     holder: crate::lock::LockHolder,
 }
@@ -262,6 +302,14 @@ impl Engine {
     pub fn with_holder(holder: crate::lock::LockHolder) -> Self {
         Self {
             holder,
+            ..Self::new()
+        }
+    }
+
+    /// 1.6：注入自定义网关校验执行器（测试用 fake；生产走 [`Engine::new`]）。
+    pub fn with_validator(runner: Arc<dyn crate::gateway::validate::ValidateRunner>) -> Self {
+        Self {
+            validator: runner,
             ..Self::new()
         }
     }
@@ -288,6 +336,7 @@ impl Engine {
             yaml_path: PathBuf::new(),
             slots: HashMap::new(),
             script: None,
+            gateway: None,
             logs: LogHub::new(DEFAULT_RING_LINES),
             files: HashMap::new(),
             script_file: None,
@@ -311,6 +360,7 @@ impl Engine {
             docker,
             probe_cache: Mutex::new(None),
             operations: crate::operation::OperationHub::new(),
+            validator: Arc::new(crate::gateway::validate::ProcessValidateRunner),
             holder: crate::lock::LockHolder::Desktop,
         }
     }
@@ -398,6 +448,46 @@ impl Engine {
         // 1.4 §5.1：build_tool 缺省时按构建文件探测——并存 BUILD_TOOL_AMBIGUOUS、
         // 都没有 MISSING_TOOL；只警告不阻塞打开，启动时才是硬错误。
         warnings.extend(self.build_tool_open_warnings(&file, &root));
+        // 1.6 §4.1：网关段打开时静态校验（warning，不阻塞打开）；
+        // 已配置且启用 → 建 Stopped slot + 日志文件（source=gateway）
+        let mut gateway_slot = None;
+        if let Some(conf) = &file.gateway {
+            if conf.kind.is_some() && conf.enabled {
+                for issue in crate::gateway::validate_static(&file, conf) {
+                    warnings.push(ParseWarning {
+                        code: ErrorCode::GatewayRouteInvalid,
+                        message: match issue.route {
+                            Some(i) => format!("gateway 第 {} 条路由：{}", i + 1, issue.message),
+                            None => format!("gateway: {}", issue.message),
+                        },
+                    });
+                }
+                let rel = log_file_rel("gateway", "gateway");
+                let lf = LogFile::open_with_files(
+                    root.join(&rel),
+                    file.logging.as_ref().and_then(|l| l.max_bytes),
+                    file.logging.as_ref().and_then(|l| l.retain_tail_bytes),
+                    file.log_retention.as_ref().and_then(|r| r.max_files),
+                )
+                .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法创建网关日志文件: {e}")))?;
+                files.insert("gateway".into(), lf);
+                gateway_slot = Some(GatewaySlot {
+                    state: RtState::Stopped,
+                    pid: None,
+                    port: conf.port,
+                    kind: conf.kind.expect("kind checked"),
+                    job: None,
+                    stop_requested: false,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    started: None,
+                    started_at_ms: None,
+                    health: None,
+                    last_exit: None,
+                    last_error: None,
+                    exit_reason: None,
+                });
+            }
+        }
         {
             let mut g = self.inner.lock().expect("engine lock");
             if !g.workspace_id.is_empty() {
@@ -416,6 +506,7 @@ impl Engine {
             g.files = files;
             g.script = None;
             g.script_file = None;
+            g.gateway = gateway_slot;
             g.logs = LogHub::new(
                 g.spec
                     .logging
@@ -583,6 +674,8 @@ impl Engine {
         for id in ids.into_iter().rev() {
             let _ = self.stop_one(&id);
         }
+        // 1.6 §7：引擎退出清场一律包含网关
+        let _ = self.gateway_stop();
         let _ = self.cancel_script();
         self.wait_script_idle(Duration::from_secs(8));
         let mut g = self.inner.lock().expect("engine lock");
@@ -591,6 +684,7 @@ impl Engine {
         g.files.clear();
         g.script = None;
         g.script_file = None;
+        g.gateway = None;
         g.yaml_path = PathBuf::new();
         let root = std::mem::take(&mut g.root);
         drop(g);
@@ -610,6 +704,15 @@ impl Engine {
                 return Ok(());
             }
             root_norm_path = g.root.clone();
+            // 1.6：网关不进 DETACHED 移交，随工作区切换终止（§2.4）
+            if let Some(slot) = g.gateway.as_mut() {
+                slot.stop_requested = true;
+                slot.cancel.store(true, Ordering::SeqCst);
+                if let Some(job) = slot.job.take() {
+                    let _ = job.terminate();
+                }
+                g.gateway = None;
+            }
             for (id, slot) in g.slots.iter_mut() {
                 // 只接管持有 Job 且非自然退出态的服务
                 if !matches!(slot.state, RtState::Stopped | RtState::Exited) {
@@ -635,6 +738,7 @@ impl Engine {
             g.yaml_path = PathBuf::new();
             g.root = PathBuf::new();
         }
+        // 1.6：网关已在上方随 detach 终止（不进 DETACHED 移交）
         if !detached.is_empty() {
             let root_norm = norm_root(&root_norm_path);
             detached_put(root_norm, detached);
@@ -797,6 +901,19 @@ impl Engine {
                 Err(e) => return Err(e),
             }
         }
+        // 1.6 §12：全部启动 = 先服务后网关；网关失败不阻塞主目标
+        // （错误落 slot.last_error 与网关日志，gateway.status 可见）
+        if let Err(e) = self.gateway_start() {
+            push_line(
+                &self.inner,
+                LogSource {
+                    kind: LogSourceKind::Gateway,
+                    id: "gateway".into(),
+                },
+                LogStream::System,
+                format!("GATEWAY_START_FAILED: {}", e.message()),
+            );
+        }
         Ok(order)
     }
 
@@ -874,6 +991,8 @@ impl Engine {
         for id in ids {
             let _ = self.stop_one(&id);
         }
+        // 1.6 §7：stop_all 清场包含网关
+        let _ = self.gateway_stop();
         Ok(())
     }
 
@@ -1193,6 +1312,27 @@ impl Engine {
                         pids,
                         running: matches!(
                             s.state,
+                            RtState::Running | RtState::Starting | RtState::Unhealthy
+                        ),
+                    },
+                );
+            }
+            // 1.6 §2.4：网关进程树计入托管集合（网关自身端口按「当前由网关
+            // 占用」的托管语义呈现）
+            if let Some(gw) = &g.gateway {
+                let mut pids = gw.job.as_ref().map(|j| j.pids()).unwrap_or_default();
+                if let Some(p) = gw.pid {
+                    if !pids.contains(&p) {
+                        pids.push(p);
+                    }
+                }
+                managed.extend(pids.iter().copied());
+                own.insert(
+                    "gateway".to_string(),
+                    crate::ports::OwnRuntime {
+                        pids,
+                        running: matches!(
+                            gw.state,
                             RtState::Running | RtState::Starting | RtState::Unhealthy
                         ),
                     },
@@ -1878,6 +2018,419 @@ impl Engine {
             thread::sleep(Duration::from_millis(40));
         }
     }
+
+    // -------------------------------------------------------------------
+    // 1.6 phase 4：网关托管（GatewaySlot；规格 §7 / §8）
+    // -------------------------------------------------------------------
+
+    /// 当前生效的网关配置：无段 / 无 kind / enabled=false 都是未配置。
+    fn gateway_conf_active(&self, g: &Inner) -> Result<crate::spec::GatewayConf> {
+        g.spec
+            .gateway
+            .as_ref()
+            .filter(|c| c.kind.is_some() && c.enabled)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置或未启用")
+            })
+    }
+
+    /// §8 gateway.status：只读快照（路由 + 上游端口 + 存活）。
+    pub fn gateway_status(&self) -> Result<crate::ipc::GatewayStatusOutput> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let (configured, enabled, kind, port, routes_conf) = match &g.spec.gateway {
+            Some(c) => (
+                c.kind.is_some(),
+                c.enabled,
+                c.kind,
+                c.port,
+                c.routes.clone(),
+            ),
+            None => (false, true, None, 8080, Vec::new()),
+        };
+        let mut routes = Vec::new();
+        for r in &routes_conf {
+            let target_port = r.target.as_deref().and_then(|t| {
+                g.spec
+                    .services
+                    .get(t)
+                    .and_then(|s| s.port.or_else(|| s.ports.first().copied()))
+            });
+            let upstream_port = target_port.or_else(|| {
+                r.upstream
+                    .as_deref()
+                    .and_then(|u| crate::gateway::parse_upstream(u).ok())
+                    .map(|a| a.port)
+            });
+            let alive = upstream_port.map(crate::ports::is_serving);
+            routes.push(crate::ipc::GatewayRouteView {
+                host: r.host.clone(),
+                path: r.path.clone(),
+                target: r.target.clone(),
+                upstream: r.upstream.clone(),
+                target_port,
+                upstream_alive: alive,
+            });
+        }
+        let (state, pid, last_error) = match &g.gateway {
+            Some(slot) => (
+                Some(rt_state_str(slot.state)),
+                slot.pid,
+                slot.last_error.clone(),
+            ),
+            None => (None, None, None),
+        };
+        let conf_path = kind
+            .and_then(|k| {
+                let p = crate::gateway::validate::gateway_dir(&g.root)
+                    .join(crate::gateway::validate::conf_file_name(k));
+                p.is_file().then(|| p.to_string_lossy().into_owned())
+            });
+        Ok(crate::ipc::GatewayStatusOutput {
+            configured,
+            enabled,
+            kind: kind.map(|k| k.as_str().to_string()),
+            port: configured.then_some(port),
+            state,
+            pid,
+            last_error,
+            routes,
+            conf_path,
+        })
+    }
+
+    /// §8 gateway.preview：纯内存渲染草稿（不落盘、不校验、不启动）。
+    pub fn gateway_preview(
+        &self,
+        conf: Option<crate::spec::GatewayConf>,
+    ) -> Result<crate::ipc::GatewayPreviewOutput> {
+        let (root, spec) = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            (g.root.clone(), g.spec.clone())
+        };
+        let conf = match conf {
+            Some(c) => c,
+            None => spec
+                .gateway
+                .clone()
+                .filter(|c| c.kind.is_some())
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置 kind")
+                })?,
+        };
+        crate::gateway::ensure_static(&spec, &conf)?;
+        let ir = crate::gateway::model::resolve(&spec, &conf, &|_| "127.0.0.1".into())?;
+        let dir = crate::gateway::validate::gateway_dir(&root);
+        let (name, content) =
+            crate::gateway::render::render_conf(&ir, &dir.to_string_lossy(), "modules")?;
+        Ok(crate::ipc::GatewayPreviewOutput {
+            files: vec![crate::ipc::GatewayFileView {
+                name: name.into(),
+                content,
+            }],
+        })
+    }
+
+    /// §8 gateway.validate：静态校验 + 二进制探测 + spawn 本机校验（不启动）。
+    /// 失败以 ok=false + message/stderr 返回（不作为 IPC 错误抛出）。
+    pub fn gateway_validate(
+        &self,
+        conf: Option<crate::spec::GatewayConf>,
+    ) -> Result<crate::ipc::GatewayValidateOutput> {
+        let (root, spec) = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            (g.root.clone(), g.spec.clone())
+        };
+        let conf = match conf {
+            Some(c) => c,
+            None => spec.gateway.clone().filter(|c| c.kind.is_some()).ok_or_else(|| {
+                Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置 kind")
+            })?,
+        };
+        let kind = conf.kind.expect("kind checked");
+        if let Err(e) = crate::gateway::ensure_static(&spec, &conf) {
+            return Ok(crate::ipc::GatewayValidateOutput {
+                ok: false,
+                message: Some(e.message().to_string()),
+                stderr: None,
+            });
+        }
+        let bin = match crate::gateway::probe::resolve_gateway_bin(kind, conf.bin.as_deref()) {
+            Ok(b) => b,
+            Err(e) => {
+                return Ok(crate::ipc::GatewayValidateOutput {
+                    ok: false,
+                    message: Some(e.message().to_string()),
+                    stderr: None,
+                })
+            }
+        };
+        let mut ir = crate::gateway::model::resolve(&spec, &conf, &loopback_host_for)?;
+        ir.apache_modules_dir = apache_modules_dir_of(&bin);
+        match crate::gateway::validate::validate_gateway(&root, &ir, &bin, self.validator.as_ref())
+        {
+            Ok(_) => Ok(crate::ipc::GatewayValidateOutput {
+                ok: true,
+                message: None,
+                stderr: None,
+            }),
+            Err(e) => Ok(crate::ipc::GatewayValidateOutput {
+                ok: false,
+                message: Some(e.message().to_string()),
+                stderr: stderr_from_details(&e),
+            }),
+        }
+    }
+
+    /// 校验链（§6.1 第 1–3 步）：静态 → 探测 → 渲染落盘 → spawn 校验。
+    /// 返回 spawn 所需的 (root, conf, bin, conf_path)。
+    fn gateway_prepare(
+        &self,
+    ) -> Result<(
+        PathBuf,
+        crate::spec::GatewayConf,
+        PathBuf,
+        PathBuf,
+    )> {
+        let (root, spec) = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            (g.root.clone(), g.spec.clone())
+        };
+        let conf = spec
+            .gateway
+            .as_ref()
+            .filter(|c| c.kind.is_some() && c.enabled)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(ErrorCode::GatewayNotConfigured, "gateway 未配置或未启用")
+            })?;
+        crate::gateway::ensure_static(&spec, &conf)?;
+        let kind = conf.kind.expect("kind checked");
+        let bin = crate::gateway::probe::resolve_gateway_bin(kind, conf.bin.as_deref())?;
+        let mut ir = crate::gateway::model::resolve(&spec, &conf, &loopback_host_for)?;
+        ir.apache_modules_dir = apache_modules_dir_of(&bin);
+        let conf_path =
+            crate::gateway::validate::validate_gateway(&root, &ir, &bin, self.validator.as_ref())?;
+        Ok((root, conf, bin, conf_path))
+    }
+
+    /// §8 gateway.start：校验链 → spawn → Starting（健康探测异步达标转 Running）。
+    pub fn gateway_start(&self) -> Result<()> {
+        let (root, conf, bin, conf_path) = self.gateway_prepare()?;
+        let kind = conf.kind.expect("kind checked");
+        let argv =
+            crate::gateway::validate::start_argv(kind, &conf_path, &crate::gateway::validate::gateway_dir(&root));
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut g = self.inner.lock().expect("engine lock");
+            if let Some(slot) = &g.gateway {
+                if matches!(
+                    slot.state,
+                    RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+                ) {
+                    return Err(Error::new(
+                        ErrorCode::AlreadyInProgress,
+                        "网关已在运行或正在切换",
+                    ));
+                }
+            }
+            // save_text 改配置后 slot 可能未重建：按当前 spec 重建（幂等）
+            rebuild_gateway_slot(&mut g)?;
+            let spawn = spawn_gateway_process(&bin, &argv, &root);
+            let (mut child, job) = match spawn {
+                Ok(v) => v,
+                Err(e) => {
+                    let slot = g.gateway.as_mut().expect("rebuild ensured slot");
+                    slot.pid = None;
+                    slot.job = None;
+                    slot.last_error = Some(format!("GATEWAY_START_FAILED: {}", e.message()));
+                    if let Ok(s) = apply(slot.state, RtEvent::SpawnFailed) {
+                        slot.state = s;
+                    }
+                    emit_runtime(&g);
+                    return Err(Error::new(
+                        ErrorCode::GatewayStartFailed,
+                        format!("网关进程启动失败: {}", e.message()),
+                    ));
+                }
+            };
+            let pid = child.id();
+            let slot = g.gateway.as_mut().expect("rebuild ensured slot");
+            slot.pid = Some(pid);
+            slot.job = Some(job);
+            slot.cancel = Arc::clone(&cancel);
+            slot.stop_requested = false;
+            slot.started = Some(Instant::now());
+            slot.started_at_ms = Some(now_ms());
+            slot.last_error = None;
+            slot.last_exit = None;
+            slot.exit_reason = None;
+            match apply(slot.state, RtEvent::Spawned { health_none: false }) {
+                Ok(s) => slot.state = s,
+                Err(e) => slot.last_error = Some(e.to_string()),
+            }
+            emit_runtime(&g);
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            drop(g);
+            let src = LogSource {
+                kind: LogSourceKind::Gateway,
+                id: "gateway".into(),
+            };
+            if let Some(out) = stdout {
+                spawn_pump(Arc::clone(&self.inner), src.clone(), LogStream::Stdout, out, Arc::clone(&cancel));
+            }
+            if let Some(err) = stderr {
+                spawn_pump(Arc::clone(&self.inner), src, LogStream::Stderr, err, Arc::clone(&cancel));
+            }
+            spawn_gateway_waiter(Arc::clone(&self.inner), child);
+            spawn_gateway_health(Arc::clone(&self.inner), conf.port, Arc::clone(&cancel));
+        }
+        Ok(())
+    }
+
+    /// §8 gateway.stop：进程树终止（与 service 同语义；幂等）。
+    pub fn gateway_stop(&self) -> Result<()> {
+        {
+            let mut g = self.inner.lock().expect("engine lock");
+            let Some(slot) = g.gateway.as_mut() else {
+                return Ok(());
+            };
+            if matches!(slot.state, RtState::Stopped | RtState::Exited) {
+                return Ok(());
+            }
+            slot.stop_requested = true;
+            slot.cancel.store(true, Ordering::SeqCst);
+            if let Ok(next) = apply(slot.state, RtEvent::StopRequested) {
+                slot.state = next;
+            }
+            if let Some(job) = &slot.job {
+                job.terminate()?;
+            }
+            emit_runtime(&g);
+        }
+        // 等待收尾（waiter 线程或本函数兜底置 Stopped）
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            {
+                let g = self.inner.lock().expect("engine lock");
+                match &g.gateway {
+                    None => return Ok(()),
+                    Some(slot) => {
+                        if matches!(slot.state, RtState::Stopped | RtState::Exited) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                let mut g = self.inner.lock().expect("engine lock");
+                if let Some(slot) = g.gateway.as_mut() {
+                    slot.state = RtState::Stopped;
+                    slot.pid = None;
+                    slot.job = None;
+                    slot.exit_reason = None;
+                    emit_runtime(&g);
+                }
+                return Err(Error::new(ErrorCode::JobKill, "网关停止超时"));
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+    }
+
+    /// §8 gateway.restart：stop → start（非热重载；apply 复用同一语义）。
+    pub fn gateway_restart(&self) -> Result<()> {
+        self.gateway_stop()?;
+        self.gateway_start()
+    }
+
+    /// §8 gateway.apply：静态校验 → save_form 写 yaml（YAML_CONFLICT 冲突）
+    /// → 重新生成 → 运行中则重启（stop→start）。
+    pub fn gateway_apply(
+        &self,
+        conf: crate::spec::GatewayConf,
+        base_hash: &str,
+    ) -> Result<crate::ipc::GatewayApplyOutput> {
+        {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+        }
+        let mut spec = self.spec()?;
+        // 用新 conf 对当前服务表做静态校验（fail-fast，不写 yaml）
+        crate::gateway::ensure_static(&spec, &conf)?;
+        // 先落盘再重启：YAML_CONFLICT 时网关保持运行不受影响
+        spec.gateway = Some(conf.clone());
+        let (spec, hash, warnings) = self.save_form(&spec, base_hash)?;
+        let was_running = {
+            let g = self.inner.lock().expect("engine lock");
+            g.gateway
+                .as_ref()
+                .map(|s| {
+                    matches!(
+                        s.state,
+                        RtState::Starting | RtState::Running | RtState::Unhealthy | RtState::Stopping
+                    )
+                })
+                .unwrap_or(false)
+        };
+        if was_running {
+            self.gateway_stop()?;
+        }
+        // 重建 slot（enabled/kind/port 可能变化；stop 后旧 slot 已归零）
+        {
+            let mut g = self.inner.lock().expect("engine lock");
+            rebuild_gateway_slot(&mut g)?;
+            emit_runtime(&g);
+        }
+        let restarted = if was_running && conf.enabled && conf.kind.is_some() {
+            self.gateway_start()?;
+            true
+        } else {
+            false
+        };
+        Ok(crate::ipc::GatewayApplyOutput {
+            spec: serde_yaml::to_value(&spec)
+                .map_err(|e| Error::new(ErrorCode::SpecInvalid, e.to_string()))?,
+            hash,
+            restarted,
+            warnings: warnings.iter().map(|w| w.message.clone()).collect(),
+        })
+    }
+
+    /// §8 gateway.trust：`caddy trust`（UI 显式确认在前；修改系统信任库）。
+    pub fn gateway_trust(&self) -> Result<()> {
+        let conf = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            self.gateway_conf_active(&g)?
+        };
+        if conf.kind != Some(crate::spec::GatewayKind::Caddy) {
+            return Err(Error::new(
+                ErrorCode::GatewayNotConfigured,
+                "gateway.trust 仅支持 kind: caddy",
+            ));
+        }
+        let bin = crate::gateway::probe::resolve_gateway_bin(
+            crate::spec::GatewayKind::Caddy,
+            conf.bin.as_deref(),
+        )?;
+        let out = self.validator.run(
+            &bin,
+            &crate::gateway::validate::trust_argv(),
+            Duration::from_secs(60),
+        )?;
+        if out.code != 0 {
+            return Err(Error::new(
+                ErrorCode::GatewayConfigInvalid,
+                format!("caddy trust 退出码 {}: {}", out.code, out.stderr.trim()),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn empty_spec() -> SuperTaskFile {
@@ -2037,6 +2590,17 @@ fn build_snapshot(g: &Inner) -> RuntimeSnapshot {
             pid: s.pid,
             last_exit: s.last_exit.clone(),
             last_error: s.last_error.clone(),
+        }),
+        gateway: g.gateway.as_ref().map(|gw| GatewayRuntimeView {
+            kind: gw.kind.as_str().to_string(),
+            state: gw.state,
+            pid: gw.pid,
+            port: gw.port,
+            health: gw.health.clone(),
+            started_at_ms: gw.started_at_ms,
+            last_exit: gw.last_exit.clone(),
+            last_error: gw.last_error.clone(),
+            exit_reason: gw.exit_reason.map(str::to_string),
         }),
     }
 }
@@ -3561,6 +4125,192 @@ fn tail_lines(lines: &[String], n: usize) -> String {
     tail.join("\n")
 }
 
+// ============================================================================
+// 1.6 phase 4：网关托管自由函数（GatewaySlot 生命周期）
+// ============================================================================
+
+fn rt_state_str(s: RtState) -> String {
+    serde_yaml::to_value(s)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("{s:?}"))
+}
+
+/// 1.6 §4.2：上游回环地址选择（复用 1.2 监听口径）——IPv4 可达 → 127.0.0.1；
+/// 仅 IPv6 监听 → [::1]；未运行/双栈 → 127.0.0.1。
+fn loopback_host_for(port: u16) -> String {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+    let probe = |ip: IpAddr| {
+        TcpStream::connect_timeout(
+            &SocketAddr::new(ip, port),
+            Duration::from_millis(150),
+        )
+        .is_ok()
+    };
+    if probe(IpAddr::V4(Ipv4Addr::LOCALHOST)) {
+        return "127.0.0.1".into();
+    }
+    if probe(IpAddr::V6(Ipv6Addr::LOCALHOST)) {
+        return "[::1]".into();
+    }
+    "127.0.0.1".into()
+}
+
+/// apache LoadModule 目录：bin 同级 modules/（XAMPP 与官方 zip 布局一致）。
+fn apache_modules_dir_of(bin: &Path) -> Option<String> {
+    bin.parent()
+        .map(|d| d.join("modules").to_string_lossy().into_owned())
+}
+
+fn stderr_from_details(e: &Error) -> Option<String> {
+    let Error::App { details: Some(d), .. } = e else {
+        return None;
+    };
+    d.get("stderr").and_then(|v| v.as_str()).map(str::to_string)
+}
+
+/// 按当前 spec 重建网关 slot（open / gateway_start / apply 共用；幂等）。
+fn rebuild_gateway_slot(g: &mut Inner) -> Result<()> {
+    g.gateway = None;
+    let Some((port, kind)) = g
+        .spec
+        .gateway
+        .as_ref()
+        .filter(|c| c.kind.is_some() && c.enabled)
+        .map(|c| (c.port, c.kind.expect("kind checked")))
+    else {
+        return Ok(());
+    };
+    if !g.files.contains_key("gateway") {
+        let rel = log_file_rel("gateway", "gateway");
+        let lf = LogFile::open_with_files(
+            g.root.join(&rel),
+            g.spec.logging.as_ref().and_then(|l| l.max_bytes),
+            g.spec.logging.as_ref().and_then(|l| l.retain_tail_bytes),
+            g.spec.log_retention.as_ref().and_then(|r| r.max_files),
+        )
+        .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法创建网关日志文件: {e}")))?;
+        g.files.insert("gateway".into(), lf);
+    }
+    g.gateway = Some(GatewaySlot {
+        state: RtState::Stopped,
+        pid: None,
+        port,
+        kind,
+        job: None,
+        stop_requested: false,
+        cancel: Arc::new(AtomicBool::new(false)),
+        started: None,
+        started_at_ms: None,
+        health: None,
+        last_exit: None,
+        last_error: None,
+        exit_reason: None,
+    });
+    Ok(())
+}
+
+fn spawn_gateway_process(
+    bin: &Path,
+    args: &[String],
+    cwd: &Path,
+) -> Result<(Child, Arc<dyn crate::proc::ProcessTree>)> {
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let job = crate::proc::create_tree()?;
+    let child = job.spawn(&mut cmd)?;
+    Ok((child, job))
+}
+
+/// 网关进程退出收尾（与 spawn_waiter 同语义，source=gateway）。
+fn spawn_gateway_waiter(inner: Arc<Mutex<Inner>>, mut child: Child) {
+    thread::Builder::new()
+        .name("st-gw-wait".into())
+        .spawn(move || {
+            let status = child.wait();
+            let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+            // 日志泵可能还有最后几行在写
+            thread::sleep(Duration::from_millis(80));
+            let mut g = inner.lock().expect("engine lock");
+            let stop_requested = g.gateway.as_ref().map(|s| s.stop_requested).unwrap_or(true);
+            let err_msg = if !stop_requested && code != 0 {
+                let src = LogSource {
+                    kind: LogSourceKind::Gateway,
+                    id: "gateway".into(),
+                };
+                Some(format!(
+                    "GATEWAY_START_FAILED: {}",
+                    exit_error_from_logs(&g, &src, code)
+                ))
+            } else {
+                None
+            };
+            let Some(slot) = g.gateway.as_mut() else { return };
+            slot.pid = None;
+            slot.job = None;
+            slot.cancel.store(true, Ordering::SeqCst);
+            slot.last_exit = Some(ExitView {
+                code,
+                at_ms: now_ms(),
+            });
+            if let Some(msg) = err_msg {
+                slot.last_error = Some(msg);
+            }
+            slot.exit_reason = if stop_requested { None } else { Some("crash") };
+            let ev = RtEvent::ProcessExited { stop_requested };
+            if let Ok(next) = apply(slot.state, ev) {
+                slot.state = next;
+            }
+            emit_runtime(&g);
+        })
+        .ok();
+}
+
+/// 网关 TCP 健康（§7）：loopback 双栈探测自身监听端口；grace 3s。
+fn spawn_gateway_health(inner: Arc<Mutex<Inner>>, port: u16, cancel: Arc<AtomicBool>) {
+    thread::Builder::new()
+        .name("st-gw-health".into())
+        .spawn(move || loop {
+            thread::sleep(Duration::from_secs(1));
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let ok = crate::ports::is_serving(port);
+            let mut g = inner.lock().expect("engine lock");
+            let Some(slot) = g.gateway.as_mut() else { break };
+            let past = slot
+                .started
+                .map(|t| t.elapsed() >= Duration::from_secs(3))
+                .unwrap_or(true);
+            let ev = if ok {
+                RtEvent::HealthOk
+            } else {
+                RtEvent::HealthFail { past_grace: past }
+            };
+            let prev = slot.state;
+            if let Ok(next) = apply(slot.state, ev) {
+                slot.state = next;
+            }
+            slot.health = Some(HealthView {
+                ok,
+                at_ms: now_ms(),
+                detail: if ok {
+                    format!("tcp 127.0.0.1:{port} 可达")
+                } else {
+                    format!("tcp 127.0.0.1:{port} 无监听")
+                },
+            });
+            if slot.state != prev {
+                emit_runtime(&g);
+            }
+        })
+        .ok();
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
@@ -4417,5 +5167,278 @@ services:
         );
         eng2.close().unwrap();
         let _ = fs::remove_dir_all(&root2);
+    }
+
+    // ---- 1.6 phase 4：网关托管（fake 校验桩 + TCP 监听桩，不拉真反代） ----
+
+    use crate::gateway::validate::{ValidateOutcome, ValidateRunner};
+
+    /// 校验桩：可配置退出码（0 = 校验通过；1 = 带 stderr 的校验失败）。
+    struct FakeGatewayValidate {
+        code: i32,
+        stderr: &'static str,
+    }
+
+    impl FakeGatewayValidate {
+        fn ok() -> Self {
+            Self {
+                code: 0,
+                stderr: "",
+            }
+        }
+        fn fail() -> Self {
+            Self {
+                code: 1,
+                stderr: "[emerg] bind() to 127.0.0.1:PORT failed",
+            }
+        }
+    }
+
+    impl ValidateRunner for FakeGatewayValidate {
+        fn run(
+            &self,
+            _program: &Path,
+            _args: &[String],
+            _timeout: Duration,
+        ) -> Result<ValidateOutcome> {
+            Ok(ValidateOutcome {
+                code: self.code,
+                stdout: String::new(),
+                stderr: self.stderr.to_string(),
+            })
+        }
+    }
+
+    fn next_gateway_ports() -> (u16, u16) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let base = 42000u32 + (std::process::id() % 300) * 70;
+        let n = N.fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+        ((base + n) as u16, (base + n + 1) as u16)
+    }
+
+    /// 网关桩：cmd 包装的 PowerShell TCP 监听器（监听 gateway.port）；
+    /// argv（-c/-p 等）全部忽略，模拟「反代进程在前台监听」。
+    fn write_gateway_stub(dir: &Path, port: u16) -> PathBuf {
+        let stub = dir.join("stub-gateway.cmd");
+        let script = format!(
+            "@echo off\r\npowershell -NoProfile -Command \"$ErrorActionPreference='SilentlyContinue';$l=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,{port});$l.Start();while($true){{try{{$c=$l.AcceptTcpClient();$c.Close()}}catch{{break}}}}\"\r\n"
+        );
+        fs::write(&stub, script).unwrap();
+        stub
+    }
+
+    fn gateway_ws_yaml(gw_port: u16, svc_port: u16, bin: &Path) -> String {
+        format!(
+            "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: x\n    port: {svc_port}\n    health:\n      type: none\ngateway:\n  kind: nginx\n  port: {gw_port}\n  bin: {}\n  routes:\n    - path: /api\n      target: api\n    - path: /\n      target: api\n",
+            bin.display()
+        )
+    }
+
+    fn wait_gateway_state(eng: &Engine, want: &str, secs: u64) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if eng.gateway_status().unwrap().state.as_deref() == Some(want) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        false
+    }
+
+    #[test]
+    fn gateway_status_unconfigured_and_preview_empty() {
+        let root = write_ws_yaml(ping_yaml());
+        let eng = Engine::new();
+        eng.open(&root).unwrap();
+        let st = eng.gateway_status().unwrap();
+        assert!(!st.configured);
+        assert!(st.kind.is_none() && st.routes.is_empty() && st.state.is_none());
+        // 未配置时启动类命令 → GATEWAY_NOT_CONFIGURED
+        let e = eng.gateway_start().unwrap_err();
+        assert_eq!(e.code(), ErrorCode::GatewayNotConfigured);
+        // preview 无 kind → GATEWAY_NOT_CONFIGURED
+        let e = eng.gateway_preview(None).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::GatewayNotConfigured);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gateway_preview_renders_in_memory() {
+        let (gw, svc) = next_gateway_ports();
+        let root = std::env::temp_dir().join(format!("st-gw-prev-{}-{gw}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("supertask.yaml"),
+            format!(
+                "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: x\n    port: {svc}\n    health:\n      type: none\ngateway:\n  kind: nginx\n  port: {gw}\n  routes:\n    - path: /api\n      target: api\n"
+            ),
+        )
+        .unwrap();
+        let eng = Engine::new();
+        eng.open(&root).unwrap();
+        let out = eng.gateway_preview(None).unwrap();
+        assert_eq!(out.files.len(), 1);
+        assert_eq!(out.files[0].name, "nginx.conf");
+        assert!(
+            out.files[0]
+                .content
+                .contains(&format!("proxy_pass http://127.0.0.1:{svc}")),
+            "{}",
+            out.files[0].content
+        );
+        // 纯内存：不落盘
+        assert!(!root.join(".supertask/gateway/nginx.conf").exists());
+        // status 路由解析 + 存活探测（服务未运行 → alive=false）
+        let st = eng.gateway_status().unwrap();
+        assert!(st.configured);
+        assert_eq!(st.routes.len(), 1);
+        assert_eq!(st.routes[0].target_port, Some(svc));
+        assert_eq!(st.routes[0].upstream_alive, Some(false));
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gateway_start_error_mapping() {
+        let (gw, svc) = next_gateway_ports();
+        let dir = std::env::temp_dir().join(format!("st-gw-err-{}-{gw}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // a) 校验失败 → GATEWAY_CONFIG_INVALID
+        let stub = write_gateway_stub(&dir, gw);
+        let root = write_ws_yaml(&gateway_ws_yaml(gw, svc, &stub));
+        let eng = Engine::with_validator(Arc::new(FakeGatewayValidate::fail()));
+        eng.open(&root).unwrap();
+        let e = eng.gateway_start().unwrap_err();
+        assert_eq!(e.code(), ErrorCode::GatewayConfigInvalid);
+        assert!(e.message().contains("[emerg]"), "{}", e);
+        eng.close().unwrap();
+        // b) 显式 bin 不存在 → GATEWAY_BINARY_MISSING（不回落 PATH）
+        let root = write_ws_yaml(&gateway_ws_yaml(gw, svc, &dir.join("no-such-nginx.exe")));
+        let eng = Engine::with_validator(Arc::new(FakeGatewayValidate::ok()));
+        eng.open(&root).unwrap();
+        let e = eng.gateway_start().unwrap_err();
+        assert_eq!(e.code(), ErrorCode::GatewayBinaryMissing);
+        eng.close().unwrap();
+        // c) enabled=false → GATEWAY_NOT_CONFIGURED（不启动）
+        let stub2 = write_gateway_stub(&dir, gw);
+        let base_yaml = gateway_ws_yaml(gw, svc, &stub2);
+        let root = write_ws_yaml(&base_yaml.replacen(
+            &format!("  port: {gw}\n"),
+            &format!("  port: {gw}\n  enabled: false\n"),
+            1,
+        ));
+        let eng = Engine::with_validator(Arc::new(FakeGatewayValidate::ok()));
+        eng.open(&root).unwrap();
+        let e = eng.gateway_start().unwrap_err();
+        assert_eq!(e.code(), ErrorCode::GatewayNotConfigured);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gateway_full_lifecycle_with_stub() {
+        let (gw, svc) = next_gateway_ports();
+        let dir = std::env::temp_dir().join(format!("st-gw-life-{}-{gw}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let stub = write_gateway_stub(&dir, gw);
+        let root = write_ws_yaml(&gateway_ws_yaml(gw, svc, &stub));
+        let eng = Engine::with_validator(Arc::new(FakeGatewayValidate::ok()));
+        eng.open(&root).unwrap();
+        // 打开即有 slot（stopped），路由已解析
+        let st = eng.gateway_status().unwrap();
+        assert_eq!(st.state.as_deref(), Some("stopped"));
+        assert_eq!(st.routes.len(), 2);
+        assert!(st.routes.iter().all(|r| r.target_port == Some(svc)));
+        // 启动 → 健康达标 Running（桩监听 TCP）
+        eng.gateway_start().unwrap();
+        assert!(
+            wait_gateway_state(&eng, "running", 25),
+            "{:?}",
+            eng.gateway_status().unwrap()
+        );
+        // 上游存活仍 false（服务没跑），但网关端口在监听
+        let st = eng.gateway_status().unwrap();
+        assert!(st.pid.is_some());
+        // 运行中重复启动 → AlreadyInProgress
+        let e = eng.gateway_start().unwrap_err();
+        assert_eq!(e.code(), ErrorCode::AlreadyInProgress);
+        // 校验链产物落盘
+        assert!(root.join(".supertask/gateway/nginx.conf").is_file());
+        // 日志 source=gateway
+        eng.subscribe_logs().unwrap();
+        let src = LogSource { kind: LogSourceKind::Gateway, id: "gateway".into() };
+        eng.clear_logs(&src).unwrap();
+        // 停止 → stopped，端口释放
+        eng.gateway_stop().unwrap();
+        assert_eq!(eng.gateway_status().unwrap().state.as_deref(), Some("stopped"));
+        let mut released = false;
+        for _ in 0..25 {
+            if !crate::ports::is_serving(gw) {
+                released = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        assert!(released, "网关端口应随进程树终止而释放");
+        // 再启动 + stop_all 清场含网关
+        eng.gateway_start().unwrap();
+        assert!(wait_gateway_state(&eng, "running", 25));
+        eng.stop_all().unwrap();
+        assert_eq!(eng.gateway_status().unwrap().state.as_deref(), Some("stopped"));
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gateway_apply_conflict_and_restart() {
+        let (gw, svc) = next_gateway_ports();
+        let dir = std::env::temp_dir().join(format!("st-gw-apply-{}-{gw}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let stub = write_gateway_stub(&dir, gw);
+        let root = write_ws_yaml(&gateway_ws_yaml(gw, svc, &stub));
+        let eng = Engine::with_validator(Arc::new(FakeGatewayValidate::ok()));
+        eng.open(&root).unwrap();
+        eng.gateway_start().unwrap();
+        assert!(wait_gateway_state(&eng, "running", 25));
+
+        // a) base_hash 冲突 → YAML_CONFLICT（不写 yaml）
+        let hash = eng.yaml_get().unwrap().hash;
+        let mut new_conf = eng.spec().unwrap().gateway.clone().unwrap();
+        new_conf.routes.push(crate::spec::GatewayRoute {
+            host: Some("api.localhost".into()),
+            path: "/".into(),
+            target: Some("api".into()),
+            upstream: None,
+            extra: Default::default(),
+        });
+        let e = eng
+            .gateway_apply(new_conf.clone(), "deadbeef")
+            .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::YamlConflict);
+
+        // b) 正常 apply：运行中 → 重启（stop→start），yaml 已更新
+        let out = eng.gateway_apply(new_conf, &hash).unwrap();
+        assert!(out.restarted);
+        assert!(wait_gateway_state(&eng, "running", 25));
+        let st = eng.gateway_status().unwrap();
+        assert_eq!(st.routes.len(), 3, "apply 后路由来自新配置");
+        let text = fs::read_to_string(root.join("supertask.yaml")).unwrap();
+        assert!(text.contains("api.localhost"), "yaml 已写回");
+
+        // c) 冲突语义由 save_form 承担：再次 apply 用旧 hash → YAML_CONFLICT
+        let stale = "deadbeef".to_string();
+        let conf2 = eng.spec().unwrap().gateway.clone().unwrap();
+        let e = eng.gateway_apply(conf2, &stale).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::YamlConflict);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&root);
     }
 }

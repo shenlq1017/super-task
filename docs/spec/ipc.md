@@ -204,9 +204,9 @@
 
 下列调用一律 `FEATURE_SOON`，不要未注册导致前端 catch 不到 code：
 
-`gateway.apply` · `cloud.login` · `cloud.sync` · `ai.complete`
+`cloud.login` · `cloud.sync` · `ai.complete`
 
-（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6；1.3 起已转 live：`docker.probe` / `docker.ps` / `docker.images` / `docker.build` / `docker.buildCancel`，见 §4.6.1。）
+（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6；1.3 起已转 live：`docker.probe` / `docker.ps` / `docker.images` / `docker.build` / `docker.buildCancel`，见 §4.6.1；1.6 起已转 live：`gateway.apply` 及全部 `gateway.*`，见 §10.10。）
 
 ---
 
@@ -596,3 +596,60 @@ workspace.importPackage
 - import 只落盘零执行；成功后桌面用返回的 `root` 直接打开工作区。校验链：文件缺失/不可读 → `PKG_NOT_FOUND`；zip/manifest 解析失败、条目哈希不符、路径不安全（zip-slip）→ `PKG_INVALID`；`format` 高于支持版本 → `PKG_VERSION`；目标目录已有 `supertask.yaml` → `PKG_TARGET_EXISTS`（不覆盖，无 force）。
 - 包格式：zip（Deflate），`manifest.json { format:1, name, created_at, source_os, app_version, entries:[{path, sha256, bytes}] }` + `supertask.yaml`（原样字节）+ 可选密钥文件；路径一律 `/` 分隔、UTF-8。`format` 只增不破，为 2.0 一键迁移载荷雏形。
 - 桌面打开工作区遇 `WORKSPACE_LOCKED`（多入口互斥，feature spec §3.1）：`workspace.open` 以该错误码失败，错误信封新增 additive 可选 `details` 字段（如 `{ holder, pid }`）；protocol 保持 1，旧前端忽略未知字段。
+
+### 10.10 网关（1.6，feature spec §8）
+
+protocol 1 不变，新增 `gateway.*` 命令组；`gateway` feature `soon → live`（since 1.6），
+`gateway.apply` 移出占位命令清单（§4.8）。
+
+```text
+gateway.status    input:  { workspace_id }
+                  output: { configured, enabled, kind?, port?,
+                            state?, pid?, last_error?,
+                            routes: [{ host?, path, target?, upstream?,
+                                       target_port?, upstream_alive? }],
+                            conf_path? }
+                          # state: starting | running | unhealthy | stopped | stopping | exited
+                          # upstream_alive: 上游端口 loopback 双栈探测结果
+
+gateway.preview   input:  { workspace_id, gateway? }     # 传配置则渲染草稿，缺省用当前 yaml
+                  output: { files: [{ name, content }] } # 纯内存渲染，不落盘
+
+gateway.validate  input:  { workspace_id, gateway? }
+                  output: { ok, message?, stderr? }      # 失败不作为 IPC 错误，ok=false 返回
+
+gateway.apply     input:  { workspace_id, gateway, base_hash }
+                  output: { spec, hash, restarted, warnings: string[] }
+                          # save_form 语义（YAML_CONFLICT 冲突时网关保持运行不受影响）
+                          # + 重新生成 + 运行中则重启（stop→start，非热重载）
+
+gateway.start     input:  { workspace_id } → { accepted }
+gateway.stop      input:  { workspace_id } → { accepted }
+gateway.restart   input:  { workspace_id } → { accepted }
+gateway.trust     input:  { workspace_id } → { accepted }
+                          # 仅 kind: caddy；spawn `caddy trust`（UI 强制确认在前）
+```
+
+- 校验链（start/apply 前置，规格 §6.1）：路由静态校验 → 二进制探测 → 渲染落盘
+  `.supertask/gateway/` → spawn `nginx -t -c <conf> -p <prefix> -e stderr` /
+  `caddy validate --config <conf> --adapter caddyfile` / `httpd -t -f <conf>`
+  （10s 超时，只读命令不常驻）。
+- `toolchain.probe` 输出增 `gateway: { nginx: {found,version,path}, caddy: {…}, apache: {…} }`
+  （结构对齐 1.4 `gradle` 项）。探测顺序：`gateway.bin` → PATH → 平台已知位置
+  （macOS homebrew、Linux /usr/sbin 等；Windows 只认 PATH 与显式 bin）；只探测不代装。
+- `st.runtime` 快照新增独立 `gateway` 字段（`GatewayRuntimeView`：kind/state/pid/port/
+  health/last_exit/last_error/exit_reason），不进 services 列表——前端勿把网关当服务渲染。
+- 日志：网关进程 stdout/stderr 走既有 `st.logs` 批次，source=`{ kind: "gateway", id: "gateway" }`，
+  文件 `.supertask/logs/gateway.log`。
+
+1.6 新增错误码：
+
+| code | 何时 |
+|------|------|
+| `GATEWAY_NOT_CONFIGURED` | 无 gateway 段 / 无 kind / enabled=false 时执行启动类命令；gateway.trust 非 caddy |
+| `GATEWAY_ROUTE_INVALID` | 路由静态校验失败（target 不存在/无端口、path/host 非法、重复、与网关端口冲突、upstream 语法非法）；details 带问题列表 |
+| `GATEWAY_BINARY_MISSING` | 反代二进制未找到（details/message 带引擎名与平台安装指引；不代装） |
+| `GATEWAY_CONFIG_INVALID` | 本机校验失败或超时（details 带 stderr/stdout 原文；Windows 版 `nginx -t` 会真实 bind 端口，端口被外部占用即在此暴露） |
+| `GATEWAY_START_FAILED` | 校验通过但 spawn 失败 / 进程立即退出（last_error 进网关日志与状态） |
+
+其余复用现有码（`YAML_CONFLICT`、`ALREADY_IN_PROGRESS`、`JOB_KILL`、`NO_WORKSPACE` 等）。

@@ -209,6 +209,17 @@ pub fn run_up(
         }
     }
 
+    // 1.6 §12：服务达标后启动网关（enabled 且配置有效）。
+    // 网关失败 → stop_all + 退出 1 + stderr 错误码；未配置 → 静默跳过。
+    if let Err(e) = engine.gateway_start() {
+        if e.code() != ErrorCode::GatewayNotConfigured {
+            let _ = engine.stop_all();
+            let _ = engine.close();
+            eprintln!("GATEWAY_START_FAILED: {}", e.message());
+            return Err(e);
+        }
+    }
+
     if !wrapper.is_empty() {
         // §4.2.5 包装形态：健康达标后 spawn 子命令（继承 stdio），退出码透传
         let (prog, args) = wrapper.split_first().expect("wrapper non-empty");
@@ -282,6 +293,20 @@ pub fn run_restart(root: &Path, ids: &[String]) -> Result<i32, Error> {
             }
             let _ = engine.close();
             return Err(e);
+        }
+    }
+    // 1.6 §12：restart 纳入网关（仅网关已在运行时；未配置/已停止不动）
+    let gateway_running = engine
+        .snapshot()
+        .ok()
+        .and_then(|s| s.gateway.map(|g| matches!(g.state, RtState::Starting | RtState::Running | RtState::Unhealthy)))
+        .unwrap_or(false);
+    if gateway_running {
+        if let Err(e) = engine.gateway_restart() {
+            if e.code() != ErrorCode::GatewayNotConfigured {
+                let _ = engine.close();
+                return Err(e);
+            }
         }
     }
     let _ = engine.close();

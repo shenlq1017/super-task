@@ -22,6 +22,9 @@ pub use v13::*;
 mod v15;
 pub use v15::*;
 
+mod v16;
+pub use v16::*;
+
 /// Stable invoke names. Tauri layer must register these (or map 1:1).
 pub mod cmd {
     pub const SESSION_HELLO: &str = "session.hello";
@@ -77,6 +80,15 @@ pub mod cmd {
     // ---- 1.4 (types only; handlers in later phases) ----
     pub const IMPORT_TASKFILE_PREVIEW: &str = "import.taskfilePreview";
     pub const IMPORT_TASKFILE_APPLY: &str = "import.taskfileApply";
+    // ---- 1.6 ----
+    pub const GATEWAY_STATUS: &str = "gateway.status";
+    pub const GATEWAY_PREVIEW: &str = "gateway.preview";
+    pub const GATEWAY_VALIDATE: &str = "gateway.validate";
+    pub const GATEWAY_APPLY: &str = "gateway.apply";
+    pub const GATEWAY_START: &str = "gateway.start";
+    pub const GATEWAY_STOP: &str = "gateway.stop";
+    pub const GATEWAY_RESTART: &str = "gateway.restart";
+    pub const GATEWAY_TRUST: &str = "gateway.trust";
 }
 
 pub mod event {
@@ -152,6 +164,8 @@ pub enum LogSourceKind {
     Service,
     Script,
     System,
+    /// 1.6：网关进程日志（id 固定 "gateway"，文件 .supertask/logs/gateway.log）
+    Gateway,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

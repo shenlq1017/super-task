@@ -15,15 +15,15 @@
 
 | 命令 | 取锁 | 说明 |
 |------|------|------|
-| `supertask up [ids…] [--wait healthy\|started\|none] [--wait-timeout S] [-- cmd…]` | ✅ | 拓扑启动 → 等待（默认 healthy，300s 超时）→ 交互聚合日志或 `--` 包装（退出码透传）。失败/超时/信号 → 停止全部 |
-| `supertask down [ids…]` | ✅ | 停止全部/所选；他人持锁 → `WORKSPACE_LOCKED` |
-| `supertask restart [ids…]` | ✅ | 停止再启动 |
-| `supertask status [--json]` | ❌ | 服务端口监听状态 + 锁持有者（owner/pid） |
+| `supertask up [ids…] [--wait healthy\|started\|none] [--wait-timeout S] [-- cmd…]` | ✅ | 拓扑启动 → 等待（默认 healthy，300s 超时）→ **启动网关（1.6）** → 交互聚合日志或 `--` 包装（退出码透传）。失败/超时/信号 → 停止全部；网关启动失败同样清场并以 `GATEWAY_*` 退出码 1 结束（未配置网关则静默跳过；`--wait` 不等待网关健康） |
+| `supertask down [ids…]` | ✅ | 停止全部/所选（含网关）；他人持锁 → `WORKSPACE_LOCKED` |
+| `supertask restart [ids…]` | ✅ | 停止再启动（网关运行中时一并重启） |
+| `supertask status [--json]` | ❌ | 服务端口监听状态 + 网关行（kind/port/state/routes 数，1.6）+ 锁持有者（owner/pid） |
 | `supertask logs [id] [--lines N] [--grep P]` | ❌ | 历史日志尾部/检索 |
 | `supertask script run <id>` / `script cancel` | ✅ | 运行（等待结束，返回退出码）/取消；cmds 只来自 YAML |
 | `supertask export [-o FILE] [--with-secrets]` | ❌ | 导出 zip（manifest + supertask.yaml；`--with-secrets` 含声明密钥文件明文） |
 | `supertask import <pkg> [--dest DIR]` | ❌ | 只落盘不启动；目标已有 yaml 拒绝 |
-| `supertask doctor` | ❌ | 工具链 + docker 探测摘要 |
+| `supertask doctor` | ❌ | 工具链 + docker + 网关三引擎（nginx/caddy/apache）探测摘要 |
 | `supertask mcp` | 惰性 | stdio MCP 服务器（见下） |
 | `supertask version` | ❌ | 版本与协议 |
 
@@ -62,3 +62,18 @@
 
 - CLI bin 与桌面 dev 产物同名 `supertask.exe`；桌面 dev 进程运行时用 `CARGO_TARGET_DIR=target-cli cargo build -p supertask-cli` 隔离构建（安装版为 `SuperTask.exe`，不受影响）。
 - 带色输出预留 `--no-color`；后续按实现计划用 `anstyle` + `anstream`。
+
+## 网关（1.6）
+
+CLI 只消费 yaml 真源，不提供 `gateway` 子命令（编辑路由是 GUI 语义，桌面 `/gateway` 页提供路由编辑 / diff 确认 / 本机校验 / caddy HTTPS 与信任）：
+
+- `supertask up`：服务健康后自动启动 `gateway:` 段配置的网关（`enabled: true` 且配置有效）；网关失败 → 停止全部 + 退出 1 + stderr 错误码（`GATEWAY_*`）。`--wait` 不等待网关健康（网关不阻塞流水线主目标）。
+- `supertask down` / `restart`：清场/重启包含网关（restart 仅网关运行中时一并重启）。
+- `supertask status --json`：`gateway` 行（kind / port / state / routes 数；未配置为 null）。
+- `supertask doctor`：nginx / caddy / apache 三引擎探测行（只探测，不代装；缺失时按平台给安装指引）。
+- 生成物：`<root>/.supertask/gateway/`（nginx.conf / Caddyfile / httpd.conf），随每次启动/应用重新生成——磁盘产物是缓存，不是编辑对象。
+
+### 开源致谢
+
+- 路由配置模型借鉴 [nginxconfig.io](https://github.com/digitalocean/nginxconfig.io)（DigitalOcean，MIT）的「domain → path 路由 → https 选项」抽象与产物组织，按本机开发场景大幅裁剪（无 certbot/HSTS/生产安全头），未引入其代码或依赖。
+- `/gateway` 页面的可视化闭环（分块卡片 + 表格式增删 + 生成→校验→状态）借鉴 [nginxWebUI](https://github.com/cym1102/nginxWebUI)（cym1102，GPL）的信息架构与交互思路，未引入其代码与安全模型。

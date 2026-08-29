@@ -43,6 +43,7 @@ fn source_files(root: &Path, source: &LogSource) -> Vec<PathBuf> {
         LogSourceKind::Script => (format!("{}.log", source.id), base.join("scripts")),
         LogSourceKind::System => ("system.log".to_string(), base.clone()),
         LogSourceKind::Service => (format!("{}.log", source.id), base.clone()),
+        LogSourceKind::Gateway => (format!("{}.log", source.id), base.clone()),
     };
     let active = dir.join(&stem);
     let mut files = vec![active];
@@ -68,11 +69,14 @@ fn all_sources(root: &Path) -> Vec<LogSource> {
                 let name = e.file_name().to_string_lossy().into_owned();
                 name.strip_suffix(".log").map(str::to_string)
             })
-            .filter(|n| n != "system")
+            .filter(|n| n != "system" && n != "gateway")
             .collect();
         ids.sort();
         for id in ids {
             out.push(LogSource { kind: LogSourceKind::Service, id });
+        }
+        if base.join("gateway.log").exists() {
+            out.push(LogSource { kind: LogSourceKind::Gateway, id: "gateway".into() });
         }
     }
     if let Ok(entries) = fs::read_dir(base.join("scripts")) {
@@ -142,6 +146,7 @@ pub fn search_logs(
                         LogSourceKind::Script => "script".into(),
                         LogSourceKind::System => "system".into(),
                         LogSourceKind::Service => "service".into(),
+                        LogSourceKind::Gateway => "gateway".into(),
                     },
                     id: src.id.clone(),
                     file: fname.clone(),
@@ -193,6 +198,7 @@ pub fn tail_logs(root: &Path, source: Option<&LogSource>, lines: usize) -> Resul
                         LogSourceKind::Script => "script".into(),
                         LogSourceKind::System => "system".into(),
                         LogSourceKind::Service => "service".into(),
+                        LogSourceKind::Gateway => "gateway".into(),
                     },
                     id: src.id.clone(),
                     file: fname.clone(),
@@ -263,6 +269,7 @@ pub fn export_logs(
                                 LogSourceKind::Script => "script".into(),
                                 LogSourceKind::System => "system".into(),
                                 LogSourceKind::Service => "service".into(),
+                                LogSourceKind::Gateway => "gateway".into(),
                             },
                             id: src.id.clone(),
                             file: fname.clone(),

@@ -24,10 +24,25 @@ pub fn status_data(root: &Path) -> Result<serde_json::Value, supertask_core::Err
             "state": if listening { "running" } else { "stopped" },
         }));
     }
+    // 1.6 §12：网关行（kind/port/state/routes 数；未配置时为 null）
+    let gateway = match spec.gateway.as_ref().filter(|g| g.kind.is_some()) {
+        Some(g) => {
+            let listening = supertask_core::ports::is_serving(g.port);
+            serde_json::json!({
+                "kind": g.kind.map(|k| k.as_str()),
+                "port": g.port,
+                "listening": listening,
+                "state": if listening { "running" } else { "stopped" },
+                "routes": g.routes.len(),
+            })
+        }
+        None => serde_json::Value::Null,
+    };
     Ok(serde_json::json!({
         "workspace": root.display().to_string(),
         "lock": lock.map(|l| lock_value(&l)),
         "services": services,
+        "gateway": gateway,
     }))
 }
 
@@ -63,6 +78,19 @@ pub fn run_status(json: bool, root: &Path) -> Result<i32, supertask_core::Error>
                     .map(|p| format!(":{p}"))
                     .unwrap_or_else(|| "-".to_string()),
                 svc["state"].as_str().unwrap_or("?"),
+            );
+        }
+        if let Some(gw) = data["gateway"].as_object() {
+            println!(
+                "  {:<20} {:<12} {:>7}  {}  ({} 条路由)",
+                "gateway",
+                gw["kind"].as_str().unwrap_or("?"),
+                gw["port"]
+                    .as_u64()
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                gw["state"].as_str().unwrap_or("?"),
+                gw["routes"],
             );
         }
     }
@@ -133,6 +161,25 @@ mod tests {
         assert_eq!(data["services"][0]["state"], "stopped");
         assert!(data["lock"].is_null(), "no lock in a fresh workspace");
         assert_eq!(data["workspace"], root.display().to_string());
+        // 1.6：未配置网关 → gateway 行为 null
+        assert!(data["gateway"].is_null());
+        let _ = std::fs::remove_dir_all(&root);
+
+        // 1.6：已配置网关 → kind/port/state/routes 行
+        let root = std::env::temp_dir().join(format!("st-cli-status-gw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("supertask.yaml"),
+            "version: 1\nname: t\nservices:\n  api:\n    kind: spring-boot\n    module: m\n    port: 18080\ngateway:\n  kind: nginx\n  port: 18443\n  routes:\n    - path: /api\n      target: api\n",
+        )
+        .unwrap();
+        let data = status_data(&root).unwrap();
+        let gw = data["gateway"].as_object().expect("gateway row");
+        assert_eq!(gw["kind"], "nginx");
+        assert_eq!(gw["port"], 18443);
+        assert_eq!(gw["routes"], 1);
+        assert_eq!(gw["state"], "stopped");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -161,6 +208,10 @@ pub fn run_doctor(json: bool) -> Result<i32, supertask_core::Error> {
             ("npm", &toolchain.npm),
             ("pnpm", &toolchain.pnpm),
             ("yarn", &toolchain.yarn),
+            // 1.6：网关三引擎（只探测不代装）
+            ("nginx", &toolchain.gateway.nginx),
+            ("caddy", &toolchain.gateway.caddy),
+            ("apache", &toolchain.gateway.apache),
         ] {
             if t.found {
                 println!(

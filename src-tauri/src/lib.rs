@@ -372,6 +372,15 @@ pub fn run() {
             commands::app_update_check,
             commands::app_update_install,
             commands::app_write_text_file,
+            // 1.6 网关
+            commands::gateway_status,
+            commands::gateway_preview,
+            commands::gateway_validate,
+            commands::gateway_apply,
+            commands::gateway_start,
+            commands::gateway_stop,
+            commands::gateway_restart,
+            commands::gateway_trust,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

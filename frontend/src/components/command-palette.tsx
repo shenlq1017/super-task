@@ -8,6 +8,8 @@ import { useWorkspace } from "@/providers/workspace-provider";
 import { useToast } from "@/components/ui/toast";
 import { useOpenWorkspace } from "@/lib/use-open-workspace";
 import { isTauri } from "@/ipc/invoke";
+import { apiGatewayStart, apiGatewayStop } from "@/ipc/api";
+import { IpcFailure } from "@/ipc/protocol";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Feature } from "@/ipc/protocol";
 import { navTranslationKey } from "@/features/registry";
@@ -75,6 +77,34 @@ export function CommandPalette({
           // 面板即将关闭无法挂受控弹框：用原生确认（与主按钮同语义）
           if (!window.confirm(t("operations.confirmStopAll", { n }))) return;
           void runtime.actions.stopAll().then(() => toast(t("operations.stoppedAll"), "ok"));
+        },
+      },
+      {
+        id: "gateway:start",
+        title: t("palette.startGateway"),
+        hint: "gateway.start",
+        run: async () => {
+          if (!ws.state.workspaceId) return toast(t("palette.noOpenWorkspace"), "warn");
+          try {
+            await apiGatewayStart(ws.state.workspaceId);
+            toast(t("pages.gateway.startSent"), "ok");
+          } catch (e) {
+            toast(e instanceof IpcFailure ? e.message : String(e), "err");
+          }
+        },
+      },
+      {
+        id: "gateway:stop",
+        title: t("palette.stopGateway"),
+        hint: "gateway.stop",
+        run: async () => {
+          if (!ws.state.workspaceId) return toast(t("palette.noOpenWorkspace"), "warn");
+          try {
+            await apiGatewayStop(ws.state.workspaceId);
+            toast(t("pages.gateway.stopSent"), "ok");
+          } catch (e) {
+            toast(e instanceof IpcFailure ? e.message : String(e), "err");
+          }
         },
       },
       {

@@ -101,3 +101,34 @@ crates/supertask-cli      # 1.5，复用 core
 ```
 
 壳已脚手架：AppShell + 功能注册表路由 + `session.hello` / `app.load`。其余 command 与运行页按 `docs/plans/2026-08-26-frontend-work-plan.md` 再接 Engine。
+
+---
+
+## 7. GatewaySlot（1.6）
+
+网关是引擎的**平级托管对象**，不是 services 成员：不参与 `depends_on` 拓扑、
+不进 profile overlay、不被服务启停连带。`Inner.gateway: Option<GatewaySlot>`
+——未配置/未启用的工作区为 `None`，热路径零开销。
+
+```
+GatewaySlot
+  state / pid / port / kind
+  job: Arc<dyn ProcessTree>   # 进程树终止、指标聚合、端口排除
+  cancel / started / health / last_exit / last_error / exit_reason
+```
+
+- 与 ServiceSlot 共享机制：状态机（`runtime::apply`）、日志泵（source=`gateway`，
+  GBK/UTF-8 解码 + ANSI 剥离复用）、TCP 健康（loopback 双栈探测自身端口，grace 3s）、
+  指标（进程树聚合）、`ports_inspect` 托管进程集合。
+- 启动链（`gateway_start` = `up`）：静态校验（`gateway::ensure_static`）→ 二进制探测
+  （`gateway.bin` → PATH → 已知位置）→ render 落盘 `.supertask/gateway/` → spawn 校验
+  命令（`nginx -t` / `caddy validate` / `httpd -t`，10s 超时，可注入 runner 供测试）
+  → spawn 网关进程（nginx `daemon off` 前台 / caddy `run` / httpd 平台 argv）。
+  任何一步失败不 spawn：错误码 `GATEWAY_*` 五枚。
+- render 是纯函数（IR → 字符串，golden 测试锁定），与引擎、平台解耦；平台差异只在
+  argv 与探测，不在配置内容（apache LoadModule 目录由 bin 位置注入）。
+- 生命周期：`stop_all` / `close` / `detach`（切工作区终止、不进 DETACHED 移交）/
+  CLI `down` / 引擎退出 / MCP 断连清场一律包含网关；`gateway.apply` = save_form 写
+  yaml（`YAML_CONFLICT` 时网关保持运行）→ 重新生成 → 运行中则 stop→start（非热重载）。
+- 路由 target 服务未运行不阻塞网关启动（转发目标不达是上游的事）；`up` 顺序为先
+  服务后网关。

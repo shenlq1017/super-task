@@ -41,6 +41,11 @@ import {
   type MetricsSnapshotOut,
   type ProfilesListOut,
   type ProfilesActivateOut,
+  type GatewayConf,
+  type GatewayStatusOut,
+  type GatewayPreviewOut,
+  type GatewayValidateOut,
+  type GatewayApplyOut,
 } from "./protocol";
 
 // ---------------------------------------------------------------------------
@@ -397,6 +402,38 @@ export const apiTaskfilePreview = (workspaceId: string) =>
 /** 应用所选任务；只增改所选 scripts.*，base_hash 冲突 → YAML_CONFLICT。 */
 export const apiTaskfileApply = (workspaceId: string, selected: string[], baseHash: string) =>
   invoke<YamlSaveOut>(cmd.IMPORT_TASKFILE_APPLY, { workspaceId, selected, baseHash });
+
+// ---------------------------------------------------------------------------
+// 网关（1.6，ipc.md §10.10）
+// ---------------------------------------------------------------------------
+
+export const apiGatewayStatus = (workspaceId: string) =>
+  invoke<GatewayStatusOut>(cmd.GATEWAY_STATUS, { workspaceId });
+
+/** 纯内存渲染草稿（gateway 缺省用当前 yaml）；不落盘不校验。 */
+export const apiGatewayPreview = (workspaceId: string, gateway?: GatewayConf | null) =>
+  invoke<GatewayPreviewOut>(cmd.GATEWAY_PREVIEW, { workspaceId, gateway: gateway ?? null });
+
+/** 静态校验 + 二进制探测 + spawn 本机校验；失败以 ok=false 返回（非 IPC 错误）。 */
+export const apiGatewayValidate = (workspaceId: string, gateway?: GatewayConf | null) =>
+  invoke<GatewayValidateOut>(cmd.GATEWAY_VALIDATE, { workspaceId, gateway: gateway ?? null });
+
+/** 写 yaml（base_hash 冲突 → YAML_CONFLICT）+ 重新生成 + 运行中则重启。 */
+export const apiGatewayApply = (workspaceId: string, gateway: GatewayConf, baseHash: string) =>
+  invoke<GatewayApplyOut>(cmd.GATEWAY_APPLY, { workspaceId, gateway, baseHash });
+
+export const apiGatewayStart = (workspaceId: string) =>
+  invoke<Accepted>(cmd.GATEWAY_START, { workspaceId });
+
+export const apiGatewayStop = (workspaceId: string) =>
+  invoke<Accepted>(cmd.GATEWAY_STOP, { workspaceId });
+
+export const apiGatewayRestart = (workspaceId: string) =>
+  invoke<Accepted>(cmd.GATEWAY_RESTART, { workspaceId });
+
+/** 仅 kind: caddy；UI 必须先弹风险确认（修改系统信任库）。 */
+export const apiGatewayTrust = (workspaceId: string) =>
+  invoke<Accepted>(cmd.GATEWAY_TRUST, { workspaceId });
 
 // ---------------------------------------------------------------------------
 // 应用数据 / 更新（1.1，ipc.md §10.5–10.6）
