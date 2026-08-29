@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, Eye, FolderSearch, LayoutTemplate, Loader2 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { ArrowLeft } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -46,21 +47,64 @@ function closeBlockDeps(blocks: TemplateBlockSummary[], ids: string[]): string[]
   return chosen;
 }
 
+/** 组合向导步骤条：当前步高亮，已完成的步打勾。 */
+function Stepper({ steps, current }: { steps: string[]; current: number }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {steps.map((label, i) => {
+        const n = i + 1;
+        const done = n < current;
+        const cur = n === current;
+        return (
+          <div key={label} className="flex items-center gap-2">
+            <span
+              className={cn(
+                "grid size-5 place-items-center rounded-full text-[10px] font-bold",
+                cur
+                  ? "bg-[var(--st-accent,#5e6ad2)] text-white"
+                  : done
+                    ? "bg-[var(--st-ok,#27a644)] text-white"
+                    : "border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] text-[var(--t3,#8a8f98)]",
+              )}
+            >
+              {done ? "✓" : n}
+            </span>
+            <span className={cn("text-[0.75rem]", cur ? "font-semibold text-[var(--t1,#222326)]" : "text-[var(--t3,#8a8f98)]")}>
+              {label}
+            </span>
+            {i < steps.length - 1 ? <span className="h-px w-6 bg-[var(--line-strong,#d0d6e0)]" /> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function joinPath(parent: string, name: string): string {
   const p = parent.trim().replace(/[\\/]+$/, "");
   const sep = p.includes("\\") ? "\\" : "/";
   return p ? `${p}${sep}${name}` : name;
 }
 
-/** 长操作进度卡片：state 本地化 + message + 有 progress 才显示进度条。 */
-function TemplateOperationCard({ op, targetDir }: { op: OperationState; targetDir: string }) {
+/** 长操作进度卡片：state 本地化 + message + 有 progress 才显示进度条；成功态给「打开工作区」兜底。 */
+function TemplateOperationCard({
+  op,
+  targetDir,
+  workspaceId,
+  onOpenWorkspace,
+}: {
+  op: OperationState;
+  targetDir: string;
+  workspaceId: string | null;
+  onOpenWorkspace: () => void;
+}) {
   const { t } = useTranslation();
   return (
     <Card
       className={cn(
         "p-4",
         op.state === "failed" && "border-red-200 bg-[var(--st-danger-tint,#fdecec)]",
-        op.state === "succeeded" && "border-[rgb(39_166_68_/_0.35)]",
+        op.state === "succeeded" && "border-[rgb(39_166_68_/_0.35)] bg-[var(--ok-tint,#e9f7ed)]",
       )}
       role="status"
     >
@@ -74,9 +118,11 @@ function TemplateOperationCard({ op, targetDir }: { op: OperationState; targetDi
         <Badge variant={op.state === "failed" ? "destructive" : "soon"} className="shrink-0">
           {t(`pages.git.op_${op.state}`)}
         </Badge>
-        <span className="truncate font-mono text-[0.62rem] text-[var(--t3,#8a8f98)]" title={op.operation_id}>
-          {op.operation_id}
-        </span>
+        {op.operation_id ? (
+          <span className="truncate font-mono text-[0.62rem] text-[var(--t3,#8a8f98)]" title={op.operation_id}>
+            {op.operation_id}
+          </span>
+        ) : null}
       </div>
       {op.message ? (
         <div className="mt-1.5 text-[0.78rem] text-[var(--t2,#62666d)]">{op.message}</div>
@@ -93,6 +139,16 @@ function TemplateOperationCard({ op, targetDir }: { op: OperationState; targetDi
         <div className="mt-2 text-[0.78rem] leading-relaxed text-[#DC2626]">
           {opErrorLabel(op.error_code)}
           {targetDir ? <span className="block text-[var(--t2,#62666d)]">{t("pages.git.target", { path: targetDir })}</span> : null}
+        </div>
+      ) : null}
+      {op.state === "succeeded" && workspaceId ? (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span className="truncate font-mono text-[0.7rem] text-[var(--t2,#62666d)]" title={workspaceId}>
+            {workspaceId}
+          </span>
+          <Button variant="success" size="sm" className="shrink-0" onClick={onOpenWorkspace}>
+            {t("pages.templates.openWs")}
+          </Button>
         </div>
       ) : null}
     </Card>
@@ -147,10 +203,12 @@ function TemplateCard({
   template,
   selected,
   onSelect,
+  onCompose,
 }: {
   template: TemplateSummary;
   selected: boolean;
   onSelect: () => void;
+  onCompose: () => void;
 }) {
   const { t } = useTranslation();
   const [filesOpen, setFilesOpen] = useState(false);
@@ -211,18 +269,33 @@ function TemplateCard({
         ))}
       </div>
       <Separator className="my-3" />
-      <button
-        type="button"
-        aria-expanded={filesOpen}
-        onClick={(e) => {
-          e.stopPropagation();
-          setFilesOpen((v) => !v);
-        }}
-        className="flex items-center gap-1 rounded-[var(--r-sm,8px)] text-[0.75rem] font-medium text-[var(--t2,#62666d)] outline-none transition-colors hover:text-[var(--t1,#222326)] focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]"
-      >
-        {filesOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-        {t("pages.templates.filesOverview", { n: template.files.length })}
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          aria-expanded={filesOpen}
+          onClick={(e) => {
+            e.stopPropagation();
+            setFilesOpen((v) => !v);
+          }}
+          className="flex items-center gap-1 rounded-[var(--r-sm,8px)] text-[0.75rem] font-medium text-[var(--t2,#62666d)] outline-none transition-colors hover:text-[var(--t1,#222326)] focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]"
+        >
+          {filesOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          {t("pages.templates.filesOverview", { n: template.files.length })}
+        </button>
+        {template.blocks?.length ? (
+          <Button
+            variant="soft"
+            size="sm"
+            className="gap-1"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCompose();
+            }}
+          >
+            {t("pages.templates.comboCta")} <ChevronRight className="size-3.5" />
+          </Button>
+        ) : null}
+      </div>
       {filesOpen ? (
         <ul className="mt-2 max-h-40 space-y-0.5 overflow-auto font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]">
           {template.files.map((f) => (
@@ -256,9 +329,53 @@ export function TemplatesPage() {
   const [preview, setPreview] = useState<TemplatesPreviewOut | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // 组合向导：组合模板走独立向导视图（步骤条），普通模板用快速创建表单
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const WIZARD_STEPS = [t("pages.templates.stepBlocks"), t("pages.templates.stepBasic"), t("pages.templates.stepPreview")];
+
+  const openWizard = (id: string) => {
+    setSelectedId(id);
+    setWizardOpen(true);
+    setStep(1);
+  };
+  const closeWizard = () => {
+    setWizardOpen(false);
+    setStep(1);
+    setPreview(null);
+  };
 
   const [activeOpId, setActiveOpId] = useState<string | null>(null);
   const op = activeOpId ? get(activeOpId) : null;
+  // 定时器回调里读最新 op，避免「事件已到、兜底又被打开」的竞态
+  const opRef = useRef(op);
+  opRef.current = op;
+  // 乐观反馈：点击创建立即出进度卡，不等异步事件；目标路径前端可知，作打开兜底
+  const [pendingCreate, setPendingCreate] = useState(false);
+  const [submittedTarget, setSubmittedTarget] = useState<string | null>(null);
+  const [showFallback, setShowFallback] = useState(false);
+
+  useEffect(() => {
+    if (op) {
+      setPendingCreate(false);
+      setShowFallback(false);
+    }
+  }, [op]);
+
+  const displayOp: OperationState | null =
+    op ??
+    (pendingCreate
+      ? {
+          operation_id: "",
+          kind: "templates.create",
+          state: "queued",
+          progress: null,
+          message: t("pages.templates.pendingQueued"),
+          error_code: null,
+          result: null,
+        }
+      : null);
+  const wsIdForCard = op ? operationResultWorkspaceId(op) : null;
 
   // 终态只处理一次；失败态保留在卡片上供用户阅读
   const handledOpRef = useRef<string | null>(null);
@@ -319,6 +436,8 @@ export function TemplatesPage() {
 
   const visibleTemplates = templates?.filter((tpl) => tpl.source === sourceFilter) ?? [];
   const selected = templates?.find((tpl) => tpl.id === selectedId) ?? null;
+  const wizardActive = wizardOpen && !!selected?.blocks?.length;
+  const activeBlocks = selected?.blocks ?? [];
   const opRunning = !!op && (op.state === "queued" || op.state === "running");
   const targetDir = selected && dirName.trim() ? joinPath(parentPath, dirName.trim()) : "";
 
@@ -335,6 +454,8 @@ export function TemplatesPage() {
       return;
     }
     setSubmitting(true);
+    setPendingCreate(true);
+    setShowFallback(false);
     try {
       const args: TemplatesCreateArgs = {
         templateId: selected.id,
@@ -350,7 +471,14 @@ export function TemplatesPage() {
       const { operation_id } = await apiTemplatesCreate(args);
       handledOpRef.current = null;
       setActiveOpId(operation_id);
+      // 事件链路兜底：4s 仍无任何进度事件时提示可直接打开目标目录（路径前端已知）
+      setSubmittedTarget(joinPath(parentPath.trim(), dirName.trim()));
+      window.setTimeout(() => {
+        if (!opRef.current) setShowFallback(true);
+      }, 4000);
     } catch (e) {
+      setPendingCreate(false);
+      setSubmittedTarget(null);
       // 同步校验失败（PathEscape / TARGET_NOT_EMPTY 等）：IpcFailure.message 已是中文
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     } finally {
@@ -420,6 +548,36 @@ export function TemplatesPage() {
     }
   };
 
+  /** 向导分步推进：每步做该步的校验，不通过留在当前步。 */
+  const goNext = () => {
+    if (!selected) return;
+    if (step === 1) {
+      if (selectedBlocks.length === 0) {
+        toast(t("pages.templates.needBlock"), "warn");
+        return;
+      }
+      setStep(2);
+      return;
+    }
+    if (step === 2) {
+      const invalid = validateDirectoryName(dirName);
+      setDirNameError(invalid);
+      if (invalid || !parentPath.trim()) {
+        toast(t("pages.templates.parentRequired"), "warn");
+        return;
+      }
+      if (portConflict || portInvalid) {
+        toast(t("pages.templates.portProblem"), "warn");
+        return;
+      }
+      if (selected.params?.some((p) => p.required && !paramValues[p.key]?.trim())) {
+        toast(t("pages.templates.paramRequired"), "warn");
+        return;
+      }
+      setStep(3);
+    }
+  };
+
   const loading = templates === null && !loadError;
 
   return (
@@ -449,8 +607,8 @@ export function TemplatesPage() {
             </Card>
           ) : null}
 
-          {/* 来源分段 + 模板卡片 */}
-          {templates && templates.length > 0 ? (
+          {/* 来源分段 + 模板卡片（向导打开时隐藏，聚焦向导） */}
+          {!wizardActive && templates && templates.length > 0 ? (
             <>
               <SourceSegmented
                 value={sourceFilter}
@@ -469,6 +627,7 @@ export function TemplatesPage() {
                       template={tpl}
                       selected={tpl.id === selectedId}
                       onSelect={() => setSelectedId(tpl.id)}
+                      onCompose={() => openWizard(tpl.id)}
                     />
                   ))}
                 </div>
@@ -482,8 +641,232 @@ export function TemplatesPage() {
             </>
           ) : null}
 
-          {/* 创建表单 */}
-          {selected ? (
+          {/* 组合向导（blocks 模板）：① 选择服务块 → ② 目录与端口 → ③ 预览并创建 */}
+          {wizardActive && selected ? (
+            <Card className="p-4">
+              <div className="flex items-center justify-between gap-2">
+                <Button variant="ghost" size="sm" className="gap-1" onClick={closeWizard}>
+                  <ArrowLeft className="size-3.5" /> {t("pages.templates.wizardBack")}
+                </Button>
+                <Badge variant="secondary" className="shrink-0">
+                  {selected.source === "builtin" ? t("pages.templates.builtinShort") : t("pages.templates.srcLocal")}
+                </Badge>
+              </div>
+              <div className="mt-1">
+                <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{selected.name}</div>
+                <div className="mt-0.5 text-[0.78rem] leading-relaxed text-[var(--t2,#62666d)]">{selected.description}</div>
+              </div>
+              <Separator className="my-3" />
+              <Stepper steps={WIZARD_STEPS} current={step} />
+
+              {step === 1 ? (
+                <div className="mt-4">
+                  <div className="text-[0.78rem] font-semibold text-[var(--t1,#222326)]">
+                    {t("pages.templates.blocksTitle")}
+                    <span className="ml-2 font-normal text-[var(--t3,#8a8f98)]">{t("pages.templates.blocksHint")}</span>
+                  </div>
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    {activeBlocks.map((b) => {
+                      const checked = selectedBlocks.includes(b.id);
+                      const lockedBy = selectedBlocks
+                        .filter((other) => other !== b.id && selected.blocks!.find((x) => x.id === other)?.requires.includes(b.id))
+                        .map((d) => selected.blocks!.find((x) => x.id === d)?.label ?? d);
+                      return (
+                        <label
+                          key={b.id}
+                          className={cn(
+                            "flex cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] px-2.5 py-1.5 transition-colors duration-150",
+                            checked ? "bg-[var(--st-accent-tint,#eef0fb)]" : "bg-[var(--surface,#fff)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                            lockedBy.length > 0 && "cursor-not-allowed opacity-60",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={lockedBy.length > 0}
+                            onChange={() => toggleBlock(b.id)}
+                            className="accent-[var(--st-accent,#5e6ad2)]"
+                          />
+                          <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">{b.label}</span>
+                          <Badge variant="outline" className="text-[10px]">{b.kind}</Badge>
+                          {b.requires.length ? (
+                            <span className="text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.dependsOn", { deps: b.requires.join(", ") })}</span>
+                          ) : null}
+                          {lockedBy.length > 0 ? (
+                            <span className="ml-auto text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.lockedBy", { names: lockedBy.join("、") })}</span>
+                          ) : null}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              {step === 2 ? (
+                <div className="mt-4">
+                  {selected.params?.length ? (
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      {selected.params.map((p) => (
+                        <label key={p.key} className="flex flex-col gap-1">
+                          <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">
+                            {p.label || p.key}
+                            {p.required ? <span className="ml-0.5 text-[#DC2626]">*</span> : null}
+                          </span>
+                          <Input
+                            value={paramValues[p.key] ?? ""}
+                            onChange={(e) => {
+                              setParamValues((cur) => ({ ...cur, [p.key]: e.target.value }));
+                              setPreview(null);
+                            }}
+                            placeholder={p.key === "project_name" ? t("pages.templates.projectNamePlaceholder") : p.key}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.parentDir")}</span>
+                      <Input
+                        value={parentPath}
+                        onChange={(e) => setParentPath(e.target.value)}
+                        placeholder={t("pages.templates.parentDirPlaceholder")}
+                      />
+                    </label>
+                    <div className="flex items-end">
+                      <Button variant="outline" size="default" className="gap-1" onClick={() => void pickParentDirectory()}>
+                        <FolderSearch /> {t("pages.git.pickDir")}
+                      </Button>
+                    </div>
+                  </div>
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.dirName")}</span>
+                    <Input
+                      value={dirName}
+                      onChange={(e) => {
+                        setDirName(e.target.value);
+                        if (dirNameError) setDirNameError(validateDirectoryName(e.target.value));
+                      }}
+                      aria-invalid={!!dirNameError}
+                      placeholder={t("pages.templates.dirNameExample")}
+                    />
+                  </label>
+                  {dirNameError ? (
+                    <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                      {t(dirNameError)}
+                    </div>
+                  ) : null}
+                  {wizardServices.length > 0 ? (
+                    <div className="mt-3">
+                      <div className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.portAssign")}</div>
+                      <div className="mt-1.5 flex flex-wrap gap-3">
+                        {wizardServices.map(({ svcId, port }) => (
+                          <label key={svcId} className="flex items-center gap-1.5 text-[0.74rem] text-[var(--t1,#222326)]">
+                            <span className="font-mono text-[var(--t2,#62666d)]">{svcId}</span>
+                            <Input
+                              type="number"
+                              value={Number.isNaN(port) ? "" : port}
+                              onChange={(e) => changePort(svcId, e.target.value)}
+                              className="h-8 w-24 font-mono"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                      {portConflict ? (
+                        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                          {t("pages.templates.portConflict", { port: portConflict.port, a: portConflict.a, b: portConflict.b })}
+                        </div>
+                      ) : portInvalid ? (
+                        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                          {t("pages.templates.portInvalid")}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {step === 3 ? (
+                <div className="mt-4">
+                  <div className="flex items-center gap-2">
+                    <Button variant="soft" size="sm" className="gap-1" disabled={previewing || !!portConflict || portInvalid || wizardServices.length === 0} onClick={() => void runPreview()}>
+                      {previewing ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
+                      {previewing ? t("pages.templates.generating") : t("pages.templates.generatePreview")}
+                    </Button>
+                    {preview ? (
+                      <span className="text-[0.72rem] text-[var(--st-ok-deep,#1e7e35)]">
+                        {t("pages.templates.previewOk", { services: Object.keys(preview.services).length, files: preview.files.length })}
+                      </span>
+                    ) : (
+                      <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.previewNeeded")}</span>
+                    )}
+                  </div>
+                  {preview ? (
+                    <div className="mt-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-2.5">
+                      <table className="w-full text-left font-mono text-[0.7rem] text-[var(--t1,#222326)]">
+                        <thead>
+                          <tr className="text-[var(--t3,#8a8f98)]">
+                            <th className="py-0.5 pr-3 font-semibold">{t("pages.templates.colService")}</th>
+                            <th className="py-0.5 pr-3 font-semibold">kind</th>
+                            <th className="py-0.5 font-semibold">port</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(preview.services).map(([id, svc]) => (
+                            <tr key={id}>
+                              <td className="py-0.5 pr-3">{id}</td>
+                              <td className="py-0.5 pr-3">{String(svc.kind ?? "—")}</td>
+                              <td className="py-0.5">{String(svc.port ?? "—")}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {preview.warnings.map((w) => (
+                        <div key={w} className="mt-1 text-[0.72rem] text-[var(--st-warn-dot,#eab308)]">{w}</div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--line,#e6e6e6)] pt-3">
+                <span className="truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={targetDir}>
+                  {targetDir ? t("pages.git.target", { path: targetDir }) : ""}
+                </span>
+                <div className="flex shrink-0 items-center gap-2">
+                  {step > 1 ? (
+                    <Button variant="outline" size="sm" onClick={() => setStep((s) => (s - 1) as 1 | 2)}>
+                      {t("pages.templates.wPrev")}
+                    </Button>
+                  ) : null}
+                  {step < 3 ? (
+                    <Button size="sm" onClick={goNext}>
+                      {t("pages.templates.wNext")}
+                    </Button>
+                  ) : (
+                    <>
+                      <Button variant="soft" size="sm" className="gap-1" disabled={previewing || !!portConflict || portInvalid || wizardServices.length === 0} onClick={() => void runPreview()}>
+                        {previewing ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
+                        {previewing ? t("pages.templates.generating") : t("pages.templates.generatePreview")}
+                      </Button>
+                      <Button size="sm" disabled={!preview || submitting || opRunning} onClick={() => void submit()}>
+                        {submitting ? (
+                          <>
+                            <Loader2 className="size-3.5 animate-spin" /> {t("pages.templates.creating")}
+                          </>
+                        ) : (
+                          t("pages.templates.createWs")
+                        )}
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </Card>
+          ) : null}
+
+          {/* 快速创建表单（非组合模板） */}
+          {selected && !wizardActive ? (
             <Card className="p-4">
               <div className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{t("pages.templates.createHeading")}</div>
               <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
@@ -539,114 +922,6 @@ export function TemplatesPage() {
                   ))}
                 </div>
               ) : null}
-              {/* 组合向导（blocks 模板）：勾块 → 端口 → 预览 → 创建 */}
-              {selected.blocks?.length ? (
-                <div className="mt-4 rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
-                  <div className="text-[0.78rem] font-semibold text-[var(--t1,#222326)]">
-                    {t("pages.templates.blocksTitle")}
-                    <span className="ml-2 font-normal text-[var(--t3,#8a8f98)]">{t("pages.templates.blocksHint")}</span>
-                  </div>
-                  <div className="mt-2 flex flex-col gap-1.5">
-                    {selected.blocks.map((b) => {
-                      const checked = selectedBlocks.includes(b.id);
-                      const lockedBy = selectedBlocks
-                        .filter((other) => other !== b.id && selected.blocks!.find((x) => x.id === other)?.requires.includes(b.id))
-                        .map((d) => selected.blocks!.find((x) => x.id === d)?.label ?? d);
-                      return (
-                        <label
-                          key={b.id}
-                          className={cn(
-                            "flex cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] px-2.5 py-1.5 transition-colors duration-150",
-                            checked ? "bg-[var(--st-accent-tint,#eef0fb)]" : "bg-[var(--surface,#fff)] hover:bg-[var(--surface-2,#f3f4f5)]",
-                            lockedBy.length > 0 && "cursor-not-allowed opacity-60",
-                          )}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={lockedBy.length > 0}
-                            onChange={() => toggleBlock(b.id)}
-                            className="accent-[var(--st-accent,#5e6ad2)]"
-                          />
-                          <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">{b.label}</span>
-                          <Badge variant="outline" className="text-[10px]">{b.kind}</Badge>
-                          {b.requires.length ? (
-                            <span className="text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.dependsOn", { deps: b.requires.join(", ") })}</span>
-                          ) : null}
-                          {lockedBy.length > 0 ? (
-                            <span className="ml-auto text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.lockedBy", { names: lockedBy.join("、") })}</span>
-                          ) : null}
-                        </label>
-                      );
-                    })}
-                  </div>
-                  {wizardServices.length > 0 ? (
-                    <div className="mt-3">
-                      <div className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.portAssign")}</div>
-                      <div className="mt-1.5 flex flex-wrap gap-3">
-                        {wizardServices.map(({ svcId, port }) => (
-                          <label key={svcId} className="flex items-center gap-1.5 text-[0.74rem] text-[var(--t1,#222326)]">
-                            <span className="font-mono text-[var(--t2,#62666d)]">{svcId}</span>
-                            <Input
-                              type="number"
-                              value={Number.isNaN(port) ? "" : port}
-                              onChange={(e) => changePort(svcId, e.target.value)}
-                              className="h-8 w-24 font-mono"
-                            />
-                          </label>
-                        ))}
-                      </div>
-                      {portConflict ? (
-                        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
-                          {t("pages.templates.portConflict", { port: portConflict.port, a: portConflict.a, b: portConflict.b })}
-                        </div>
-                      ) : portInvalid ? (
-                        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
-                          {t("pages.templates.portInvalid")}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  <div className="mt-3 flex items-center gap-2">
-                    <Button variant="soft" size="sm" className="gap-1" disabled={previewing || !!portConflict || portInvalid || wizardServices.length === 0} onClick={() => void runPreview()}>
-                      {previewing ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
-                      {previewing ? t("pages.templates.generating") : t("pages.templates.generatePreview")}
-                    </Button>
-                    {preview ? (
-                      <span className="text-[0.72rem] text-[var(--st-ok-deep,#1e7e35)]">
-                        {t("pages.templates.previewOk", { services: Object.keys(preview.services).length, files: preview.files.length })}
-                      </span>
-                    ) : (
-                      <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.previewNeeded")}</span>
-                    )}
-                  </div>
-                  {preview ? (
-                    <div className="mt-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-2.5">
-                      <table className="w-full text-left font-mono text-[0.7rem] text-[var(--t1,#222326)]">
-                        <thead>
-                          <tr className="text-[var(--t3,#8a8f98)]">
-                            <th className="py-0.5 pr-3 font-semibold">{t("pages.templates.colService")}</th>
-                            <th className="py-0.5 pr-3 font-semibold">kind</th>
-                            <th className="py-0.5 font-semibold">port</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {Object.entries(preview.services).map(([id, svc]) => (
-                            <tr key={id}>
-                              <td className="py-0.5 pr-3">{id}</td>
-                              <td className="py-0.5 pr-3">{String(svc.kind ?? "—")}</td>
-                              <td className="py-0.5">{String(svc.port ?? "—")}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {preview.warnings.map((w) => (
-                        <div key={w} className="mt-1 text-[0.72rem] text-[var(--st-warn-dot,#eab308)]">{w}</div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
               <div className="mt-4 flex items-center justify-between gap-3">
                 <span className="truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={targetDir}>
                   {targetDir ? t("pages.git.target", { path: targetDir }) : ""}
@@ -655,14 +930,31 @@ export function TemplatesPage() {
                   onClick={() => void submit()}
                   disabled={submitting || opRunning || !dirName.trim() || !parentPath.trim()}
                 >
-                  {t("pages.templates.createWs")}
+                  {submitting ? (
+                    <>
+                      <Loader2 className="size-3.5 animate-spin" /> {t("pages.templates.creating")}
+                    </>
+                  ) : (
+                    t("pages.templates.createWs")
+                  )}
                 </Button>
               </div>
             </Card>
           ) : null}
 
-          {/* 长操作进度 / 结果 */}
-          {op ? <TemplateOperationCard op={op} targetDir={targetDir} /> : null}
+          {/* 长操作进度 / 结果（乐观卡 + 事件驱动卡共用组件） */}
+          {displayOp ? (
+            <TemplateOperationCard op={displayOp} targetDir={targetDir} workspaceId={wsIdForCard} onOpenWorkspace={() => wsIdForCard && void openWs(wsIdForCard)} />
+          ) : null}
+          {/* 事件链路兜底：提交成功但迟迟无进度事件时，目标目录可直接打开 */}
+          {showFallback && submittedTarget && (!op || (op.state !== "succeeded" && op.state !== "failed")) ? (
+            <Card className="border-[var(--line-strong,#d0d6e0)] p-3 text-[0.76rem] text-[var(--t2,#62666d)]">
+              {t("pages.templates.noEventHint")}
+              <Button variant="outline" size="sm" className="ml-2" onClick={() => void openWs(submittedTarget)}>
+                {t("pages.templates.openTarget")}
+              </Button>
+            </Card>
+          ) : null}
         </div>
       </div>
     </div>
