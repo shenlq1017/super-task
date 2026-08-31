@@ -205,7 +205,7 @@ pub fn scan_draft_with_runner(
 }
 
 impl ServiceSpec {
-    fn default_service() -> Self {
+    pub(crate) fn default_service() -> Self {
         Self {
             kind: String::new(),
             service: None,
@@ -525,7 +525,7 @@ fn first_artifact_id(pom: &str) -> Option<String> {
     Some(rest[..j].trim().to_string())
 }
 
-fn sanitize_id(raw: &str) -> String {
+pub(crate) fn sanitize_id(raw: &str) -> String {
     let mut s: String = raw
         .chars()
         .map(|c| {
@@ -545,7 +545,7 @@ fn sanitize_id(raw: &str) -> String {
     s
 }
 
-fn unique_id(base: &str, existing: &IndexMap<String, ServiceSpec>) -> String {
+pub(crate) fn unique_id(base: &str, existing: &IndexMap<String, ServiceSpec>) -> String {
     if !existing.contains_key(base) {
         return base.into();
     }
@@ -1753,6 +1753,7 @@ includedBuild 'other-repo'
                 id: "api".into(),
                 action: crate::merge::MergeAction::Update,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -1843,7 +1844,7 @@ includedBuild 'other-repo'
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("cmd/server")).unwrap();
         fs::write(root.join("go.mod"), "module x\n\ngo 1.23\n").unwrap();
-        let (file, warnings) = scan_draft(&root).unwrap();
+        let (file, _warnings) = scan_draft(&root).unwrap();
         let (_, svc) = file.services.iter().find(|(_, s)| s.kind == "go").unwrap();
         assert_eq!(svc.package.as_deref(), Some("./cmd/server"));
         assert_eq!(svc.port, Some(8080));

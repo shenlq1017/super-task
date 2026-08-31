@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { useLogs, filterLogs } from "@/providers/logs-provider";
 import type { LogLine, LogSource } from "@/ipc/protocol";
 import {
+  readLogFollowPref,
   readLogLineLimitPref,
   readLogShowTimePref,
   readLogWrapPref,
@@ -278,6 +279,7 @@ function LogToolbar({
   downloading,
   textFilter,
   matchCount,
+  extraActions,
   onLineLimitChange,
   onWrapToggle,
   onShowTimeToggle,
@@ -302,6 +304,8 @@ function LogToolbar({
   downloading: boolean;
   textFilter: string;
   matchCount: number;
+  /** 2.1 §7：可选动作槽位（AI 解释等），固定在右侧操作区首位，不插入既有按钮中间。 */
+  extraActions?: ReactNode;
   onLineLimitChange: (n: number) => void;
   onWrapToggle: () => void;
   onShowTimeToggle: () => void;
@@ -348,6 +352,7 @@ function LogToolbar({
 
   const actionControls = (
     <>
+      {extraActions}
       <ToolBtn
         icon={<Copy className="size-3.5" />}
         title={t("logs.copySelectedHint")}
@@ -484,15 +489,18 @@ export function LogView({
   source,
   className,
   height = "100%",
+  extraActions,
 }: {
   source: LogSource | null;
   className?: string;
   height?: string;
+  /** 可选动作槽位（2.1 §7）：渲染 prop，入参是当前视图行（已筛选/截断），供 AI 解释等使用。 */
+  extraActions?: (ctx: { lines: LogLine[] }) => ReactNode;
 }) {
   const { t } = useTranslation();
   const { state, actions } = useLogs();
   const { toast } = useToast();
-  const [follow, setFollow] = useState(true);
+  const [follow, setFollow] = useState(() => readLogFollowPref());
   const [wrap, setWrap] = useState(() => readLogWrapPref());
   const [showTime, setShowTime] = useState(() => readLogShowTimePref());
   const [errorsOnly, setErrorsOnly] = useState(false);
@@ -633,6 +641,7 @@ export function LogView({
     downloading,
     textFilter,
     matchCount: streamFiltered.length,
+    extraActions: extraActions?.({ lines }),
     onTextFilterChange: setTextFilter,
     onLineLimitChange: (n: number) => {
       const v = clampLimit(n);

@@ -16,6 +16,9 @@ async fn test_app() -> axum::Router {
         seed_password: None,
         entities_max: 10,
         bytes_max: 100_000,
+        admin_email: None,
+        admin_password: None,
+        console_dir: "does-not-exist/dist".into(),
     };
     let state = AppState::connect(config).await.unwrap();
     auth::seed_account(&state.pool, "test@example.invalid", "test-password")

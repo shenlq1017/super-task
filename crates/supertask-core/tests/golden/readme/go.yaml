@@ -1,0 +1,15 @@
+version: 1
+kind: workspace
+name: go
+root: .
+env: {}
+services:
+  server:
+    kind: go
+    enabled: true
+    env: {}
+    depends_on: []
+    grace_secs: 60
+    dir: .
+    package: ./cmd/server
+scripts: {}

@@ -7,6 +7,7 @@ import { LogsProvider } from "../providers/logs-provider";
 import { YamlProvider } from "../providers/yaml-provider";
 import { ToastProvider } from "../components/ui/toast";
 import { TooltipProvider } from "../components/ui/tooltip";
+import { AiExplainProvider } from "../providers/ai-explain-provider";
 import { migrateLocalRecents } from "../lib/migrate-recents";
 import { CrashNotifier } from "../components/crash-notifier";
 import { AppRoutes } from "./routes";
@@ -52,9 +53,11 @@ export function App() {
   return (
     <SessionProvider>
       <ToastProvider>
-        <TooltipProvider delayDuration={1000}>
-          <Gate />
-        </TooltipProvider>
+        <AiExplainProvider>
+          <TooltipProvider delayDuration={1000}>
+            <Gate />
+          </TooltipProvider>
+        </AiExplainProvider>
       </ToastProvider>
     </SessionProvider>
   );

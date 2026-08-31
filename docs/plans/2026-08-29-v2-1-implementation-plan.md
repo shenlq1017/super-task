@@ -80,3 +80,103 @@
 - 零新 crate（ureq 由 v2.0 引入；若 2.1 先行则本期引入并在本表记档）。
 - 复用：secrets 后端（`supertask.ai`）、appdata、scan 草稿结构与 merge 向导、FakeRunner 注入模式（AiClient/FakeAiClient）、日志解码策略、log-view 共用组件（slot 扩展）。
 - 与 1.5 复用核查惯例一致，结论实现期回填本文件。
+
+---
+
+## 执行记录（2026-08-29，AI 块先行落地）
+
+范围：用户拍板「AI 及其前后端对接先行，其余暂缓」。Phase 1（README 导入器）、任务 4.2
+（discover 入口）、命令面板三项、Phase 6 真机验收**暂缓**；`import.readme` 命令与
+`README_NOT_FOUND` 错误码随 Phase 1 补。
+
+已落地：
+
+- **Phase 2 core AI 模块**：`crates/supertask-core/src/ai/`（mod/client/prompt/sanitize）。
+  key 走应用级 secrets 文件（`%APPDATA%/SuperTask/secrets.env`，逻辑 id `supertask.ai`，
+  dotenv 子集复用 1.2 基建；永不入云/不回显）。sanitize（secret 值精确替换 + 敏感行整行
+  `<redacted>`）、三场景 prompt builder（尾部 200 行/32KiB 截断）、预算（字符÷4，
+  context_window 收口）→ `AI_CONTEXT_TOO_LARGE`、按日用量计数（appdata `aiUsage`）。
+- **截图对齐升级**（用户对照 dbx 验收后要求补齐）：命名多配置（`aiConfigs` + 默认配置，
+  旧单配置 `ai` 字段只读迁移）、8 种 API provider 预设（openai-compatible/claude/deepseek/
+  qwen/minimax/gemini/ollama/custom；**无 CLI provider**）、api_style 双风格（OpenAI 兼容
+  chat/completions + Anthropic Messages）、auth_method（api-key/bearer）、代理（裸 host:port
+  补 http、loopback 绕过）、上下文窗口、模型发现（`GET /models`）、全局自定义指令
+  （≤8000）与场景 Prompt 模板（name 50/content 8000/启用总量 16000，Unicode 计数）。
+- **Phase 3 壳层**：`src-tauri/src/ai.rs` + 九命令（`ai.status/complete/config.save/
+  config.delete/config.default/instructions.save/template.save/template.delete/models`）；
+  features ai → Live(2.1)，SOON_COMMANDS 清空（机制保留）。
+- **Phase 4 前端**：`/ai` 页（配置列表 + 编辑表单 + 全局指令 + 模板 + 用量 + 隐私 + MCP 说明）、
+  log-view `extraActions` 渲染 prop 槽位 + 共享 `AiExplainButton`（run/logs 零分叉）、
+  config RawTab「AI 建议」卡（建议 yaml 围栏提取 + 整段填入编辑器不保存）、mock 确定性
+  回文 AI、四语 parity 1035 keys。
+- **Phase 5 文档**：ipc.md §10.13（九命令 + 约束）、architecture.md §8（AI 模块）、
+  AGENTS.md 当前阶段、inventory inv-1/inv-3 回改。
+- 测试基线：core 408 单测全绿（AI 新增 ~38）；`cargo check -p supertask` 通过；
+  `npm run build` 通过；parity 1035×4 全齐。CLI 无新命令（本期无）。
+
+**偏差备案（相对 feature spec v2026-08-29）**：
+
+1. §4.3「无自动重试」→ 仅临时错误（429/500/502/503/504/超时/网络）线性退避重试
+   ≤`max_retries`（0–10，默认 2，dbx 对齐）；一次业务调用成功只计 1 次用量，失败不计。
+2. §5 IPC 契约从 4 命令扩为 9 命令（多配置/模板/全局指令/模型发现），`ai.configure`
+   被 `ai.config.*` 族替代；§4.1 单配置 `{base_url,model,timeout_secs,max_tokens}` 升级为
+   命名多配置（新增 provider/api_style/auth_method/proxy/context_window/max_retries 字段）。
+3. §4.1「AiClient trait」落地为 `AiHttp` trait（含 GET 供模型发现），命名沿 cloud
+   `HttpExecutor` 先例。
+4. dbx 截图中的 CLI provider、Agent 回合上限、Ask/Agent 默认模式**明确不做**
+   （v2.1 非目标：不重复 MCP/agent；IDE 场景由 1.5 `supertask mcp` 覆盖）。
+5. 命令面板三条入口（spec §7）随 discover 入口一并暂缓（本轮未做）。
+6. 连接测试 = 最小 explain_logs 请求，计入当日用量（spec §7「发一次最小请求」的实现口径）。
+
+## 执行记录（2026-08-29，第二轮：README 导入器 + discover 入口 + 命令面板）
+
+范围：Phase 1 全部任务 + Phase 3 增量（`import.readme` 族）+ 任务 4.2（discover 入口）
++ 命令面板三入口 + Phase 5 文档闭环。至此 v2.1 自动化范围全部落地，仅剩 Phase 6.2 真机验收。
+
+已落地：
+
+- **Phase 1 core 导入器**：`crates/supertask-core/src/importer/`（mod + readme）。README 发现
+  （大小写不敏感 `.md`/`.markdown`，`.md` 优先）、解码（UTF-8 → GBK 兜底，沿 engine 解码策略）、
+  fenced + 行内命令抽取（提示符剥离/续行拼接/链拆/VAR= 前缀剥离）、规则表分类（service/script/
+  忽略 + 中英章节加权 + 行内 code 置信度上限 medium + 归一化 argv 去重）、`export PORT=` 只进
+  端口提示、噪声计数。与 scan 融合：scan 事实优先，README 补全缺失字段，冲突 scan 保留 +
+  README 值进建议列。
+- **merge.rs 扩展**：`FieldMeta`/`FieldMetas`（字段来源 scan/readme + confidence + 冲突
+  readme_value）、`ScriptMergeItem` + `preview_with_sources()`（脚本合并项；普通 scan 预览
+  序列化不变）、`MergeChoice.target: service|script`（缺省 service，1.1 契约兼容）+
+  `apply` 脚本分支（add 插入 / update 整体替换，确认后 cmds 只来自文档）。
+- **错误码** `README_NOT_FOUND`（error.rs + 序列化回归）。
+- **Phase 3 增量**：`src-tauri` `import.readme` / `import.readmeApply` 两命令（确定性重导入
+  + `merge::preview_with_sources` / `merge::apply` + saveForm），lib.rs 注册。
+- **前端**：`components/scan-merge.tsx` 共享向导（config-page 内嵌向导抽出 + 新增
+  `ProvenanceChips` 徽标与 `ScriptItemRow`）；config-page 改为复用（UI 零变化）；/discover 页
+  「从 README 导入」outline 入口（outline 按钮 → 向导面板，空草稿给人话提示卡，
+  `?readme=1` 供命令面板直达）；命令面板三入口（README 导入 → `/discover?readme=1`、
+  AI 解释当前日志 → `logs.snapshot` 尾 200 行 + `ai.complete` + 结果对话框、打开 AI 设置 → `/ai`）；
+  mock `import.readme/readmeApply`（README-only 新增 + 冲突建议列 + 端口提示确定性样例）。
+- **测试**：core `importer::` 15 个单测 + `tests/golden/readme/` 五类 golden
+  （spring-node / python / go / zh / noise，fixtures 在 `tests/fixtures/readme/`）；
+  基线 core 453（+45）/ cli 20 全绿；`cargo check -p supertask`、`npm run build`、
+  parity 1057×4 通过。
+- **文档**：ipc.md §10.14（README 导入两命令 + 确定性约束）+ §10.13 错误码行更新；
+  architecture.md §9（导入器模块）；AGENTS.md 当前阶段；inventory inv-1/inv-3 回改。
+
+**偏差备案（续）**：
+
+7. fenced 语言白名单在 spec §3.2 基础上追加 `text/plain/plaintext/zsh/terminal/powershell/pwsh`
+   （本仓库 README 的命令块用 ```text；分类严格、混入片段只进噪声计数，风险可控）。
+8. spec §3.1「未指定且未发现 → 空草稿」落地为「scan 骨架 + 人话提示 warning」（向导仍可用，
+   空草稿 = scan 也为空时自然成立）；显式路径不存在仍是 `README_NOT_FOUND` 硬错误。
+9. spec §5 契约只列 `import.readme`；实现补 `import.readmeApply`（scanApply 会重扫描，
+   无法应用 README 补全字段/脚本，故按同型新增；确定性重导入保证与预览一致）。
+10. 测试修复：`ai::complete_ollama_allows_missing_key` 原以 `key=None` 回退读真实
+    `%APPDATA%/SuperTask/secrets.env`（真机配置 key 后测试即挂，环境依赖缺陷）；
+    改传 `Some("")` 保持「空 key」语义并消除环境耦合。
+11. Phase 6.1 增补 `tests/real_ai_smoke.rs`（`#[ignore]` opt-in）：读真实 appdata 默认配置
+    + secrets key，各发一次 explain_logs / config_suggest（消耗真实配额，默认跳过）。
+    **2026-08-29 已实跑通过**（本地真实端点，model `gpt-5.6-luna`，25.5s）：日志解释给出
+    BindException 排查方向，配置建议返回参考 yaml；用量 +2。§6.2 真机验收中的「真实 AI
+    端点冒烟」就此完成，剩 GUI 真机人工验收与中文 README 真工程导入链路。
+12. mock 冒烟（浏览器）：discover README 导入向导（provenance 徽标/脚本草稿/冲突建议列/
+    端口提示/噪声提示/勾选应用 3 项）与命令面板三入口（AI 解释未配置 → `AI_NOT_CONFIGURED`
+    toast；配置后回文显示 200 行解释；README 导入 `?readme=1` 直达；AI 设置导航）全部实测通过。

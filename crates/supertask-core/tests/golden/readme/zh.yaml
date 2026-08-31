@@ -1,0 +1,30 @@
+version: 1
+kind: workspace
+name: zh
+root: .
+env: {}
+services:
+  web:
+    kind: node
+    enabled: true
+    env: {}
+    depends_on: []
+    grace_secs: 15
+    health:
+      type: tcp
+      interval_secs: 2
+      timeout_secs: 2
+    dir: .
+    package_manager: pnpm
+    script: dev
+scripts:
+  install:
+    cmds:
+    - pnpm install
+    env: {}
+    timeout_secs: 1800
+  build:
+    cmds:
+    - npm run build
+    env: {}
+    timeout_secs: 1800

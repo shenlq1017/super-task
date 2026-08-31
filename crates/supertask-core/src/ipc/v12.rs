@@ -242,7 +242,7 @@ mod tests {
             },
         );
         let text = serde_yaml::to_string(&ev).unwrap();
-        assert!(text.contains("st.metrics"));
+        assert!(text.contains(super::super::event::METRICS));
         assert_eq!(ev.protocol, super::super::PROTOCOL);
     }
 }

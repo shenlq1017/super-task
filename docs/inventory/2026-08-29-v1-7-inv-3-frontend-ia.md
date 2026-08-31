@@ -5,9 +5,8 @@
 ## 1. 双注册表（导航的事实来源）
 
 - **core 端** `crates/supertask-core/src/features.rs:20-36`：13 个 feature，字段 `{id, path, status, since}`：
-  - live：run/logs/config(1.0)、templates(1.1)、env/workspaces/discover/git(1.1)、docker(1.3)、gateway(1.6)、settings(1.0)、cloud(2.0)；
-  - soon：ai(2.1)。
-  - `require_live`（`:38-49`）：soon → `FEATURE_SOON`；另有 `SOON_COMMANDS`（ai.complete，`:51-55`）。
+  - live：run/logs/config(1.0)、templates(1.1)、env/workspaces/discover/git(1.1)、docker(1.3)、gateway(1.6)、settings(1.0)、cloud(2.0)、ai(2.1)；
+  - soon：无（SOON_COMMANDS 清空，机制保留）。
 - **前端** `frontend/src/features/registry.ts`：只存导航元数据（labelKey + group），不存 live/soon（status 来自 session.hello）。
   - `NAV_META`（`:14-28`）：三个组——`workspace`（run/logs/config/env/workspaces/discover/templates/git/docker/gateway，共 10 项）、`extend`（cloud/ai）、`system`（settings，底部 pinned，`:31`）。
   - 约束（AGENTS.md）：导航只 map `session.hello.features`；**禁止 AppShell 按 feature id 写长 if**；禁止大桶 re-export。
@@ -18,19 +17,21 @@
 | path | 页面 | 备注 |
 |------|------|------|
 | /welcome | welcome-page.tsx | 首启；**1.5 pkg 导入入口在此**（1.5 progress：「welcome 导入与设置导出入口」） |
-| /run | run-page.tsx | 最大页面（1400+ 行）：ServiceCard、详情头（打开/重启/构建/启动/停止）、脚本卡、指标 Tab、端口检查/建议/改端口 |
+| /run | run-page.tsx | 最大页面（2000+ 行）：ServiceCard、详情头（打开/重启/构建/启动/停止）、脚本卡、详情 Tab（日志/终端/环境/健康/配置/指标 [+容器/代理]）、端口检查/建议/改端口；「终端」Tab（2026-08-30）接 `components/terminal-view.tsx`（xterm.js，PTY 会话随 Tab 开关，ipc.md §10.15） |
 | /logs | logs-page.tsx | 与运行页共用 `components/log-view.tsx` + `log-line.tsx` |
 | /config | config-page.tsx | YAML 编辑、secrets/profiles |
 | /env | env-page.tsx | 工具链探测/安装、网络（代理/镜像） |
 | /workspaces | workspaces-page.tsx | 工作区列表/切换；锁冲突 toast 在此链路 |
-| /discover | discover-page.tsx | 扫描发现 |
+| /discover | discover-page.tsx | 系统进程发现 + **2.1「从 README 导入」入口**（outline 按钮 → `import.readme` → 共享 merge 向导 `components/scan-merge.tsx`（provenance 徽标 + 脚本项）；空草稿人话提示卡；`?readme=1` 命令面板直达） |
 | /templates | templates-page.tsx | 模板组合向导 |
 | /git | git-page.tsx | clone/pull/状态 |
 | /docker | docker-page.tsx | compose 运行时/构建/导入 |
 | /gateway | gateway-page.tsx | 五卡 + 空态 + diff 应用 + trust 确认 |
 | /settings | settings-page.tsx | 见 §3 |
 | /cloud | cloud-page.tsx | live（登录/会话/同步中心/冲突/配额；端点高级设置走 typed `cloud.endpoint.set`，浏览器 mock 为 local-only 降级） |
-| /ai | coming-soon-page.tsx | soon 占位 |
+| /ai | ai-page.tsx | live（2.1 AI 块：配置列表+编辑表单（8 provider 预设/代理/重试/模型拉取）+ 全局指令 + Prompt 模板 + 用量/隐私/MCP 说明）；log-view `extraActions` 槽位接 `AiExplainButton`（run/logs），config RawTab「AI 建议」卡 |
+
+**2.1 第二轮增量（2026-08-29）**：config-page 内嵌 merge 向导组件抽出为 `frontend/src/components/scan-merge.tsx`（`ScanPreviewPanel`/`ScanItemRow`/`DiffFieldRow`/`ScanStatusBadge`/`ProvenanceChips`/`ScriptItemRow`），config 与 discover 共用；命令面板新增三入口（`palette.readmeImport` → `/discover?readme=1`、`palette.aiExplainLogs`（`logs.snapshot` 尾 200 行 + `ai.complete` + 结果对话框）、`palette.aiSettings` → `/ai`）。
 
 ## 3. 设置页现状（`settings-page.tsx` 实测区块）
 
@@ -61,7 +62,7 @@
 
 ## 7. mock/开发链路
 
-`npm run dev`（仓库根）= 浏览器 mock IPC（代理到 frontend/）；`npm run tauri dev` = 真 IPC。session-provider 提供 hello/features/meta；日志走 `st.logs` 批次 + `logs.snapshot`。
+`npm run dev`（仓库根）= 浏览器 mock IPC（代理到 frontend/）；`npm run tauri dev` = 真 IPC。session-provider 提供 hello/features/meta；日志走 `st-logs` 批次 + `logs.snapshot`。
 
 ## 8. 云入口（2.0 当前事实）
 

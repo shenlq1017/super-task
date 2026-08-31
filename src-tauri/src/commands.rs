@@ -14,6 +14,7 @@ use supertask_core::engine::ScriptState;
 use supertask_core::error::ErrorCode;
 use supertask_core::git;
 use supertask_core::ide;
+use supertask_core::importer;
 use supertask_core::ipc::{IpcError, LogSource, LogSourceKind, PROTOCOL};
 use supertask_core::merge;
 use supertask_core::runtime::RtState;
@@ -35,13 +36,14 @@ pub type AppDataRef<'a> = State<'a, AppDataHandle>;
 // ---------------------------------------------------------------------------
 
 /// 长操作事件名（core 未定义常量，见 docs/spec/ipc.md §10.0）。
-const EVENT_OPERATION: &str = "st.operation";
+/// Tauri v2 事件名不允许点号，见 core ipc::event 模块注释。
+const EVENT_OPERATION: &str = supertask_core::ipc::event::OPERATION;
 
 /// 托盘图标 id（lib.rs build_tray 构建时指定）。
 pub(crate) const TRAY_ID: &str = "main";
 
 /// 退出中拦截（v1.1 规格 §8.3）：置位后拒绝新的启动/模板/Git 操作。
-fn ensure_not_exiting(exiting: &Exiting) -> Result<(), IpcError> {
+pub(crate) fn ensure_not_exiting(exiting: &Exiting) -> Result<(), IpcError> {
     if state::is_exiting(exiting) {
         Err(err(
             ErrorCode::AlreadyInProgress,
@@ -59,11 +61,11 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn ipc_err(e: supertask_core::Error) -> IpcError {
+pub(crate) fn ipc_err(e: supertask_core::Error) -> IpcError {
     IpcError::from(&e)
 }
 
-fn err(code: ErrorCode, message: impl Into<String>) -> IpcError {
+pub(crate) fn err(code: ErrorCode, message: impl Into<String>) -> IpcError {
     IpcError::from(&supertask_core::Error::new(code, message))
 }
 
@@ -79,13 +81,6 @@ fn json_into<T: serde::de::DeserializeOwned>(
             format!("构造 operation result 失败: {e}"),
         )
     })
-}
-
-fn soon(cmd: &str) -> IpcError {
-    let e = supertask_core::features::reject_soon_command(cmd).unwrap_or_else(|| {
-        supertask_core::Error::new(ErrorCode::FeatureSoon, format!("{cmd} 尚未提供"))
-    });
-    IpcError::from(&e)
 }
 
 fn warnings_to_strings(w: Vec<supertask_core::spec::ParseWarning>) -> Vec<String> {
@@ -1171,6 +1166,66 @@ pub fn workspace_scan_apply(
 }
 
 // ---------------------------------------------------------------------------
+// 2.1 README 导入（ipc.md §10.13）：scan 骨架 + README 草稿，走同一 merge 向导
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct ReadmePreviewOut {
+    pub items: Vec<merge::ScanMergeItem>,
+    pub script_items: Vec<merge::ScriptMergeItem>,
+    pub warnings: Vec<String>,
+    pub readme_path: Option<String>,
+}
+
+/// README 导入预览：确定性重导入 + 字段来源元数据（scan/readme + 置信度）。
+#[tauri::command(rename = "import.readme")]
+pub fn import_readme_preview(
+    state: EngineState<'_>,
+    workspace_id: String,
+    path: Option<String>,
+) -> Result<ReadmePreviewOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    let imp =
+        importer::readme::import_readme(Path::new(&workspace_id), path.as_deref()).map_err(ipc_err)?;
+    let preview = merge::preview_with_sources(
+        &current,
+        &imp.draft,
+        imp.warnings,
+        Some((&imp.service_sources, &imp.script_sources)),
+    );
+    Ok(ReadmePreviewOut {
+        items: preview.items,
+        script_items: preview.script_items,
+        warnings: preview.warnings,
+        readme_path: imp.readme_path,
+    })
+}
+
+/// README 导入应用：导入确定性可重复，应用前重导入后按选择合并；
+/// 写回走 saveForm 机制（base_hash 冲突 → YAML_CONFLICT）。
+#[tauri::command(rename = "import.readmeApply")]
+pub fn import_readme_apply(
+    state: EngineState<'_>,
+    workspace_id: String,
+    path: Option<String>,
+    choices: Vec<merge::MergeChoice>,
+    base_hash: String,
+) -> Result<YamlSaveOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    let imp =
+        importer::readme::import_readme(Path::new(&workspace_id), path.as_deref()).map_err(ipc_err)?;
+    let merged = merge::apply(&current, &imp.draft, &choices).map_err(ipc_err)?;
+    let (spec, hash, warnings) = state.save_form(&merged, &base_hash).map_err(ipc_err)?;
+    Ok(YamlSaveOut {
+        spec,
+        hash,
+        warnings: warnings_to_strings(warnings),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // 1.4 Taskfile 导入（feature spec §7，ipc.md §10.8）
 // ---------------------------------------------------------------------------
 
@@ -1451,11 +1506,7 @@ pub fn docker_build_cancel(
     Ok(serde_json::json!({ "ok": ok }))
 }
 
-// 1.6：gateway.apply 已转正为真命令；2.0：cloud 命令已转正（见文件末尾命令组）
-#[tauri::command(rename = "ai.complete")]
-pub fn ai_complete() -> Result<(), IpcError> {
-    Err(soon("ai.complete"))
-}
+// 1.6：gateway.apply 已转正为真命令；2.0：cloud 命令已转正；2.1：ai 命令已转正（见文件末尾命令组）
 
 // ---------------------------------------------------------------------------
 // 1.2 phase 3–7：端口 / secrets / 日志 / 指标 / profile / runtime.build
@@ -2132,4 +2183,101 @@ pub fn cloud_telemetry_set(
     enabled: bool,
 ) -> Result<crate::cloud::CloudTelemetryOut, IpcError> {
     crate::cloud::cloud_telemetry_set(&state, appdata.inner(), enabled).map_err(ipc_err)
+}
+
+// ---------------------------------------------------------------------------
+// 2.1 AI（v2.1 规格 §5 + 截图对齐升级）：薄适配；业务在 shell ai.rs + core ai/
+// ---------------------------------------------------------------------------
+
+/// `ai.config.save`：新建/更新命名配置；api_key 写入 secrets 后端（None 不动，Some("") 清除），不回显。
+#[tauri::command(rename = "ai.config.save")]
+pub fn ai_config_save(
+    appdata: AppDataRef<'_>,
+    input: crate::ai::AiConfigSaveIn,
+) -> Result<crate::ai::AiConfigOut, IpcError> {
+    crate::ai::ai_config_save(appdata.inner(), input).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "ai.config.delete")]
+pub fn ai_config_delete(appdata: AppDataRef<'_>, id: String) -> Result<(), IpcError> {
+    crate::ai::ai_config_delete(appdata.inner(), &id).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "ai.config.default")]
+pub fn ai_config_default(appdata: AppDataRef<'_>, id: String) -> Result<(), IpcError> {
+    crate::ai::ai_config_default(appdata.inner(), &id).map_err(ipc_err)
+}
+
+/// `ai.instructions.save`：全局自定义指令（trim；空串清除；≤8000 字符）。
+#[tauri::command(rename = "ai.instructions.save")]
+pub fn ai_instructions_save(
+    appdata: AppDataRef<'_>,
+    text: String,
+) -> Result<String, IpcError> {
+    crate::ai::ai_instructions_save(appdata.inner(), &text).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "ai.template.save")]
+pub fn ai_template_save(
+    appdata: AppDataRef<'_>,
+    input: crate::ai::AiTemplateSaveIn,
+) -> Result<crate::ai::AiTemplateOut, IpcError> {
+    crate::ai::ai_template_save(appdata.inner(), input).map_err(ipc_err)
+}
+
+#[tauri::command(rename = "ai.template.delete")]
+pub fn ai_template_delete(appdata: AppDataRef<'_>, id: String) -> Result<(), IpcError> {
+    crate::ai::ai_template_delete(appdata.inner(), &id).map_err(ipc_err)
+}
+
+/// `ai.status`：配置列表/模板/全局指令摘要 + 当日用量；key 只回布尔，不回明文。
+#[tauri::command(rename = "ai.status")]
+pub fn ai_status(appdata: AppDataRef<'_>) -> Result<crate::ai::AiStatusOut, IpcError> {
+    crate::ai::ai_status(appdata.inner()).map_err(ipc_err)
+}
+
+/// `ai.models`：OpenAI 兼容端点模型发现（GET /models）。
+#[tauri::command(rename = "ai.models")]
+pub async fn ai_models(
+    appdata: AppDataRef<'_>,
+    config_id: Option<String>,
+) -> Result<Vec<String>, IpcError> {
+    let appdata = appdata.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai::ai_models(&appdata, config_id.as_deref())
+    })
+    .await
+    .map_err(|e| err(ErrorCode::Spawn, format!("AI models 后台任务异常: {e}")))?
+    .map_err(ipc_err)
+}
+
+/// `ai.complete`：仅用户显式触发；task ∈ explain_logs | config_suggest | enrich_draft | test_connection。
+#[tauri::command(rename = "ai.complete")]
+pub async fn ai_complete(
+    app: tauri::AppHandle,
+    state: EngineState<'_>,
+    appdata: AppDataRef<'_>,
+    task: String,
+    payload: serde_json::Value,
+    config_id: Option<String>,
+    request_id: Option<String>,
+) -> Result<supertask_core::ai::AiCompleteOut, IpcError> {
+    let engine = state.inner().clone();
+    let appdata = appdata.inner().clone();
+    let stream_emit = request_id
+        .filter(|id| !id.is_empty())
+        .map(|id| std::sync::Arc::new((app.clone(), id)));
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai::ai_complete(
+            &engine,
+            &appdata,
+            &task,
+            &payload,
+            config_id.as_deref(),
+            stream_emit,
+        )
+    })
+    .await
+    .map_err(|e| err(ErrorCode::Spawn, format!("AI complete 后台任务异常: {e}")))?
+    .map_err(ipc_err)
 }

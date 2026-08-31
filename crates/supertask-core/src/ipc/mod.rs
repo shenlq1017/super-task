@@ -89,13 +89,34 @@ pub mod cmd {
     pub const GATEWAY_STOP: &str = "gateway.stop";
     pub const GATEWAY_RESTART: &str = "gateway.restart";
     pub const GATEWAY_TRUST: &str = "gateway.trust";
+    // ---- 2.1（AI；import.readme 随 README 导入器补） ----
+    pub const AI_STATUS: &str = "ai.status";
+    pub const AI_COMPLETE: &str = "ai.complete";
+    pub const AI_CONFIG_SAVE: &str = "ai.config.save";
+    pub const AI_CONFIG_DELETE: &str = "ai.config.delete";
+    pub const AI_CONFIG_DEFAULT: &str = "ai.config.default";
+    pub const AI_INSTRUCTIONS_SAVE: &str = "ai.instructions.save";
+    pub const AI_TEMPLATE_SAVE: &str = "ai.template.save";
+    pub const AI_TEMPLATE_DELETE: &str = "ai.template.delete";
+    pub const AI_MODELS: &str = "ai.models";
+    // ---- 运行页终端（ipc.md §10.15）----
+    pub const TERM_OPEN: &str = "term.open";
+    pub const TERM_WRITE: &str = "term.write";
+    pub const TERM_RESIZE: &str = "term.resize";
+    pub const TERM_CLOSE: &str = "term.close";
 }
 
 pub mod event {
-    pub const RUNTIME: &str = "st.runtime";
-    pub const LOGS: &str = "st.logs";
-    pub const METRICS: &str = "st.metrics";
-    pub const OPERATION: &str = "st.operation";
+    // Tauri v2 事件名只允许字母数字与 `-` `/` `:` `_`（点号会被 listen/emit 静默拒绝），
+    // 因此用连字符而不是点号；与前端 protocol.ts event 常量保持一致。
+    pub const RUNTIME: &str = "st-runtime";
+    pub const LOGS: &str = "st-logs";
+    pub const METRICS: &str = "st-metrics";
+    pub const OPERATION: &str = "st-operation";
+    /// 运行页终端输出/退出流（§10.15）。信封 workspace_id 恒为 null（会话是 UI 作用域）。
+    pub const TERM: &str = "st-term";
+    /// AI complete 流式文本增量（§10.13 扩展）。信封 workspace_id 恒为 null。
+    pub const AI: &str = "st-ai";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +201,66 @@ pub enum LogStream {
     Stdout,
     Stderr,
     System,
+}
+
+/// `term.open` 输出：session_id 后续 write/resize/close 及 st.term 事件使用。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermOpenOutput {
+    pub session_id: u64,
+    /// 实际使用的终端程序（展示用，如 powershell.exe 路径）。
+    pub shell: String,
+}
+
+/// `st.term` 事件负载（信封外层 { protocol, event, workspace_id: null, ts_ms, payload }）。
+/// data 为 lossy UTF-8 终端输出（含 ANSI 序列，前端 xterm 直接渲染）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermEventPayload {
+    pub session_id: u64,
+    /// "output" | "exited"
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// kind = exited 时为退出码（wait 失败为 -1）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
+impl TermEventPayload {
+    pub fn output(session_id: u64, data: String) -> Self {
+        Self {
+            session_id,
+            kind: "output".into(),
+            data: Some(data),
+            exit_code: None,
+        }
+    }
+
+    pub fn exited(session_id: u64, exit_code: i32) -> Self {
+        Self {
+            session_id,
+            kind: "exited".into(),
+            data: None,
+            exit_code: Some(exit_code),
+        }
+    }
+}
+
+/// `st-ai` 事件负载（信封外层 { protocol, event, workspace_id: null, ts_ms, payload }）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiStreamPayload {
+    /// 与 `ai.complete` 入参 `request_id` 对应，前端过滤多会话。
+    pub request_id: String,
+    /// 本块 UTF-8 文本（Markdown 增量）。
+    pub delta: String,
+}
+
+impl AiStreamPayload {
+    pub fn chunk(request_id: impl Into<String>, delta: impl Into<String>) -> Self {
+        Self {
+            request_id: request_id.into(),
+            delta: delta.into(),
+        }
+    }
 }
 
 #[cfg(test)]

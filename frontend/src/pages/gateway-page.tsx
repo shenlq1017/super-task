@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 import { useWorkspace } from "@/providers/workspace-provider";
 import { useRuntime } from "@/providers/runtime-provider";
+import { useUnsavedEntry } from "@/providers/unsaved-guard";
 import {
   apiGatewayApply,
   apiGatewayPreview,
@@ -251,20 +252,25 @@ export function GatewayPage() {
     }
   };
 
-  const doApply = async () => {
-    if (!wsId || !draft || !yamlRef.current) return;
+  const doApply = async (): Promise<boolean> => {
+    if (!wsId || !draft || !yamlRef.current) return false;
     setApplying(true);
     try {
       const out = await apiGatewayApply(wsId, draft, yamlRef.current.hash);
       toast(t("pages.gateway.applied", { restarted: out.restarted }), "ok");
       setPreviewText(null);
       await refresh();
+      return true;
     } catch (e) {
       toast(errText(e), "err");
+      return false;
     } finally {
       setApplying(false);
     }
   };
+
+  // 未保存守卫：网关草稿有改动即视为脏（保存 = 应用配置）
+  useUnsavedEntry("gateway.conf", () => dirty, () => doApply());
 
   const doTrust = async () => {
     if (!wsId) return;
@@ -431,84 +437,98 @@ export function GatewayPage() {
             <p className="text-[0.8rem] text-[var(--t3,#8a8f98)]">{t("pages.gateway.noRoutes")}</p>
           ) : (
             <div className="flex flex-col gap-2">
-              {draft!.routes.map((r, i) => (
-                <div key={i} className="flex flex-wrap items-center gap-2 rounded-[var(--r-sm,8px)] border border-[#D0D6E0] p-2">
-                  <Input
-                    className="h-7 w-36 font-mono"
-                    placeholder={t("pages.gateway.hostPlaceholder")}
-                    value={r.host ?? ""}
-                    onChange={(e) => setRoute(i, { host: e.target.value || null })}
-                  />
-                  <Input
-                    className="h-7 w-24 font-mono"
-                    value={r.path}
-                    onChange={(e) => setRoute(i, { path: e.target.value })}
-                  />
-                  <span className="text-[var(--t3,#8a8f98)]">→</span>
-                  {r.upstream != null ? (
-                    <Input
-                      className="h-7 w-40 font-mono"
-                      value={r.upstream}
-                      placeholder="127.0.0.1:9000"
-                      onChange={(e) => setRoute(i, { upstream: e.target.value })}
-                    />
-                  ) : (
-                    <Select value={r.target ?? ""} onValueChange={(v) => setRoute(i, { target: v })}>
-                      <SelectTrigger size="sm" className="w-52">
-                        <SelectValue placeholder={t("pages.gateway.pickTarget")} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {services.map(([id, s]) => (
-                          <SelectItem key={id} value={id}>
-                            {id}
-                            {s.port != null ? ` · ${s.port}` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                  {r.upstream == null ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      title={t("pages.gateway.useUpstream")}
-                      onClick={() => setRoute(i, { upstream: "127.0.0.1:9000", target: null })}
-                    >
-                      {t("pages.gateway.upstreamToggle")}
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      title={t("pages.gateway.useTarget")}
-                      onClick={() => setRoute(i, { upstream: null, target: services[0]?.[0] ?? null })}
-                    >
-                      {t("pages.gateway.targetToggle")}
-                    </Button>
-                  )}
-                  {(() => {
-                    const alive =
-                      status?.routes.find((sr) => sr.path === r.path && (sr.host ?? null) === (r.host ?? null))
-                        ?.upstream_alive ?? null;
-                    if (alive == null) return null;
-                    return (
-                      <span
-                        className={cn("size-2 rounded-full", alive ? "bg-[#27a644]" : "bg-[#c3c6cc]")}
-                        title={alive ? t("pages.gateway.upstreamAlive") : t("pages.gateway.upstreamDown")}
-                      />
-                    );
-                  })()}
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="ml-auto text-[#dc2626] hover:bg-[#FDECEC]"
-                    aria-label={t("pages.gateway.removeRoute")}
-                    onClick={() => setDraftConf({ routes: draft!.routes.filter((_, idx) => idx !== i) })}
+              {draft!.routes.map((r, i) => {
+                const manual = r.upstream != null;
+                const alive =
+                  status?.routes.find((sr) => sr.path === r.path && (sr.host ?? null) === (r.host ?? null))
+                    ?.upstream_alive ?? null;
+                return (
+                  <div
+                    key={i}
+                    className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto_minmax(0,1.4fr)_auto_auto_auto] items-center gap-2 rounded-[var(--r-sm,8px)] border border-[#D0D6E0] p-2"
                   >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
-              ))}
+                    <Input
+                      className="h-7 min-w-0 font-mono"
+                      placeholder={t("pages.gateway.hostPlaceholder")}
+                      value={r.host ?? ""}
+                      onChange={(e) => setRoute(i, { host: e.target.value || null })}
+                    />
+                    <Input
+                      className="h-7 min-w-0 font-mono"
+                      placeholder="/api"
+                      value={r.path}
+                      onChange={(e) => setRoute(i, { path: e.target.value })}
+                    />
+                    <span className="text-[var(--t3,#8a8f98)]">→</span>
+                    {manual ? (
+                      <Input
+                        className="h-7 min-w-0 font-mono"
+                        value={r.upstream ?? ""}
+                        placeholder="127.0.0.1:9000"
+                        onChange={(e) => setRoute(i, { upstream: e.target.value })}
+                      />
+                    ) : (
+                      <Select value={r.target ?? ""} onValueChange={(v) => setRoute(i, { target: v })}>
+                        <SelectTrigger size="sm" className="h-7 w-full min-w-0">
+                          <SelectValue placeholder={t("pages.gateway.pickTarget")} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {services.map(([id, s]) => (
+                            <SelectItem key={id} value={id}>
+                              {id}
+                              {s.port != null ? ` · ${s.port}` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                    <div className="inline-flex overflow-hidden rounded-[var(--r-sm,8px)] border border-[#D0D6E0] text-[11px]">
+                      <button
+                        type="button"
+                        className={cn(
+                          "cursor-pointer px-2 py-1 transition-colors duration-150",
+                          !manual
+                            ? "bg-[var(--primary,#5E6AD2)] text-white"
+                            : "text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                        )}
+                        title={t("pages.gateway.useTarget")}
+                        onClick={() => setRoute(i, { upstream: null, target: r.target ?? services[0]?.[0] ?? null })}
+                      >
+                        {t("pages.gateway.targetToggle")}
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "cursor-pointer border-l border-[#D0D6E0] px-2 py-1 transition-colors duration-150",
+                          manual
+                            ? "bg-[var(--primary,#5E6AD2)] text-white"
+                            : "text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                        )}
+                        title={t("pages.gateway.useUpstream")}
+                        onClick={() => setRoute(i, { upstream: "127.0.0.1:9000", target: null })}
+                      >
+                        {t("pages.gateway.upstreamToggle")}
+                      </button>
+                    </div>
+                    <span
+                      className={cn(
+                        "size-2 rounded-full",
+                        alive == null ? "bg-transparent" : alive ? "bg-[#27a644]" : "bg-[#c3c6cc]",
+                      )}
+                      title={alive == null ? undefined : alive ? t("pages.gateway.upstreamAlive") : t("pages.gateway.upstreamDown")}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-[#dc2626] hover:bg-[#FDECEC]"
+                      aria-label={t("pages.gateway.removeRoute")}
+                      onClick={() => setDraftConf({ routes: draft!.routes.filter((_, idx) => idx !== i) })}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </Card>

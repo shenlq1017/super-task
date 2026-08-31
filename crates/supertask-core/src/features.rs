@@ -88,7 +88,7 @@ pub fn features() -> &'static [Feature] {
         Feature {
             id: "ai",
             path: "/ai",
-            status: FeatureStatus::Soon,
+            status: FeatureStatus::Live,
             since: "2.1",
         },
         Feature {
@@ -113,7 +113,8 @@ pub fn require_live(id: &str) -> crate::error::Result<&'static Feature> {
     }
 }
 
-pub const SOON_COMMANDS: &[(&str, &str)] = &[("ai.complete", "2.1")];
+/// 2.1 起 SOON 清单清空（ai 已转 live；机制保留给未来版本）。
+pub const SOON_COMMANDS: &[(&str, &str)] = &[];
 
 pub fn reject_soon_command(cmd: &str) -> Option<crate::Error> {
     SOON_COMMANDS
@@ -146,5 +147,13 @@ mod tests {
         let f = require_live("gateway").unwrap();
         assert_eq!(f.since, "1.6");
         assert!(reject_soon_command("gateway.apply").is_none());
+    }
+
+    #[test]
+    fn ai_is_live_since_2_1_and_soon_list_empty() {
+        let f = require_live("ai").unwrap();
+        assert_eq!(f.since, "2.1");
+        assert!(SOON_COMMANDS.is_empty(), "2.1 起 SOON 清单清空");
+        assert!(reject_soon_command("ai.complete").is_none());
     }
 }

@@ -1,7 +1,9 @@
 # v2.1 功能规格：智能（README 导入 / AI 助手）
 
-> 2026-08-29。状态：**规划稿（待评审拍板；拍板后更新本行与 AGENTS.md 当前阶段）**。
-> 实现计划：[2026-08-29-v2-1-implementation-plan.md](2026-08-29-v2-1-implementation-plan.md)。
+> 2026-08-29。状态：**自动化范围已全部落地**（AI 块 2026-08-29 首轮交付；README 导入器（§3）、
+> /discover 入口、命令面板三入口 2026-08-29 第二轮交付，偏差备案见实现计划执行记录）；
+> 剩 §9 场景真机验收。
+> 实现计划：[2026-08-29-v2-1-implementation-plan.md](2026-08-29-v2-1-implementation-plan.md)（尾部含执行记录与偏差备案：重试放宽、IPC 扩为九命令、CLI provider/Agent 明确不做）。
 > 一句话：**不联网也先能用——README / 命令文档确定性导入生成 `supertask.yaml` 草稿（人确认后写盘）；AI 助手用用户自己的 OpenAI 兼容 Key，只建议、给参考、绝不自动改。**
 
 ---

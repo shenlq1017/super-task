@@ -5,12 +5,14 @@ import { ChevronDown, FolderOpen, FolderSearch, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/providers/workspace-provider";
 import { useOpenWorkspace } from "@/lib/use-open-workspace";
+import { useUnsavedGuard } from "@/providers/unsaved-guard";
 import { isTauri } from "@/ipc/invoke";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
   const ws = useWorkspace();
   const openWs = useOpenWorkspace();
+  const { confirmLeave } = useUnsavedGuard();
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -50,6 +52,8 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
 
   const closeWorkspace = async () => {
     setOpen(false);
+    // 关闭工作区会停服务并清空 spec，先过未保存守卫
+    if (!(await confirmLeave())) return;
     await ws.actions.close();
     navigate("/welcome");
   };

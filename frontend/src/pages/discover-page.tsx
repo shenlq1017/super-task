@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCw, Copy, Radar, FolderOpen, Square } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+import { RefreshCw, Copy, Radar, FolderOpen, FileInput, Square, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
@@ -17,11 +19,25 @@ import { cn } from "@/lib/utils";
 import { toast as toastGlobal, useToast } from "@/components/ui/toast";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
 import { useWorkspace } from "../providers/workspace-provider";
-import { apiSystemDiscover, apiSystemKillProcess } from "../ipc/api";
+import { useYaml } from "../providers/yaml-provider";
+import { apiImportReadme, apiImportReadmeApply, apiSystemDiscover, apiSystemKillProcess, apiYamlGet } from "../ipc/api";
+import { formatIpcFailure } from "../lib/error-messages";
 import { IpcFailure } from "../ipc/protocol";
-import type { ForeignService } from "../ipc/protocol";
+import type { ForeignService, MergeChoice, ReadmePreviewOut } from "../ipc/protocol";
+import { ScanPreviewPanel, type FieldChoice } from "@/components/scan-merge";
 
 const REFRESH_MS = 30_000;
+
+/** 发现页可筛选的运行时类型（与 core 的 INTERESTING_PREFIXES + other 对齐）。 */
+const KIND_ORDER = ["java", "node", "python", "deno", "bun", "other"] as const;
+const KIND_LABEL_KEY: Record<string, string> = {
+  java: "kindJava",
+  node: "kindNode",
+  python: "kindPython",
+  deno: "kindDeno",
+  bun: "kindBun",
+  other: "kindOther",
+};
 
 function runtimeColor(kind: string): string {
   if (kind === "java") return "#2E90FA";
@@ -66,15 +82,29 @@ function DetailField({ label, children }: { label: string; children: React.React
  */
 export function DiscoverPage() {
   const ws = useWorkspace();
+  const yaml = useYaml();
   const { toast } = useToast();
   const { t } = useTranslation();
   const openWorkspace = useOpenWorkspace();
   const [items, setItems] = useState<ForeignService[]>([]);
   const [loading, setLoading] = useState(false);
   const [showOther, setShowOther] = useState(false);
+  const [kindFilter, setKindFilter] = useState<Set<string>>(() => new Set());
+  const [portQuery, setPortQuery] = useState("");
   const [detail, setDetail] = useState<ForeignService | null>(null);
   const [killTarget, setKillTarget] = useState<ForeignService | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 2.1：从 README 导入（ipc.md §10.13）——scan 骨架 + README 草稿走同一 merge 向导
+  const [readmePreview, setReadmePreview] = useState<ReadmePreviewOut | null>(null);
+  const [readmeLoading, setReadmeLoading] = useState(false);
+  const [readmeAddChecked, setReadmeAddChecked] = useState<Record<string, boolean>>({});
+  const [readmeScriptChecked, setReadmeScriptChecked] = useState<Record<string, boolean>>({});
+  const [readmeFieldChoices, setReadmeFieldChoices] = useState<Record<string, Record<string, FieldChoice>>>({});
+  const [readmeApplying, setReadmeApplying] = useState(false);
+  // 命令面板「从 README 导入」经 /discover?readme=1 自动展开向导
+  const [searchParams, setSearchParams] = useSearchParams();
+  const autoReadmeDone = useRef(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -97,14 +127,64 @@ export function DiscoverPage() {
     };
   }, [refresh]);
 
+  // 切换工作区后 README 预览失效
+  useEffect(() => {
+    closeReadmeImport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws.state.workspaceId]);
+
+  // ?readme=1（命令面板入口）：工作区就绪后自动展开一次
+  useEffect(() => {
+    if (autoReadmeDone.current) return;
+    if (searchParams.get("readme") !== "1") return;
+    if (!ws.state.workspaceId) return;
+    autoReadmeDone.current = true;
+    void openReadmeImport();
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, ws.state.workspaceId]);
+
   // 当前工作区占用的端口 → 服务 id 映射（用于行级关联标注）
   const portOwner = new Map<number, string>();
   for (const [id, svc] of Object.entries(ws.state.spec?.services ?? {})) {
     if (svc.port != null) portOwner.set(svc.port, id);
   }
 
-  const known = items.filter((s) => s.kind !== "other");
-  const others = items.filter((s) => s.kind === "other");
+  // 筛选：kind 多选 + 端口子串匹配；空集合 = 全部，空 query = 不过滤
+  const filteredItems = useMemo(() => {
+    const q = portQuery.trim();
+    return items.filter((s) => {
+      if (kindFilter.size > 0 && !kindFilter.has(s.kind)) return false;
+      if (q && !s.ports.some((p) => String(p).includes(q))) return false;
+      return true;
+    });
+  }, [items, kindFilter, portQuery]);
+
+  const kindCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of items) m.set(s.kind, (m.get(s.kind) ?? 0) + 1);
+    return m;
+  }, [items]);
+
+  const hasFilter = kindFilter.size > 0 || portQuery.trim() !== "";
+
+  const toggleKind = (k: string) => {
+    setKindFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+    if (k === "other") setShowOther(true);
+  };
+
+  const clearFilters = () => {
+    setKindFilter(new Set());
+    setPortQuery("");
+  };
+
+  const known = filteredItems.filter((s) => s.kind !== "other");
+  const others = filteredItems.filter((s) => s.kind === "other");
 
   // 弹框里的对象要跟随刷新（进程可能已退出 / 读数更新），按 pid 重新对位
   const detailLive = detail ? (items.find((s) => s.pid === detail.pid) ?? detail) : null;
@@ -138,6 +218,85 @@ export function DiscoverPage() {
     void refresh();
   };
 
+  // 2.1：README 导入预览（确定性纯计算；未发现 README 时 warnings 给人话提示，非错误）
+  const openReadmeImport = async () => {
+    const wid = ws.state.workspaceId;
+    if (!wid || readmeLoading) return;
+    setReadmeLoading(true);
+    try {
+      const out = await apiImportReadme(wid);
+      setReadmePreview(out);
+      setReadmeAddChecked({});
+      setReadmeScriptChecked({});
+      setReadmeFieldChoices({});
+    } catch (e) {
+      toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
+    } finally {
+      setReadmeLoading(false);
+    }
+  };
+
+  const closeReadmeImport = () => {
+    setReadmePreview(null);
+    setReadmeAddChecked({});
+    setReadmeScriptChecked({});
+    setReadmeFieldChoices({});
+  };
+
+  const readmeApplyCount = useMemo(() => {
+    if (!readmePreview) return 0;
+    let n = 0;
+    for (const it of readmePreview.items) {
+      if ((it.status === "added" || it.status === "id_conflict") && readmeAddChecked[it.service_id]) n += 1;
+      if (it.status === "match_diff" && it.field_diffs.some((f) => readmeFieldChoices[it.service_id]?.[f] === "update")) n += 1;
+    }
+    for (const it of readmePreview.script_items) {
+      if (it.status === "added" && readmeScriptChecked[it.script_id]) n += 1;
+    }
+    return n;
+  }, [readmePreview, readmeAddChecked, readmeScriptChecked, readmeFieldChoices]);
+
+  const applyReadmeChoices = async () => {
+    const wid = ws.state.workspaceId;
+    if (!wid || !readmePreview || readmeApplying) return;
+    const choices: MergeChoice[] = [];
+    for (const it of readmePreview.items) {
+      if (it.status === "added") {
+        if (readmeAddChecked[it.service_id]) choices.push({ id: it.service_id, action: "add" });
+      } else if (it.status === "id_conflict") {
+        if (readmeAddChecked[it.service_id]) choices.push({ id: it.candidate_id ?? it.service_id, action: "add" });
+      } else if (it.status === "match_diff") {
+        const fields = it.field_diffs.filter((f) => readmeFieldChoices[it.service_id]?.[f] === "update");
+        if (fields.length > 0) choices.push({ id: it.service_id, action: "update", fields });
+      }
+    }
+    for (const it of readmePreview.script_items) {
+      if (it.status === "added" && readmeScriptChecked[it.script_id]) {
+        choices.push({ id: it.script_id, action: "add", target: "script" });
+      }
+    }
+    if (choices.length === 0) {
+      toast(t("pages.config.selectChangesFirst"), "warn");
+      return;
+    }
+    setReadmeApplying(true);
+    try {
+      // base_hash 优先取 yaml-provider 当前值；无 hash 时先 yaml.get
+      let baseHash = yaml.state.hash;
+      if (!baseHash) baseHash = (await apiYamlGet()).hash;
+      await apiImportReadmeApply(wid, readmePreview.readme_path, choices, baseHash);
+      toast(t("pages.discover.readmeApplied", { n: choices.length }), "ok");
+      closeReadmeImport();
+      await yaml.actions.reload();
+      await ws.actions.refreshSpec();
+    } catch (e) {
+      // 本页无冲突对话框：YAML_CONFLICT 走 toast 人话提示（与真实语义对齐）
+      toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
+    } finally {
+      setReadmeApplying(false);
+    }
+  };
+
   const renderRow = (s: ForeignService) => {
     const matched = s.ports
       .map((p) => ({ p, id: portOwner.get(p) }))
@@ -148,8 +307,10 @@ export function DiscoverPage() {
         onClick={() => setDetail(s)}
         title={t("pages.discover.rowTitle")}
         className={cn(
-          "cursor-pointer border-b border-[var(--line,#e6e6e6)] transition-colors duration-100 last:border-0 hover:bg-[var(--surface-2,#f3f4f5)]",
-          matched.length > 0 && "bg-[rgb(94_106_210_/_0.04)]",
+          "cursor-pointer border-b border-[var(--line,#e6e6e6)] transition-colors duration-100 last:border-0",
+          matched.length > 0
+            ? "bg-[rgb(94_106_210_/_0.04)] hover:bg-[rgb(94_106_210_/_0.10)]"
+            : "hover:bg-[var(--surface-2,#f3f4f5)]",
         )}
       >
         <td className="px-4 py-2.5">
@@ -208,7 +369,7 @@ export function DiscoverPage() {
                 type="button"
                 title={t("pages.discover.openAsWorkspaceTitle", { cwd: s.cwd })}
                 onClick={() => void openAsWorkspace(s)}
-                className="grid size-6 place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[rgb(0_0_0_/_0.06)] hover:text-[var(--st-accent,#5e6ad2)]"
+                className="grid size-6 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:bg-[rgb(0_0_0_/_0.06)] hover:text-[var(--st-accent,#5e6ad2)] active:scale-95"
               >
                 <FolderOpen className="size-3" />
               </button>
@@ -217,7 +378,7 @@ export function DiscoverPage() {
               type="button"
               title={t("pages.discover.killTreeTitle", { name: s.name, pid: s.pid })}
               onClick={() => setKillTarget(s)}
-              className="grid size-6 place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)]"
+              className="grid size-6 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)] active:scale-95"
             >
               <Square className="size-3" />
             </button>
@@ -225,7 +386,7 @@ export function DiscoverPage() {
               type="button"
               title={t("pages.discover.copyPidTitle", { pid: s.pid })}
               onClick={() => void copy(String(s.pid), ` PID ${s.pid}`)}
-              className="grid size-6 place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors hover:bg-[rgb(0_0_0_/_0.06)] hover:text-[var(--t1,#222326)]"
+              className="grid size-6 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:bg-[rgb(0_0_0_/_0.06)] hover:text-[var(--t1,#222326)] active:scale-95"
             >
               <Copy className="size-3" />
             </button>
@@ -246,12 +407,123 @@ export function DiscoverPage() {
                 {t("pages.discover.desc", { secs: REFRESH_MS / 1000 })}
               </p>
             </div>
+            <Button variant="outline" size="sm" onClick={() => void openReadmeImport()} disabled={!ws.state.workspaceId || readmeLoading} className="gap-1" title={ws.state.workspaceId ? t("pages.discover.readmeImportHint") : t("pages.config.openWsFirst")}>
+              <FileInput className={cn("size-3.5", readmeLoading && "animate-pulse")} />
+              {readmeLoading ? t("pages.discover.readmeImporting") : t("pages.discover.readmeImport")}
+            </Button>
             <Button variant="soft" size="sm" onClick={() => void refresh()} disabled={loading} className="gap-1">
               <RefreshCw className={cn(loading && "animate-spin")} /> {t("common.refresh")}
             </Button>
           </div>
 
-          {items.length === 0 && !loading ? (
+          {items.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                role="group"
+                aria-label={t("pages.discover.filterByKindAria")}
+                className="flex flex-wrap items-center gap-1"
+              >
+                {KIND_ORDER.map((k) => {
+                  const active = kindFilter.has(k);
+                  const count = kindCounts.get(k) ?? 0;
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => toggleKind(k)}
+                      disabled={count === 0 && !active}
+                      className={cn(
+                        "inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[0.72rem] transition-colors duration-150 active:scale-95",
+                        active
+                          ? "border-[var(--primary,#5E6AD2)] bg-[rgb(94_106_210_/_0.08)] text-[var(--primary,#5E6AD2)] hover:bg-[rgb(94_106_210_/_0.16)]"
+                          : "border-[var(--line-strong,#d0d6e0)] text-[var(--t2,#62666d)] hover:border-[var(--t3,#8a8f98)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                        count === 0 && !active && "cursor-not-allowed opacity-50 hover:border-[var(--line-strong,#d0d6e0)] hover:bg-transparent active:scale-100",
+                      )}
+                    >
+                      <span className="size-1.5 rounded-full" style={{ background: runtimeColor(k) }} />
+                      {t(`pages.discover.${KIND_LABEL_KEY[k]}`)}
+                      <span className="font-mono text-[0.66rem] opacity-70">{count}</span>
+                    </button>
+                  );
+                })}
+              </span>
+              <Input
+                value={portQuery}
+                onChange={(e) => setPortQuery(e.target.value)}
+                placeholder={t("pages.discover.filterPortPlaceholder")}
+                aria-label={t("pages.discover.filterPortAria")}
+                inputMode="numeric"
+                className="h-7 w-40 rounded-full text-[0.75rem] font-mono"
+              />
+              {hasFilter ? (
+                <Button variant="ghost" size="xs" onClick={clearFilters} className="gap-1">
+                  <X className="size-3" /> {t("pages.discover.filterClear")}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+
+          {readmePreview ? (
+            readmePreview.items.length === 0 && readmePreview.script_items.length === 0 ? (
+              <Card className="flex flex-col items-center gap-2 p-8">
+                <FileInput className="size-8 text-[var(--line-strong,#d0d6e0)]" />
+                <div className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">
+                  {t("pages.discover.readmeEmptyDraftTitle")}
+                </div>
+                {readmePreview.warnings.map((w, i) => (
+                  <div key={i} className="text-[0.78rem] text-[var(--t3,#8a8f98)]">{w}</div>
+                ))}
+                <Button variant="outline" size="sm" className="mt-1" onClick={closeReadmeImport}>
+                  {t("common.close")}
+                </Button>
+              </Card>
+            ) : (
+              <div className="flex h-[68vh] flex-col">
+                <ScanPreviewPanel
+                  preview={readmePreview}
+                  titleKey="pages.discover.readmeImportTitle"
+                  ariaKey="pages.discover.readmeImportAria"
+                  headerExtra={
+                    readmePreview.readme_path ? (
+                      <span className="font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]">
+                        {t("pages.discover.readmeSource", { path: readmePreview.readme_path })}
+                      </span>
+                    ) : null
+                  }
+                  scriptItems={readmePreview.script_items}
+                  scriptChecked={readmeScriptChecked}
+                  onToggleScript={(id, v) => setReadmeScriptChecked((m) => ({ ...m, [id]: v }))}
+                  addChecked={readmeAddChecked}
+                  onToggleAdd={(id, v) => setReadmeAddChecked((m) => ({ ...m, [id]: v }))}
+                  onSelectAllAddable={(v) => {
+                    const next: Record<string, boolean> = {};
+                    for (const it of readmePreview.items) {
+                      if (it.status === "added" || it.status === "id_conflict") next[it.service_id] = v;
+                    }
+                    setReadmeAddChecked(next);
+                  }}
+                  fieldChoices={readmeFieldChoices}
+                  onFieldChoice={(id, f, c) =>
+                    setReadmeFieldChoices((m) => ({ ...m, [id]: { ...(m[id] ?? {}), [f]: c } }))
+                  }
+                  applying={readmeApplying}
+                  applyCount={readmeApplyCount}
+                  onApply={() => void applyReadmeChoices()}
+                  onClose={closeReadmeImport}
+                />
+              </div>
+            )
+          ) : filteredItems.length === 0 && items.length > 0 ? (
+            <div className="flex flex-col items-center gap-3 rounded-[var(--r-lg,16px)] border border-dashed border-[var(--line-strong,#d0d6e0)] p-10">
+              <Radar className="size-9 text-[var(--line-strong,#d0d6e0)]" />
+              <div className="text-[0.88rem] font-semibold text-[var(--t1,#222326)]">{t("pages.discover.filterNoMatchTitle")}</div>
+              <div className="text-[0.78rem] text-[var(--t3,#8a8f98)]">{t("pages.discover.filterNoMatchDesc")}</div>
+              <Button variant="outline" size="sm" className="mt-1 gap-1" onClick={clearFilters}>
+                <X className="size-3.5" /> {t("pages.discover.filterClear")}
+              </Button>
+            </div>
+          ) : items.length === 0 && !loading ? (
             <div className="flex flex-col items-center gap-3 rounded-[var(--r-lg,16px)] border border-dashed border-[var(--line-strong,#d0d6e0)] p-10">
               <Radar className="size-9 text-[var(--line-strong,#d0d6e0)]" />
               <div className="text-[0.88rem] font-semibold text-[var(--t1,#222326)]">{t("pages.discover.emptyTitle")}</div>
@@ -283,7 +555,7 @@ export function DiscoverPage() {
                     type="button"
                     onClick={() => setShowOther((v) => !v)}
                     aria-expanded={showOther}
-                    className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-2,#f3f4f5)]"
+                    className="flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)]"
                   >
                     <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">
                       {t("pages.discover.others", { n: others.length })}
@@ -367,7 +639,7 @@ export function DiscoverPage() {
                         type="button"
                         title={t("pages.discover.copyPath")}
                         onClick={() => void copy(detailLive.cwd!, t("pages.discover.labelPath"))}
-                        className="shrink-0 text-[var(--t3,#8a8f98)] transition-colors hover:text-[var(--t1,#222326)]"
+                        className="shrink-0 cursor-pointer text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:text-[var(--t1,#222326)] active:scale-95"
                       >
                         <Copy className="size-3" />
                       </button>
@@ -384,7 +656,7 @@ export function DiscoverPage() {
                         type="button"
                         title={t("pages.discover.copyCmdline")}
                         onClick={() => void copy(detailLive.cmd_line!, t("pages.discover.labelCmdline"))}
-                        className="shrink-0 text-[var(--t3,#8a8f98)] transition-colors hover:text-[var(--t1,#222326)]"
+                        className="shrink-0 cursor-pointer text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:text-[var(--t1,#222326)] active:scale-95"
                       >
                         <Copy className="size-3" />
                       </button>

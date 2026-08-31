@@ -19,10 +19,10 @@
 
 | 错误做法 | 正确做法 |
 |----------|----------|
-| `get_log()` 轮询 | `logs.subscribe` + `st.logs` 批次事件 |
-| 每行 `emit("log_line")` | `st.logs` 最多 50ms 或 32 行一批 |
+| `get_log()` 轮询 | `logs.subscribe` + `st-logs` 批次事件 |
+| 每行 `emit("log_line")` | `st-logs` 最多 50ms 或 32 行一批 |
 | 把整份日志文件当 invoke 返回 | `logs.snapshot` 只给环形缓冲（默认 ≤2000 行） |
-| 健康检查每 2s 推一次 | 仅 **状态变化** 时发 `st.runtime` |
+| 健康检查每 2s 推一次 | 仅 **状态变化** 时发 `st-runtime` |
 
 重连（WebView 刷新）：先 `runtime.snapshot` + `logs.snapshot(since_seq)`，再 subscribe。
 
@@ -58,10 +58,15 @@
 
 ### 2.3 Event 信封
 
+> **事件名约定（2026-08-30）**：Tauri v2 的事件名只允许字母数字与 `-` `/` `:` `_`，
+> **不允许点号**（`st.logs` 这类名字会让前端 `listen()` 直接被拒、Rust `emit` 静默失败）。
+> 因此全部事件用连字符：`st-runtime` / `st-logs` / `st-metrics` / `st-operation` / `st-term`。
+> 常量真源：core `ipc::event` + 前端 `protocol.ts event`，不要在调用点手写字符串。
+
 ```json
 {
   "protocol": 1,
-  "event": "st.logs",
+  "event": "st-logs",
   "workspace_id": "<canonical path>",
   "ts_ms": 1710000000000,
   "payload": {}
@@ -152,7 +157,7 @@
 | `runtime.stopAll` | `{ workspace_id }` | `{ accepted: true }` |
 | `runtime.restartOne` | `{ workspace_id, id }` | `{ accepted: true }` |
 
-起停 **立即返回 accepted**，不要等 Maven 起来（可能 40s）。UI 靠 `st.runtime`。
+起停 **立即返回 accepted**，不要等 Maven 起来（可能 40s）。UI 靠 `st-runtime`。
 
 若已 starting：`startOne` → `ALREADY_IN_PROGRESS`。  
 缺工具：`MISSING_TOOL`（同步返回，不 accepted）。  
@@ -187,7 +192,7 @@
 | `docker.build` | `{ workspace_id, name }` | `{ operation_id }`（长操作 `docker.build`，可取消） |
 | `docker.buildCancel` | `{ workspace_id, operation_id }` | `{ ok }`（best effort，已提交层缓存不回滚） |
 
-`ContainerSummary = { service, container_id, image, state, health?, ports: number[] }`；`ImageSummary = { repository, tag, id, size_bytes, created_ms }`。compose 服务的起停/快照/日志/搜索/端口复用现有命令（§4.4/§4.7），无新增；compose 服务构建经 `runtime.build`（kind `compose.build`）。构建事件走 `st.operation`（Engine 内置 hub 与壳层 hub 均桥接）。错误码 `DOCKER_*`/`COMPOSE_*` 见 1.3 规格 §10.1。
+`ContainerSummary = { service, container_id, image, state, health?, ports: number[] }`；`ImageSummary = { repository, tag, id, size_bytes, created_ms }`。compose 服务的起停/快照/日志/搜索/端口复用现有命令（§4.4/§4.7），无新增；compose 服务构建经 `runtime.build`（kind `compose.build`）。构建事件走 `st-operation`（Engine 内置 hub 与壳层 hub 均桥接）。错误码 `DOCKER_*`/`COMPOSE_*` 见 1.3 规格 §10.1。
 
 ### 4.7 日志（请求/响应部分）
 
@@ -212,14 +217,14 @@
 
 ## 5. Event 清单
 
-### `st.runtime`
+### `st-runtime`
 
 **何时发：** 任一服务/脚本的 `state`、`pid`、`lastError`、`health.ok` **发生变化**。健康检查成功但状态已是 running → **不发**。
 
 ```json
 {
   "protocol": 1,
-  "event": "st.runtime",
+  "event": "st-runtime",
   "workspace_id": "...",
   "ts_ms": 0,
   "payload": {
@@ -232,12 +237,12 @@
 
 payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事可每次 snapshot 全量（1.0 服务 ≤64，全量可接受）。1.0 实现选用 **全量快照** 简化正确性，避免漏 merge。性能：状态变化低频，全量没问题。
 
-### `st.logs`（流式）
+### `st-logs`（流式）
 
 ```json
 {
   "protocol": 1,
-  "event": "st.logs",
+  "event": "st-logs",
   "workspace_id": "...",
   "ts_ms": 0,
   "payload": {
@@ -268,7 +273,7 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
 
 ### `st.script`
 
-脚本状态变化（running/exited）。也可并进 `st.runtime.script`。1.0 只走 `st.runtime`，本事件 reserved，不必发。
+脚本状态变化（running/exited）。也可并进 `st-runtime.script`。1.0 只走 `st-runtime`，本事件 reserved，不必发。
 
 ---
 
@@ -369,7 +374,7 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
 |----|------|
 | invoke 常规（snapshot/probe） | p95 < 50ms（不含冷启动探测子进程） |
 | `startOne` accepted 返回 | < 20ms（不含等就绪） |
-| `st.logs` 批次 | ≤ 20 批/秒/工作区（50ms 聚合） |
+| `st-logs` 批次 | ≤ 20 批/秒/工作区（50ms 聚合） |
 | 环形缓冲 | 每源 ≤ ring_lines，内存约 2000×8KiB 上限截断后远小于此 |
 | 打开工作区 | 不同时跑第二份 supervisor |
 
@@ -379,19 +384,19 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
 
 ## 10. 1.1 扩展（模板 / Git / IDE / 扫描合并 / 应用数据 / 更新）
 
-### 10.0 长操作模型 `st.operation`
+### 10.0 长操作模型 `st-operation`
 
 clone、pull、模板创建、更新下载/安装统一走 operation：
 
 1. Command 校验参数后立即返回 `{ operation_id }`（目标 < 50ms）。
-2. 后台线程执行，进度经 `st.operation` 推送。
+2. 后台线程执行，进度经 `st-operation` 推送。
 3. **每个 operation 只有一个终态**；重复终态按 `operation_id` 去重。应用重启后未完成 operation 视为失败/未知，不显示为仍在运行。
 4. 不把认证信息、完整环境变量或敏感 URL 写入事件（URL 脱敏）。
 
 ```json
 {
   "protocol": 1,
-  "event": "st.operation",
+  "event": "st-operation",
   "workspace_id": null,
   "ts_ms": 0,
   "payload": {
@@ -637,9 +642,9 @@ gateway.trust     input:  { workspace_id } → { accepted }
 - `toolchain.probe` 输出增 `gateway: { nginx: {found,version,path}, caddy: {…}, apache: {…} }`
   （结构对齐 1.4 `gradle` 项）。探测顺序：`gateway.bin` → PATH → 平台已知位置
   （macOS homebrew、Linux /usr/sbin 等；Windows 只认 PATH 与显式 bin）；只探测不代装。
-- `st.runtime` 快照新增独立 `gateway` 字段（`GatewayRuntimeView`：kind/state/pid/port/
+- `st-runtime` 快照新增独立 `gateway` 字段（`GatewayRuntimeView`：kind/state/pid/port/
   health/last_exit/last_error/exit_reason），不进 services 列表——前端勿把网关当服务渲染。
-- 日志：网关进程 stdout/stderr 走既有 `st.logs` 批次，source=`{ kind: "gateway", id: "gateway" }`，
+- 日志：网关进程 stdout/stderr 走既有 `st-logs` 批次，source=`{ kind: "gateway", id: "gateway" }`，
   文件 `.supertask/logs/gateway.log`。
 
 1.6 新增错误码：
@@ -658,7 +663,7 @@ gateway.trust     input:  { workspace_id } → { accepted }
 
 **零新增命令。** python / go / generic 三 kind 走既有 `runtime.*` / `logs.*` / CLI / MCP 全链路；
 服务分组是纯呈现层（`services.*.group` 字段自 reserved 转 live）；崩溃通知是壳层/前端行为
-（`st.runtime` 状态迁移 → Toast / 系统通知），均不新增 IPC。
+（`st-runtime` 状态迁移 → Toast / 系统通知），均不新增 IPC。
 
 - `toolchain.probe` 输出 additive 扩展：`python` / `go`（`ToolProbe`，旧前端忽略缺省字段）；
   `toolchain.install`/`upgrade` 的 `tool` 参数接受 `python` / `go`（winget：`Python.Python.<maj.min>` / `GoLang.Go`）。
@@ -697,3 +702,83 @@ gateway.trust     input:  { workspace_id } → { accepted }
 - 协议真源：`docs/spec/cloud.md`；CI/测试全走 `FakeCloudProvider`，零真实网络。自托管参考服务
   的现状与启动约束见 `docs/spec/cloud-server.md`；该 server crate 的本地 HTTP router/API 与 in-process
   集成测试已完成，正式 HTTPS 部署、运营端点和真机验收仍未完成。
+
+### 10.13 AI 助手（2.1，feature spec §4–§5；截图对齐升级）
+
+九条已注册/接线的 AI 命令。数据卫生硬约束（§4.3）：key 永不进入任何返回值/日志/prompt；
+yaml 与日志进 prompt 前掩码（secret 值精确替换 + 形似 token/password/authorization 行整行 `<redacted>`）；
+零后台调用（全部命令仅用户显式触发）；超预算 `AI_CONTEXT_TOO_LARGE`。
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `ai.status` | — | `{configs:[{id,name,is_default,provider,model,base_url}], default_id, templates:[{id,name,content,enabled}], global_instructions, key_set, usage_today:{date,count}}`；`key_set` 只回布尔 |
+| `ai.complete` | `{task, payload, config_id?}` | `{text, usage, model, tokens?}`；task ∈ `explain_logs` / `config_suggest` / `enrich_draft`；`config_id` 缺省用默认配置；重试后成功只计 1 次用量 |
+| `ai.config.save` | `{input:{id?, name, base_url, model, provider, auth_method?, timeout_secs?, max_tokens?, context_window?, proxy_enabled?, proxy_url?, max_retries?, api_key?}}` | 保存后完整配置回显（不含 key）；`api_key`：缺省不动 / `""` 清除 / 非空覆盖（写入 secrets 固定 id `supertask.ai`）；name 唯一（大小写不敏感）；首个配置自动成为默认 |
+| `ai.config.delete` | `{id}` | 删除命名配置；默认被删后回退首个；旧单配置视图删除 `default` = 清空遗留字段 |
+| `ai.config.default` | `{id}` | 设为默认配置 |
+| `ai.instructions.save` | `{text}` | 全局自定义指令（trim；空串清除；≤8000 字符），注入所有场景 system |
+| `ai.template.save` | `{input:{id?, name, content, enabled}}` | 场景 Prompt 模板（name ≤50 / content ≤8000 / 启用总量 ≤16000 字符，Unicode 计数）；启用者注入 system |
+| `ai.template.delete` | `{id}` | 删除模板 |
+| `ai.models` | `{config_id?}` | 模型发现：OpenAI 兼容 `GET {base_url}/models` → `Vec<模型 id>`；anthropic 风格报 `AI_REQUEST_FAILED`（手动填模型） |
+
+配置模型（appdata `aiConfigs` 命名多配置 + `aiDefaultConfig`；旧单配置 `ai` 字段作为迁移来源，
+首次保存时自动迁入并在落盘时清除）：`{base_url, model, timeout_secs(1–600,默认120), max_tokens(默认8192,上限32768),
+provider 预设(8 种 API provider，无 CLI), api_style(openai_completions | anthropic_messages),
+auth_method(api_key→Bearer/x-api-key | bearer), context_window?, proxy_enabled?, proxy_url?, max_retries(0–10,默认2)}`。
+代理：裸 `host:port` 自动补 `http://`；loopback 端点强制绕过。重试：仅临时错误
+（429/500/502/503/504/超时/网络），指数不做、500ms×尝试数线性退避——**偏差备案**：feature spec §4.3
+原文「无自动重试」放宽为上述有界重试（对齐用户对齐 dbx 截图的验收预期）。
+
+- 错误码：`AI_NOT_CONFIGURED` / `AI_REQUEST_FAILED` / `AI_TIMEOUT` / `AI_CONTEXT_TOO_LARGE`
+  / `README_NOT_FOUND`。
+- 不新增事件流；无 CLI provider、无 Agent/Ask 对话模式（IDE 场景由 1.5 `supertask mcp` 覆盖，非目标）。
+- 测试：core `ai::` 40+ 单测（fake 传输矩阵，零真实网络）；mock 模式为确定性回文回显。
+
+### 10.14 README 导入（2.1，feature spec §3）
+
+两条已注册/接线的导入命令。导入器为**确定性规则引擎**（纯函数、零网络、零 LLM）：fenced code
+block（sh/bash/shell/zsh/console/powershell/text/plain/无标注）+ 行内 code 抽取 → `&&`/`||`/`;`/`|`/
+行尾 `&` 链拆 → `VAR=value` / `export|set` 前缀剥离（PORT → 端口提示、其余 → env 提示，均只进
+warnings 不直接写字段）→ 规则表分类 service / script / 忽略（章节加权：Run|Getting Started|Quick
+Start|Development|启动|快速开始|运行 ×2、Install|安装 ×1.5，行内 code 上限中置信度）→ 归一化
+argv 去重（取首个上下文）。与文件系统扫描融合（spec §3.4）：**scan 事实优先**——scan 已识别的
+服务为骨架，README 只补全 scan 缺失的 entry/script/extra_args 等字段；字段冲突时 scan 值保留、
+README 值经 `fields_meta.readme_value` 进「建议」列（向导双值可见，provenance ∈ scan/readme）。
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `import.readme` | `{workspace_id, path?}` | `{items, script_items?, warnings, readme_path}`：与 `workspace.scanPreview` 同形（`merge::preview_with_sources`），`items[].fields_meta` 携带字段来源+置信度；`script_items` 为脚本合并项（MergeChoice `target:"script"`）；`path` 显式指定且不存在 → `README_NOT_FOUND`；未指定且未发现 → scan 骨架 + 人话提示（非错误） |
+| `import.readmeApply` | `{workspace_id, path?, choices, base_hash}` | 同 `workspace.scanApply` 语义：应用前重导入（确定性可重复）→ `merge::apply`（含 `target:"script"` 脚本项，update 整体替换脚本）→ saveForm（hash 冲突 → `YAML_CONFLICT`） |
+
+- 应用链复用 1.1 merge 向导与 `scanApply` 的 base_hash 机制；向导确认是最后闸门，未确认不落盘。
+- 错误码：`README_NOT_FOUND`（显式路径不存在）；其余沿用 `YAML_CONFLICT` / `NO_WORKSPACE` 等。
+- 测试：core `importer::` 单测（抽取/分类矩阵、章节加权、去重、GBK 解码、scan 融合冲突优先级）
+  + `tests/golden/readme/` 五类 golden 快照（spring-node / python / go / 中文 / 纯噪声；无 README
+  用临时目录断言提示）；mock 模式确定性样例（README-only 新增 + 冲突建议列 + 端口提示）。
+
+### 10.15 运行页终端（2026-08-30，用户点名实现；UI 设计文档曾标「待排期」）
+
+PTY 终端四条命令 + 一条事件流。会话是 **UI 作用域**：随前端 Tab 挂载打开、卸载关闭，不进
+Engine 工作区状态机、不占工作区锁；应用退出时壳层 `close_all` 清场。PTY 复用 wezterm 系
+`portable-pty`（Windows ConPTY / Unix openpty）；**UI 永不拼 cmdline**——终端程序由后端决定
+（Windows PowerShell 优先回落 cmd；Unix `$SHELL` 回落 bash/sh），前端只传语义参数。
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `term.open` | `{workspace_id, service_id?, cols?, rows?}` | `{session_id, shell}`：`service_id` 缺省 = 工作区根 + 工作区环境链；指定服务 = 服务 cwd（与启动一致，复用 plan `cwd_rel`）+ §6.3 服务环境链 + 1.7 §7 镜像/代理注入（注入最低优先级）。上限 8 会话（`TERM_LIMIT`） |
+| `term.write` | `{session_id, data}` | `{accepted}`：xterm onData 原样透传（回车 `\r`）；会话不存在/已退出 → `TERM_SESSION_NOT_FOUND` |
+| `term.resize` | `{session_id, cols, rows}` | `{accepted}`：clamp 2–1000 |
+| `term.close` | `{session_id}` | `{accepted}`：幂等；ConPTY 句柄关闭即终止其上进程树（无需 Job Object） |
+
+- 事件 `st-term`：信封 `workspace_id` 恒为 null；负载 `{session_id, kind: "output"|"exited",
+  data?, exit_code?}`。`data` 为 lossy UTF-8（含 ANSI 序列，前端 xterm 直接渲染）；`exited`
+  后会话自动移除（`wait` 线程 finalize）。
+- ConPTY 启动握手：conhost 先发 `\x1b[6n` 等终端回 DSR 光标报告后才渲染——xterm.js 自动回应，
+  无需后端处理。
+- 错误码：`TERM_SESSION_NOT_FOUND` / `TERM_SPAWN_FAILED` / `TERM_LIMIT`（均随 `TERM_*` 前缀新入码表）。
+- 测试：core `term::` 单测（shell 选择、会话缺省错误/幂等关闭）+ `#[ignore]` 真机 ConPTY 冒烟
+  （`cargo test -p supertask-core term:: -- --ignored`：开 shell → 代答 DSR → echo 回显 →
+  exit → 清场断言）；mock 模式确定性假 shell（help/echo/pwd/ls/dir/ver/date/clear/exit，
+  事件序列与真链路同形）。
+- 前端：运行页服务抽屉「终端」Tab（`components/terminal-view.tsx`，xterm.js + FitAddon），
+  会话随 Tab 卸载关闭；退出/错误态提供「重新打开」。

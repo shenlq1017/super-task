@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, Settings2, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,19 @@ export function envRecordFromRows(rows: EnvRow[]): Record<string, string> {
     out[key] = row.value;
   }
   return out;
+}
+
+/** 单行是否形如环境变量条目（KEY=VALUE / export KEY=VALUE / YAML 风格 KEY: VALUE）。
+ * 冒号要求后跟空格（YAML 规范），避免把 Windows 路径 C:\xx 误判成条目。 */
+const ENTRY_LINE_RE = /^\s*(?:export\s+)?[A-Za-z_][\w.-]*\s*(?:=|:\s)/;
+
+/** 多行文本是否整体像 env 块（每个非空非注释行都是条目）；用于区分「粘贴 PEM/证书值」等误伤场景。 */
+function looksLikeEnvBlock(text: string): boolean {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+  return lines.length > 0 && lines.every((l) => ENTRY_LINE_RE.test(l));
 }
 
 type EnvVariablesEditorProps = {
@@ -55,14 +68,22 @@ export function EnvVariablesEditor({
   const [importText, setImportText] = useState("");
   const [importFormat, setImportFormat] = useState<EnvImportFormat>("auto");
   const [showImport, setShowImport] = useState(false);
+  // 自己 emit 出去的 record 快照：父组件受控回流时内容相同就不重建 rows，
+  // 否则新加的空行会被丢弃（一闪而过）、输入中的行 id 变化导致失焦。
+  const lastEmitted = useRef<string>(JSON.stringify(value));
 
   useEffect(() => {
+    const snapshot = JSON.stringify(value);
+    if (snapshot === lastEmitted.current) return;
+    lastEmitted.current = snapshot;
     setRows(envRowsFromRecord(value));
   }, [value]);
 
   const emit = (nextRows: EnvRow[]) => {
     setRows(nextRows);
-    onChange(envRecordFromRows(nextRows));
+    const record = envRecordFromRows(nextRows);
+    lastEmitted.current = JSON.stringify(record);
+    onChange(record);
   };
 
   const addRow = () => {
@@ -94,8 +115,40 @@ export function EnvVariablesEditor({
     toast(onSave ? t("operations.importEnvOkWithSave", { n: keys.length }) : t("operations.importEnvOk", { n: keys.length }), "ok");
   };
 
+  /** 快捷粘贴：文本整体像 env 块时解析并合并（同名覆盖、新键追加），返回是否已消费该粘贴。 */
+  const pasteMerge = (text: string, sourceRowId?: string): boolean => {
+    if (!looksLikeEnvBlock(text)) return false;
+    const parsed = parseEnvImport(text, "auto");
+    const keys = Object.keys(parsed);
+    if (!keys.length) return false;
+    const map = new Map(rows.map((r) => [r.key.trim(), r]));
+    for (const [k, v] of Object.entries(parsed)) {
+      map.set(k, { id: `paste-${k}-${Date.now()}`, key: k, value: v });
+    }
+    let next = [...map.values()];
+    // 粘贴进的是用户刚点「添加变量」留下的空行 → 合并后移除，避免残留空行
+    if (sourceRowId) {
+      const src = rows.find((r) => r.id === sourceRowId);
+      if (src && !src.key.trim()) next = next.filter((r) => r.id !== sourceRowId);
+    }
+    emit(next);
+    toast(onSave ? t("operations.importEnvOkWithSave", { n: keys.length }) : t("operations.importEnvOk", { n: keys.length }), "ok");
+    return true;
+  };
+
+  const onKeyPaste = (e: ClipboardEvent<HTMLInputElement>, rowId: string) => {
+    if (pasteMerge(e.clipboardData.getData("text"), rowId)) e.preventDefault();
+  };
+
+  const onRootPaste = (e: ClipboardEvent<HTMLDivElement>) => {
+    // 焦点在输入框/textarea 时由字段自身处理（value 粘贴、导入面板等）
+    if ((e.target as HTMLElement).closest("input, textarea")) return;
+    if (pasteMerge(e.clipboardData.getData("text"))) e.preventDefault();
+  };
+
   return (
-    <div className={cn("flex flex-col gap-3", className)}>
+    // tabIndex=-1：点击本区域任意处即可获得焦点，Ctrl+V 才能派发到根容器（paste 只发给聚焦元素）
+    <div className={cn("flex flex-col gap-3 outline-none", className)} tabIndex={-1} onPaste={onRootPaste}>
       <div className="flex flex-wrap items-center gap-2">
         {!hideTitle ? (
           <div className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
@@ -151,7 +204,10 @@ export function EnvVariablesEditor({
       ) : null}
 
       {rows.length === 0 ? (
-        <div className="text-sm text-[var(--t3,#8a8f98)]">{t("env.noVars")}</div>
+        <div className="flex flex-col gap-1 text-sm text-[var(--t3,#8a8f98)]">
+          <span>{t("env.noVars")}</span>
+          <span className="text-[0.72rem]">{t("env.pasteHint")}</span>
+        </div>
       ) : (
         <div className="flex flex-col gap-1.5">
           {rows.map((row) => (
@@ -159,6 +215,7 @@ export function EnvVariablesEditor({
               <Input
                 value={row.key}
                 onChange={(e) => updateRow(row.id, { key: e.target.value })}
+                onPaste={(e) => onKeyPaste(e, row.id)}
                 placeholder="KEY"
                 className="font-mono text-[12px]"
                 aria-label={t("env.varNameAria")}

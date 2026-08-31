@@ -2,7 +2,8 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useWorkspace } from "../providers/workspace-provider";
 import { useToast } from "@/components/ui/toast";
-import { IpcFailure } from "../ipc/protocol";
+import { useUnsavedGuard } from "@/providers/unsaved-guard";
+import { IpcFailure } from "@/ipc/protocol";
 import { formatIpcFailure } from "@/lib/error-messages";
 
 /**
@@ -15,9 +16,12 @@ export function useOpenWorkspace() {
   const { toast } = useToast();
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { confirmLeave } = useUnsavedGuard();
 
   return async (p: string) => {
     if (!p.trim()) return;
+    // 打开新工作区会整体替换 spec，先过未保存守卫（打开动作先于导航发生，路由 blocker 拦不住）
+    if (ws.state.workspaceId && !(await confirmLeave())) return;
     try {
       await ws.actions.open(p.trim());
       toast(t("common.workspaceOpened"), "ok");

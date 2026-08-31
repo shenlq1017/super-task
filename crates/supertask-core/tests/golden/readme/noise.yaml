@@ -1,0 +1,7 @@
+version: 1
+kind: workspace
+name: noise
+root: .
+env: {}
+services: {}
+scripts: {}

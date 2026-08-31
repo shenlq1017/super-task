@@ -2,10 +2,12 @@
   "name": "supertask",
   "private": true,
   "version": "0.1.0",
-  "description": "SuperTask desktop workbench — Tauri 2 + Rust + React. Root proxies the Tauri CLI; frontend code lives in /frontend.",
+  "description": "SuperTask desktop workbench — Tauri 2 + Rust + React. Root proxies the Tauri CLI; frontend code lives in /frontend, the cloud admin console in /cloud-console.",
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
+    "console:dev": "npm --prefix cloud-console run dev",
+    "build:console": "npm --prefix cloud-console run build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

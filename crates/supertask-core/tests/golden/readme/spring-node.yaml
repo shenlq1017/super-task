@@ -1,0 +1,42 @@
+version: 1
+kind: workspace
+name: spring-node
+root: .
+env: {}
+services:
+  user-api:
+    kind: spring-boot
+    enabled: true
+    env: {}
+    depends_on: []
+    grace_secs: 45
+    health:
+      type: tcp
+      interval_secs: 2
+      timeout_secs: 2
+    launch: run
+    module: user-api
+  web:
+    kind: node
+    enabled: true
+    env: {}
+    depends_on: []
+    grace_secs: 15
+    health:
+      type: tcp
+      interval_secs: 2
+      timeout_secs: 2
+    dir: .
+    package_manager: npm
+    script: dev
+scripts:
+  install:
+    cmds:
+    - npm install
+    env: {}
+    timeout_secs: 1800
+  package:
+    cmds:
+    - mvn clean package
+    env: {}
+    timeout_secs: 1800

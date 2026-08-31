@@ -9,6 +9,7 @@ import {
   Layers,
   RefreshCw,
   SlidersHorizontal,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,16 +25,20 @@ import {
 } from "@/components/ui/select";
 import { EnvVariablesEditor } from "@/components/env-variables-editor";
 import { TaskfileImportPanel } from "@/components/taskfile-import-panel";
+import { ScanPreviewPanel, type FieldChoice } from "@/components/scan-merge";
 import { cn } from "@/lib/utils";
 import { useYaml } from "@/providers/yaml-provider";
 import { useWorkspace } from "@/providers/workspace-provider";
 import { useToast } from "@/components/ui/toast";
+import { useUnsavedEntry, useUnsavedGuard } from "@/providers/unsaved-guard";
+import { AiOutputBody } from "@/components/ai-output-panel";
 import {
   apiScanApply,
   apiScanPreview,
   apiTaskfileApply,
   apiTaskfilePreview,
   apiYamlGet,
+  apiAiComplete,
   apiProfilesList,
   apiProfilesActivate,
   apiSecretsStatus,
@@ -44,15 +49,12 @@ import {
 import { IpcFailure } from "../ipc/protocol";
 import type {
   MergeChoice,
-  ScanMergeItem,
   ScanPreviewOut,
-  ServiceSpec,
   SuperTaskFile,
   TaskfilePreviewOut,
 } from "@/ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
 import { formatIpcFailure } from "@/lib/error-messages";
-import i18n from "@/i18n";
 
 function detectCycle(spec: SuperTaskFile): string[] | null {
   const deps: Record<string, string[]> = {};
@@ -321,6 +323,28 @@ function FormTab() {
     });
   }, [serviceIds]);
 
+  const save = async (): Promise<boolean> => {
+    if (!draft) return false;
+    const cycle = detectCycle(draft);
+    if (cycle) {
+      toast(t("pages.config.cycleDetected", { cycle: cycle.join(" → ") }), "err");
+      return false;
+    }
+    setSaving(true);
+    const ok = await yaml.actions.saveForm(draft);
+    setSaving(false);
+    if (ok) toast(t("pages.config.saved"), "ok");
+    else toast(yaml.state.error ?? t("pages.config.saveFailed"), "err");
+    return ok;
+  };
+
+  // 未保存守卫：表单草稿与 spec 有差异即视为脏
+  useUnsavedEntry(
+    "config.form",
+    () => !!draft && !!spec && JSON.stringify(draft) !== JSON.stringify(spec),
+    () => save(),
+  );
+
   if (!spec || !draft) return <div className="p-4 text-[0.875rem] text-[var(--t3,#8a8f98)]">{t("pages.config.noSpec")}</div>;
 
   const setSvc = (id: string, patch: Partial<SuperTaskFile["services"][string]>) =>
@@ -336,19 +360,6 @@ function FormTab() {
       else next.add(id);
       return next;
     });
-
-  const save = async () => {
-    const cycle = detectCycle(draft!);
-    if (cycle) {
-      toast(t("pages.config.cycleDetected", { cycle: cycle.join(" → ") }), "err");
-      return;
-    }
-    setSaving(true);
-    const ok = await yaml.actions.saveForm(draft!);
-    setSaving(false);
-    if (ok) toast(t("pages.config.saved"), "ok");
-    else toast(yaml.state.error ?? t("pages.config.saveFailed"), "err");
-  };
 
   const wsEnvCount = Object.keys(draft.env).length;
 
@@ -543,18 +554,87 @@ function FormTab() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// 2.1 §4.2 场景 2：AI 配置建议（sanitize 在后端；建议 yaml 整段填入编辑器，保存仍走用户点击）
+// ---------------------------------------------------------------------------
+
+/** 从 AI 回复中提取 ```yaml 围栏作为「建议 yaml 参考稿」。 */
+function extractYamlFence(text: string): string | null {
+  const match = /```yaml\s*\n([\s\S]*?)(?:```|$)/.exec(text);
+  const body = match?.[1]?.trim();
+  return body ? body : null;
+}
+
+type AiSuggestion = { text: string; suggestedYaml: string | null };
+
+function AiSuggestCard({
+  suggestion,
+  busy,
+  onFill,
+  onClose,
+}: {
+  suggestion: AiSuggestion;
+  busy: boolean;
+  onFill: (yaml: string) => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="mx-4 mt-3 rounded-[var(--r-md,12px)] border border-[rgb(94_106_210_/_0.35)] bg-[var(--surface,#fff)] p-3 shadow-[var(--shadow-1,0_1px_2px_rgb(16_24_40_/_0.05))]">
+      <div className="flex items-center gap-2">
+        <Sparkles className="size-3.5 text-[var(--st-accent,#5e6ad2)]" />
+        <h4 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">{t("pages.config.aiSuggestTitle")}</h4>
+        <Badge variant="outline" className="text-[10px]">{t("pages.config.aiSuggestBadge")}</Badge>
+        <Button variant="outline" size="sm" className="ml-auto" onClick={onClose}>
+          {t("common.close")}
+        </Button>
+      </div>
+      <AiOutputBody content={suggestion.text} className="mt-2" />
+      {suggestion.suggestedYaml ? (
+        <>
+          <p className="mt-3 text-[0.72rem] font-medium text-[var(--t3,#8a8f98)]">{t("pages.config.aiSuggestYamlLabel")}</p>
+          <pre className="mt-1 max-h-56 overflow-auto rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] p-2 font-mono text-[0.72rem] leading-relaxed text-[var(--t1,#222326)]">
+            {suggestion.suggestedYaml}
+          </pre>
+          <div className="mt-2 flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => onFill(suggestion.suggestedYaml!)} disabled={busy}>
+              {t("pages.config.aiSuggestFill")}
+            </Button>
+            <span className="text-[0.7rem] text-[var(--t3,#8a8f98)]">{t("pages.config.aiSuggestFillHint")}</span>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function RawTab() {
   const yaml = useYaml();
   const { toast } = useToast();
   const { t } = useTranslation();
   const [text, setText] = useState(yaml.state.text);
   const [saving, setSaving] = useState(false);
+  // 2.1：AI 配置建议（soft 按钮触发；只建议不落盘）
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestion, setSuggestion] = useState<AiSuggestion | null>(null);
 
   useEffect(() => {
     setText(yaml.state.text);
   }, [yaml.state.text]);
 
   const dirty = text !== yaml.state.text;
+
+  const save = async (): Promise<boolean> => {
+    setSaving(true);
+    const ok = await yaml.actions.saveText(text);
+    setSaving(false);
+    if (ok) toast(t("pages.config.yamlSaved"), "ok");
+    else toast(yaml.state.error ?? t("pages.config.saveFailedReload"), "err");
+    return ok;
+  };
+
+  // 未保存守卫：原始 YAML 文本有改动即视为脏
+  useUnsavedEntry("config.raw", () => text !== yaml.state.text, save);
 
   const ports = useMemo(() => {
     const map: Record<number, number> = {};
@@ -569,12 +649,23 @@ function RawTab() {
     return dup;
   }, [text]);
 
-  const save = async () => {
-    setSaving(true);
-    const ok = await yaml.actions.saveText(text);
-    setSaving(false);
-    if (ok) toast(t("pages.config.yamlSaved"), "ok");
-    else toast(yaml.state.error ?? t("pages.config.saveFailedReload"), "err");
+  const askAi = async () => {
+    if (suggesting) return;
+    setSuggesting(true);
+    setSuggestion(null);
+    try {
+      const problems = [...yaml.state.warnings];
+      if (ports) problems.push(t("pages.config.portDup", { port: ports }));
+      const out = await apiAiComplete("config_suggest", {
+        yaml: text,
+        problems,
+      });
+      setSuggestion({ text: out.text, suggestedYaml: extractYamlFence(out.text) });
+    } catch (e) {
+      toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
+    } finally {
+      setSuggesting(false);
+    }
   };
 
   return (
@@ -593,6 +684,17 @@ function RawTab() {
           {t("pages.config.revert")}
         </Button>
         {dirty ? <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">{t("pages.config.unsaved")}</Badge> : null}
+        <Button
+          size="sm"
+          variant="soft"
+          className="gap-1"
+          onClick={() => void askAi()}
+          disabled={suggesting || !text.trim()}
+          title={t("pages.config.aiSuggestTitleFull")}
+        >
+          <Sparkles className={suggesting ? "size-3.5 animate-pulse" : "size-3.5"} />
+          {suggesting ? t("pages.config.aiSuggesting") : t("pages.config.aiSuggest")}
+        </Button>
         {ports ? (
           <span className="text-[0.75rem] text-[var(--st-warn,#9a6700)]">{t("pages.config.portDup", { port: ports })}</span>
         ) : (
@@ -602,6 +704,14 @@ function RawTab() {
           hash {yaml.state.hash.slice(0, 8) || "—"} · {t("common.linesUnit", { n: text.split("\n").length })}
         </span>
       </div>
+      {suggestion ? (
+        <AiSuggestCard
+          suggestion={suggestion}
+          busy={suggesting}
+          onFill={(yamlText) => setText(yamlText)}
+          onClose={() => setSuggestion(null)}
+        />
+      ) : null}
       <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -612,261 +722,12 @@ function RawTab() {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// 重新扫描 merge 预览（ipc.md §10.4，spec §2.3/§6/§13）
 // ---------------------------------------------------------------------------
 
-type FieldChoice = "keep" | "update";
-
-/** ServiceSpec 字段值的小字展示（对象/数组 JSON 化，仅展示用）。 */
-function specFieldValue(spec: ServiceSpec | null | undefined, field: string): string {
-  if (!spec) return "—";
-  const v = (spec as unknown as Record<string, unknown>)[field];
-  if (v === undefined || v === null) return "—";
-  if (typeof v === "string") return v === "" ? i18n.t("pages.config.emptyValue") : v;
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  try {
-    return JSON.stringify(v);
-  } catch {
-    return "—";
-  }
-}
-
-const SCAN_GROUPS: { status: ScanMergeItem["status"]; titleKey: string }[] = [
-  { status: "added", titleKey: "pages.config.groupAdded" },
-  { status: "id_conflict", titleKey: "pages.config.groupConflict" },
-  { status: "match_diff", titleKey: "pages.config.groupDiff" },
-  { status: "match_same", titleKey: "pages.config.groupSame" },
-  { status: "missing", titleKey: "pages.config.groupMissing" },
-];
-
-function ScanStatusBadge({ status }: { status: ScanMergeItem["status"] }) {
-  const { t } = useTranslation();
-  if (status === "match_same") return <Badge variant="secondary">{t("pages.config.groupSame")}</Badge>;
-  if (status === "match_diff") return <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">{t("pages.config.groupDiff")}</Badge>;
-  if (status === "missing") return <Badge variant="outline" className="border-red-200 bg-[var(--st-danger-tint,#fdecec)] text-[#DC2626]">{t("pages.config.groupMissing")}</Badge>;
-  if (status === "id_conflict") return <Badge variant="outline" className="border-[#f0d58a] bg-[#fdf6e3] text-[#B7791F]">{t("pages.config.groupConflict")}</Badge>;
-  return <Badge variant="soon">{t("pages.config.groupAdded")}</Badge>;
-}
-
-/** match_diff 的字段行：当前值 / 发现值并排小字 + 保留/采用切换。 */
-function DiffFieldRow({
-  item,
-  field,
-  choice,
-  onChoose,
-}: {
-  item: ScanMergeItem;
-  field: string;
-  choice: FieldChoice;
-  onChoose: (c: FieldChoice) => void;
-}) {
-  const { t } = useTranslation();
-  const cur = specFieldValue(item.current, field);
-  const disc = specFieldValue(item.discovered, field);
-  return (
-    <div className="flex flex-wrap items-center gap-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] px-2 py-1.5">
-      <code className="shrink-0 font-mono text-[0.72rem] font-semibold text-[var(--t1,#222326)]">{field}</code>
-      <span className="min-w-0 flex-1 truncate font-mono text-[0.7rem] text-[var(--t2,#62666d)]" title={t("pages.config.currentTitle", { value: cur })}>
-        {t("pages.config.currentShort")} {cur}
-      </span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[0.7rem] text-[var(--st-accent,#5e6ad2)]" title={t("pages.config.discoveredTitle", { value: disc })}>
-        {t("pages.config.discoveredShort")} {disc}
-      </span>
-      <span className="inline-flex shrink-0 items-center gap-0.5 rounded-[var(--r-sm,8px)] bg-[var(--surface,#fff)] p-0.5">
-        <button
-          type="button"
-          aria-pressed={choice === "keep"}
-          onClick={() => onChoose("keep")}
-          className={cn(
-            "rounded-[6px] px-2 py-0.5 text-[0.7rem] font-semibold transition-all duration-150",
-            choice === "keep"
-              ? "bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent-hover,#4f5ac8)]"
-              : "text-[var(--t3,#8a8f98)] hover:text-[var(--t1,#222326)]",
-          )}
-        >
-          {t("pages.config.keepCurrent")}
-        </button>
-        <button
-          type="button"
-          aria-pressed={choice === "update"}
-          onClick={() => onChoose("update")}
-          className={cn(
-            "rounded-[6px] px-2 py-0.5 text-[0.7rem] font-semibold transition-all duration-150",
-            choice === "update"
-              ? "bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent-hover,#4f5ac8)]"
-              : "text-[var(--t3,#8a8f98)] hover:text-[var(--t1,#222326)]",
-          )}
-        >
-          {t("pages.config.useDiscovered")}
-        </button>
-      </span>
-    </div>
-  );
-}
-
-function ScanItemRow({
-  item,
-  checked,
-  onToggle,
-  fieldChoices,
-  onFieldChoice,
-}: {
-  item: ScanMergeItem;
-  checked: boolean;
-  onToggle: (v: boolean) => void;
-  fieldChoices: Record<string, FieldChoice>;
-  onFieldChoice: (field: string, c: FieldChoice) => void;
-}) {
-  const { t } = useTranslation();
-  const kind = item.discovered?.kind ?? item.current?.kind ?? "";
-  return (
-    <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] p-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        {item.status === "added" || item.status === "id_conflict" ? (
-          <label className="flex shrink-0 items-center gap-1.5 text-[0.76rem] font-medium text-[var(--t1,#222326)]">
-            <input type="checkbox" checked={checked} onChange={(e) => onToggle(e.target.checked)} />
-            {item.status === "added" ? t("pages.config.addToYaml") : t("pages.config.addAsCandidate")}
-          </label>
-        ) : null}
-        <span className="font-mono text-[0.82rem] font-semibold text-[var(--t1,#222326)]">{item.service_id}</span>
-        {kind ? (
-          <Badge variant="outline" className="text-[10px] uppercase">
-            {kind}
-          </Badge>
-        ) : null}
-        <ScanStatusBadge status={item.status} />
-      </div>
-
-      {item.status === "id_conflict" ? (
-        <div className="mt-1.5 text-[0.74rem] text-[var(--t2,#62666d)]">
-          {t("pages.config.idConflictDesc")}
-          <code className="ml-1 rounded bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[0.72rem]">
-            {item.candidate_id ?? "—"}
-          </code>
-        </div>
-      ) : null}
-
-      {item.status === "match_diff" && item.field_diffs.length > 0 ? (
-        <div className="mt-2 flex flex-col gap-1.5">
-          {item.field_diffs.map((f) => (
-            <DiffFieldRow
-              key={f}
-              item={item}
-              field={f}
-              choice={fieldChoices[f] ?? "keep"}
-              onChoose={(c) => onFieldChoice(f, c)}
-            />
-          ))}
-          <span className="text-[0.7rem] text-[var(--t3,#8a8f98)]">
-            {t("pages.config.updateScopeHint")}
-          </span>
-        </div>
-      ) : null}
-
-      {item.status === "missing" ? (
-        <div className="mt-1.5 text-[0.74rem] text-[#B7791F]">
-          {t("pages.config.missingDesc")}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ScanPreviewPanel({
-  preview,
-  addChecked,
-  onToggleAdd,
-  onSelectAllAddable,
-  fieldChoices,
-  onFieldChoice,
-  applying,
-  applyCount,
-  onApply,
-  onClose,
-}: {
-  preview: ScanPreviewOut;
-  addChecked: Record<string, boolean>;
-  onToggleAdd: (id: string, v: boolean) => void;
-  onSelectAllAddable: (v: boolean) => void;
-  fieldChoices: Record<string, Record<string, FieldChoice>>;
-  onFieldChoice: (id: string, field: string, c: FieldChoice) => void;
-  applying: boolean;
-  applyCount: number;
-  onApply: () => void;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
-  const addable = preview.items.filter((it) => it.status === "added" || it.status === "id_conflict");
-  const allAddableChecked = addable.length > 0 && addable.every((it) => addChecked[it.service_id]);
-
-  return (
-    <section
-      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--r-lg,16px)] border border-[rgb(94_106_210_/_0.35)] bg-[var(--surface,#fff)] shadow-[var(--shadow-2,0_6px_20px_rgb(16_24_40_/_0.09))]"
-      aria-label={t("pages.config.rescanAria")}
-    >
-      <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-t-[var(--r-lg,16px)] border-b border-[var(--line,#e6e6e6)] bg-[var(--st-accent-tint,#eef0fb)] px-3 py-2.5">
-        <h3 className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{t("pages.config.rescanTitle")}</h3>
-        <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{t("pages.config.itemCount", { n: preview.items.length })}</span>
-        {addable.length > 0 ? (
-          <Button size="sm" variant="outline" onClick={() => onSelectAllAddable(!allAddableChecked)}>
-            {allAddableChecked ? t("pages.config.unselectAllAdded") : t("pages.config.selectAllAdded", { n: addable.length })}
-          </Button>
-        ) : null}
-        <Button variant="outline" size="sm" className="ml-auto" onClick={onClose}>
-          {t("common.close")}
-        </Button>
-      </div>
-
-      {preview.warnings.length > 0 ? (
-        <div className="mx-3 mt-2 rounded-[var(--r-sm,8px)] border border-[#f0d58a] bg-[#fdf6e3] px-2.5 py-1.5 text-[0.74rem] leading-relaxed text-[#B7791F]" role="alert">
-          {preview.warnings.map((w, i) => (
-            <div key={i}>{w}</div>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-        <div className="flex flex-col gap-3">
-          {SCAN_GROUPS.map(({ status, titleKey }) => {
-            const items = preview.items.filter((it) => it.status === status);
-            if (items.length === 0) return null;
-            return (
-              <div key={status}>
-                <div className="mb-1.5 flex items-center gap-2 px-0.5">
-                  <span className="text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t(titleKey)}</span>
-                  <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{items.length}</span>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  {items.map((it) => (
-                    <ScanItemRow
-                      key={it.service_id}
-                      item={it}
-                      checked={addChecked[it.service_id] ?? false}
-                      onToggle={(v) => onToggleAdd(it.service_id, v)}
-                      fieldChoices={fieldChoices[it.service_id] ?? {}}
-                      onFieldChoice={(f, c) => onFieldChoice(it.service_id, f, c)}
-                    />
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="flex shrink-0 items-center gap-2 rounded-b-[var(--r-lg,16px)] border-t border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] px-3 py-2.5">
-        <span className="min-w-0 flex-1 text-[0.74rem] text-[var(--t3,#8a8f98)]">
-          {t("pages.config.applyHint")}
-        </span>
-        <Button size="sm" variant="default" onClick={onApply} disabled={applying || applyCount === 0}>
-          {applying ? t("pages.config.applying") : t("pages.config.applySelected", { n: applyCount })}
-        </Button>
-      </div>
-    </section>
-  );
-}
+// ---------------------------------------------------------------------------
+// 重新扫描 merge 预览（ipc.md §10.4）：向导组件已抽到 components/scan-merge.tsx，
+// 2.1 README 导入（/discover）共用同一向导；本页仅保留状态与调用。
+// ---------------------------------------------------------------------------
 
 
 export function ConfigPage() {
@@ -875,6 +736,14 @@ export function ConfigPage() {
   const { toast } = useToast();
   const { t } = useTranslation();
   const [tab, setTab] = useState<"form" | "raw">("form");
+  const { confirmLeave } = useUnsavedGuard();
+
+  // 页内 Tab 切换守卫：另一 Tab 有未保存内容时先确认
+  const switchTab = async (k: "form" | "raw") => {
+    if (k === tab) return;
+    if (!(await confirmLeave())) return;
+    setTab(k);
+  };
 
   // 重新扫描预览状态
   const [preview, setPreview] = useState<ScanPreviewOut | null>(null);
@@ -1039,7 +908,7 @@ export function ConfigPage() {
             <button
               key={tabItem.k}
               type="button"
-              onClick={() => setTab(tabItem.k)}
+              onClick={() => void switchTab(tabItem.k)}
               className={cn(
                 "flex cursor-pointer items-center gap-1 rounded-[7px] px-3 py-1.5 text-[0.73rem] font-semibold transition-all duration-150",
                 tab === tabItem.k

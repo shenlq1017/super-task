@@ -12,6 +12,8 @@ pub enum AppError {
     NotFound,
     Conflict,
     Quota,
+    AdminForbidden,
+    AdminNotConfigured,
     Internal(String),
 }
 
@@ -34,6 +36,18 @@ impl AppError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "CLOUD_QUOTA_EXCEEDED",
                 "已超过云端配额".into(),
+            ),
+            // Admin codes stay outside the client-facing CLOUD_* namespace so the
+            // desktop provider's HTTP-to-error mapping is unaffected.
+            Self::AdminForbidden => (
+                StatusCode::FORBIDDEN,
+                "ADMIN_FORBIDDEN",
+                "需要管理员权限".into(),
+            ),
+            Self::AdminNotConfigured => (
+                StatusCode::FORBIDDEN,
+                "ADMIN_NOT_CONFIGURED",
+                "服务端未配置管理员".into(),
             ),
             Self::Internal(message) => {
                 tracing::error!(error = %message, "cloud server internal error");
@@ -70,6 +84,8 @@ impl std::fmt::Display for AppError {
             Self::NotFound => formatter.write_str("资源不存在"),
             Self::Conflict => formatter.write_str("实体修订冲突"),
             Self::Quota => formatter.write_str("已超过云端配额"),
+            Self::AdminForbidden => formatter.write_str("需要管理员权限"),
+            Self::AdminNotConfigured => formatter.write_str("服务端未配置管理员"),
         }
     }
 }

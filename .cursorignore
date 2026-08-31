@@ -1,0 +1,2 @@
+# Nested AGENTS.md is auto-injected as always-on rules. Skills use SKILL.md + GUIDE.md.
+.agents/skills/**/AGENTS.md

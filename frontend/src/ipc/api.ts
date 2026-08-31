@@ -1,6 +1,7 @@
-import { invoke } from "./invoke";
+import { invoke, isTauri } from "./invoke";
 import {
   cmd,
+  event,
   type AppLoadOut,
   type GitStatus,
   type HelloOut,
@@ -10,6 +11,7 @@ import {
   type MergeChoice,
   type OpenIdeOut,
   type OperationIdOut,
+  type ReadmePreviewOut,
   type Prefs,
   type RuntimeSnapshot,
   type ScanPreviewOut,
@@ -55,6 +57,15 @@ import {
   type CloudMigrateApplyOut,
   type CloudTelemetryOut,
   type CloudEndpointSetOut,
+  type AiTask,
+  type AiConfigOut,
+  type AiConfigSaveIn,
+  type AiStatusOut,
+  type AiCompleteOut,
+  type AiStreamEnvelope,
+  type AiTemplate,
+  type AiTemplateSaveIn,
+  type TermOpenOut,
 } from "./protocol";
 
 // ---------------------------------------------------------------------------
@@ -400,6 +411,18 @@ export const apiScanPreview = (workspaceId: string) =>
 export const apiScanApply = (workspaceId: string, choices: MergeChoice[], baseHash: string) =>
   invoke<YamlSaveOut>(cmd.WORKSPACE_SCAN_APPLY, { workspaceId, choices, baseHash });
 
+/** 2.1 README 导入预览（ipc.md §10.13；缺失/未发现时 warnings 给人话提示）。 */
+export const apiImportReadme = (workspaceId: string, path?: string) =>
+  invoke<ReadmePreviewOut>(cmd.IMPORT_README, { workspaceId, path: path ?? null });
+
+/** 2.1 README 导入应用：走 saveForm 机制（base_hash 冲突 → YAML_CONFLICT）。 */
+export const apiImportReadmeApply = (
+  workspaceId: string,
+  path: string | null,
+  choices: MergeChoice[],
+  baseHash: string,
+) => invoke<YamlSaveOut>(cmd.IMPORT_README_APPLY, { workspaceId, path, choices, baseHash });
+
 // ---------------------------------------------------------------------------
 // Taskfile 导入（1.4，ipc.md §10.8）
 // ---------------------------------------------------------------------------
@@ -490,6 +513,97 @@ export const apiCloudSetEndpoint = (endpoint: string) => {
   if (!normalized) return Promise.reject(new Error("Endpoint is required"));
   return invoke<CloudEndpointSetOut>(cmd.CLOUD_ENDPOINT_SET, { endpoint: normalized });
 };
+
+// ---------------------------------------------------------------------------
+// AI（2.1，ipc.md §10.13；key 经 IPC 写入 secrets 后端，绝不回显）
+// ---------------------------------------------------------------------------
+
+export const apiAiStatus = () => invoke<AiStatusOut>(cmd.AI_STATUS, {});
+
+/** 新建/更新命名配置；input.apiKey：undefined 不动 / "" 清除 / 非空覆盖。 */
+export const apiAiConfigSave = (input: AiConfigSaveIn) =>
+  invoke<AiConfigOut>(cmd.AI_CONFIG_SAVE, { input });
+
+export const apiAiConfigDelete = (id: string) =>
+  invoke<{ ok: boolean }>(cmd.AI_CONFIG_DELETE, { id });
+
+export const apiAiConfigDefault = (id: string) =>
+  invoke<{ ok: boolean }>(cmd.AI_CONFIG_DEFAULT, { id });
+
+/** 全局自定义指令（trim；空串清除；≤8000 字符）。 */
+export const apiAiInstructionsSave = (text: string) =>
+  invoke<{ text: string }>(cmd.AI_INSTRUCTIONS_SAVE, { text });
+
+export const apiAiTemplateSave = (input: AiTemplateSaveIn) =>
+  invoke<AiTemplate>(cmd.AI_TEMPLATE_SAVE, { input });
+
+export const apiAiTemplateDelete = (id: string) =>
+  invoke<{ ok: boolean }>(cmd.AI_TEMPLATE_DELETE, { id });
+
+/** OpenAI 兼容端点模型发现（GET /models）；configId 缺省用默认配置。 */
+export const apiAiModels = (configId?: string) =>
+  invoke<string[]>(cmd.AI_MODELS, { configId: configId ?? null });
+
+/** 仅用户显式触发（零后台调用约定）；task ∈ explain_logs | config_suggest | enrich_draft | test_connection。 */
+export const apiAiComplete = (
+  task: AiTask,
+  payload: unknown,
+  configId?: string,
+  requestId?: string,
+) =>
+  invoke<AiCompleteOut>(cmd.AI_COMPLETE, {
+    task,
+    payload,
+    configId: configId ?? null,
+    requestId: requestId ?? null,
+  });
+
+/** 订阅 `st-ai` 流式增量；返回取消函数。 */
+export async function subscribeAiStream(
+  requestId: string,
+  onDelta: (delta: string) => void,
+): Promise<() => void> {
+  const handler = (envelope: AiStreamEnvelope) => {
+    const p = envelope?.payload;
+    if (!p || p.request_id !== requestId || !p.delta) return;
+    onDelta(p.delta);
+  };
+  if (isTauri()) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen(event.AI, (e) => handler(e.payload as AiStreamEnvelope));
+  }
+  const { mockListen } = await import("./mock");
+  return mockListen(event.AI, (envelope) => handler(envelope as AiStreamEnvelope));
+}
+
+// ---------------------------------------------------------------------------
+// 终端（运行页 Tab；ipc.md §10.15；PTY 会话后端托管，前端只传语义参数）
+// ---------------------------------------------------------------------------
+
+/** 打开终端会话。serviceId 缺省 = 工作区根 + 工作区环境链。 */
+export const apiTermOpen = (args: {
+  workspaceId: string;
+  serviceId?: string | null;
+  cols?: number;
+  rows?: number;
+}) =>
+  invoke<TermOpenOut>(cmd.TERM_OPEN, {
+    workspaceId: args.workspaceId,
+    serviceId: args.serviceId ?? null,
+    cols: args.cols ?? 80,
+    rows: args.rows ?? 24,
+  });
+
+/** 写入用户输入（xterm onData 原样透传，回车为 \r）。 */
+export const apiTermWrite = (sessionId: number, data: string) =>
+  invoke<{ accepted: boolean }>(cmd.TERM_WRITE, { sessionId, data });
+
+export const apiTermResize = (sessionId: number, cols: number, rows: number) =>
+  invoke<{ accepted: boolean }>(cmd.TERM_RESIZE, { sessionId, cols, rows });
+
+/** 关闭会话（幂等；ConPTY 关闭即整树终止）。 */
+export const apiTermClose = (sessionId: number) =>
+  invoke<{ accepted: boolean }>(cmd.TERM_CLOSE, { sessionId });
 
 // ---------------------------------------------------------------------------
 // Re-exports so callers can construct arg shapes without re-importing protocol

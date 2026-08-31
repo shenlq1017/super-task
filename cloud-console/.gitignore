@@ -1,0 +1,2 @@
+# Root .gitignore already covers node_modules/ and dist/.
+*.tsbuildinfo

@@ -1,4 +1,7 @@
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    path::PathBuf,
+};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -9,6 +12,9 @@ pub struct Config {
     pub seed_password: Option<String>,
     pub entities_max: u64,
     pub bytes_max: u64,
+    pub admin_email: Option<String>,
+    pub admin_password: Option<String>,
+    pub console_dir: PathBuf,
 }
 
 impl Config {
@@ -28,6 +34,11 @@ impl Config {
         if seed && seed_password.as_deref().unwrap_or("").is_empty() {
             return Err("启用 SUPERTASK_DEV_SEED 时必须设置 SUPERTASK_SEED_PASSWORD".into());
         }
+        let admin_email = non_empty_env("SUPERTASK_ADMIN_EMAIL").map(|v| v.to_ascii_lowercase());
+        let admin_password = non_empty_env("SUPERTASK_ADMIN_PASSWORD");
+        if admin_email.is_some() != admin_password.is_some() {
+            return Err("管理控制台需要同时设置 SUPERTASK_ADMIN_EMAIL 与 SUPERTASK_ADMIN_PASSWORD".into());
+        }
         Ok(Self {
             bind,
             database_url,
@@ -36,6 +47,26 @@ impl Config {
             seed_password,
             entities_max: 100,
             bytes_max: 10_000_000,
+            admin_email,
+            admin_password,
+            console_dir: non_empty_env("SUPERTASK_CONSOLE_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("cloud-console/dist")),
         })
     }
+
+    pub fn admin_configured(&self) -> bool {
+        self.admin_email.is_some() && self.admin_password.is_some()
+    }
+
+    pub fn console_ready(&self) -> bool {
+        self.console_dir.join("index.html").is_file()
+    }
+}
+
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

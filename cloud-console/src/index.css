@@ -1,0 +1,138 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+:root {
+  /* SuperTask 设计令牌，与 frontend/src/index.css 同源（方案 H / Linear 浅色）。 */
+  --bg: #f7f8f8;
+  --surface: #ffffff;
+  --surface-2: #f3f4f5;
+  --surface-3: #efeff1;
+  --line: #e6e6e6;
+  --line-strong: #d0d6e0;
+  --line-soft: #eff0f2;
+  --t1: #222326;
+  --t2: #62666d;
+  --t3: #8a8f98;
+  --st-accent: #5e6ad2;
+  --st-accent-hover: #4f5ac8;
+  --st-accent-tint: #eef0fb;
+  --st-ok: #27a644;
+  --st-ok-deep: #1e7e35;
+  --st-ok-tint: #e9f7ed;
+  --st-warn: #9a6700;
+  --st-warn-dot: #eab308;
+  --st-warn-tint: #fff8e1;
+  --st-warn-line: #f0dcb0;
+  --st-danger: #dc2626;
+  --st-danger-tint: #fdecec;
+  --r-xs: 5px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --shadow-1: 0 1px 2px rgb(16 24 40 / 0.05);
+  --shadow-2: 0 6px 20px rgb(16 24 40 / 0.09);
+  --st-glow: 0 4px 16px rgb(94 106 210 / 0.28);
+  --st-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* shadcn 语义色 → 设计令牌 */
+  --background: var(--bg);
+  --foreground: var(--t1);
+  --card: var(--surface);
+  --card-foreground: var(--t1);
+  --popover: var(--surface);
+  --popover-foreground: var(--t1);
+  --primary: var(--st-accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--surface-2);
+  --secondary-foreground: var(--t1);
+  --muted: var(--surface-2);
+  --muted-foreground: var(--t3);
+  --accent: var(--surface-2);
+  --accent-foreground: var(--t1);
+  --destructive: var(--st-danger);
+  --border: var(--line);
+  --input: var(--line-strong);
+  --ring: var(--st-accent);
+  --radius: 0.5rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: clamp(13px, 0.45vw + 10.5px, 15px);
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+  color: var(--t1);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums;
+}
+
+code,
+.mono {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: Inter, "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: calc(var(--r-lg) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

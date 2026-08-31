@@ -1,0 +1,23 @@
+version: 1
+kind: workspace
+name: python
+root: .
+env: {}
+services:
+  app:
+    kind: python
+    enabled: true
+    env: {}
+    depends_on: []
+    grace_secs: 15
+    extra_args:
+    - app:app
+    - --reload
+    module: uvicorn
+    dir: .
+scripts:
+  pip-install:
+    cmds:
+    - pip install -r requirements.txt
+    env: {}
+    timeout_secs: 1800

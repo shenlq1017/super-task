@@ -7,10 +7,13 @@ import { useRuntime } from "@/providers/runtime-provider";
 import { useWorkspace } from "@/providers/workspace-provider";
 import { useToast } from "@/components/ui/toast";
 import { useOpenWorkspace } from "@/lib/use-open-workspace";
+import { useUnsavedGuard } from "@/providers/unsaved-guard";
 import { isTauri } from "@/ipc/invoke";
-import { apiGatewayStart, apiGatewayStop } from "@/ipc/api";
+import { apiGatewayStart, apiGatewayStop, apiLogsSnapshot } from "@/ipc/api";
 import { IpcFailure } from "@/ipc/protocol";
+import { errorDisplayText } from "@/lib/error-messages";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { useAiExplain } from "@/providers/ai-explain-provider";
 import type { Feature } from "@/ipc/protocol";
 import { navTranslationKey } from "@/features/registry";
 
@@ -33,7 +36,9 @@ export function CommandPalette({
   const runtime = useRuntime();
   const ws = useWorkspace();
   const openWs = useOpenWorkspace();
+  const { confirmLeave } = useUnsavedGuard();
   const { toast } = useToast();
+  const { startExplain } = useAiExplain();
 
   useEffect(() => {
     if (open) {
@@ -125,7 +130,11 @@ export function CommandPalette({
         id: "ws:close",
         title: t("palette.closeWorkspace"),
         hint: "workspace.close",
-        run: () => void ws.actions.close().then(() => navigate("/welcome")),
+        run: async () => {
+          if (!(await confirmLeave())) return;
+          await ws.actions.close();
+          navigate("/welcome");
+        },
       },
       {
         id: "ws:rescan",
@@ -141,9 +150,47 @@ export function CommandPalette({
           }
         },
       },
+      // 2.1（spec §7）：命令面板三入口
+      {
+        id: "readme:import",
+        title: t("palette.readmeImport"),
+        hint: "import.readme",
+        run: () => {
+          if (!ws.state.workspaceId) return toast(t("palette.noOpenWorkspace"), "warn");
+          // /discover 页检测 readme=1 自动展开导入向导
+          navigate("/discover?readme=1");
+        },
+      },
+      {
+        id: "ai:explainLogs",
+        title: t("palette.aiExplainLogs"),
+        hint: "ai.complete · explain_logs",
+        run: async () => {
+          if (!ws.state.workspaceId) return toast(t("palette.noOpenWorkspace"), "warn");
+          try {
+            const snap = await apiLogsSnapshot(null, 200);
+            if (snap.items.length === 0) return toast(t("palette.aiExplainNoLogs"), "warn");
+            await startExplain({
+              service: null,
+              lines: snap.items.map((l) => l.text),
+            });
+          } catch (e) {
+            toast(
+              e instanceof IpcFailure ? errorDisplayText(e.code, e.message) : String(e),
+              "err",
+            );
+          }
+        },
+      },
+      {
+        id: "ai:settings",
+        title: t("palette.aiSettings"),
+        hint: "/ai",
+        run: () => navigate("/ai"),
+      },
     ];
     return [...nav, ...actions];
-  }, [features, navigate, runtime, ws, openWs, toast, t]);
+  }, [features, navigate, runtime, ws, openWs, toast, t, startExplain]);
 
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();

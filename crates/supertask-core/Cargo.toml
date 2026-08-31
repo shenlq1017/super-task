@@ -26,6 +26,10 @@ encoding_rs = "0.8"
 # 字节流接口拆两份写入器反而让壳层各带一份格式代码。
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
+# 运行页终端（ipc.md §10.15）：PTY。复用核查（2026-08-30）：wezterm 系
+# portable-pty（Windows ConPTY / Unix openpty，活跃维护），不裸写 ConPTY FFI。
+portable-pty = "0.9"
+
 # 2.0 云（v2.0 规格复用核查）：ureq 阻塞式 HTTP（reqwest 重/需 tokio 全家）；
 # argon2 + chacha20poly1305（RustCrypto 系活跃维护；自研 KDF/密码学禁止）。
 # DPAPI（CryptProtectData）经既有 windows crate——需 Win32_Security_Cryptography feature，

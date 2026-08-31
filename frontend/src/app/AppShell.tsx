@@ -12,6 +12,7 @@ import { useToast } from "@/components/ui/toast";
 import { CommandPalette } from "@/components/command-palette";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
+import { readCompactPref, readLogFollowPref, writeCompactPref, writeLogFollowPref } from "@/lib/workspace-storage";
 import { isTauri } from "../ipc/invoke";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -36,7 +37,12 @@ import {
   Sparkles,
 } from "lucide-react";
 
-export type ShellCtx = { compact: boolean; defaultFollow: boolean };
+export type ShellCtx = {
+  compact: boolean;
+  defaultFollow: boolean;
+  setCompact: (v: boolean) => void;
+  setDefaultFollow: (v: boolean) => void;
+};
 
 function WatchingPulse({ active }: { active: boolean }) {
   return (
@@ -160,9 +166,8 @@ export function AppShell() {
 
   const [collapsed, setCollapsed] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [follow, setFollow] = useState(true);
-  const [compact, setCompact] = useState(false);
+  const [follow, setFollow] = useState(() => readLogFollowPref());
+  const [compact, setCompact] = useState(() => readCompactPref());
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -223,7 +228,18 @@ export function AppShell() {
   const wsName =
     ws.state.workspaceId?.split(/[\\/]/).filter(Boolean).pop() ?? t("common.noWorkspace");
 
-  const shellCtx: ShellCtx = { compact, defaultFollow: follow };
+  const shellCtx: ShellCtx = {
+    compact,
+    defaultFollow: follow,
+    setCompact: (v) => {
+      setCompact(v);
+      writeCompactPref(v);
+    },
+    setDefaultFollow: (v) => {
+      setFollow(v);
+      writeLogFollowPref(v);
+    },
+  };
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-[var(--bg,#f7f8f8)]">
@@ -278,30 +294,18 @@ export function AppShell() {
 
           {/* 底部：设置 + 收起 */}
           <div className="mt-1 flex flex-col gap-0.5 border-t border-[var(--line,#e6e6e6)] pt-2">
-            <div className="relative">
-              <button
-                onClick={() => setSettingsOpen((v) => !v)}
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-[var(--t2,#62666d)] transition-colors hover:bg-black/5 hover:text-[var(--t1,#222326)]"
-              >
-                <SettingsIcon className="size-4 shrink-0" />
-                <span className={cn("truncate", collapsed && "hidden")}>{t("nav.settings")}</span>
-              </button>
-              {settingsOpen ? (
-                <SettingsPopover
-                  follow={follow}
-                  health
-                  compact={compact}
-                  onFollow={setFollow}
-                  onHealth={() => {}}
-                  onCompact={setCompact}
-                  onOpenSettings={() => {
-                    setSettingsOpen(false);
-                    navigate("/settings");
-                  }}
-                  collapsed={collapsed}
-                />
-              ) : null}
-            </div>
+            <button
+              onClick={() => navigate("/settings")}
+              title={t("nav.settings")}
+              className={cn(
+                "group/sb relative flex items-center gap-2.5 rounded-[var(--r-sm,8px)] px-2.5 py-1.5 text-[0.83rem] font-medium no-underline transition-colors duration-150 text-[var(--t2,#62666d)] hover:bg-[rgb(0_0_0_/_0.045)] hover:text-[var(--t1,#222326)]",
+                location.pathname === "/settings" &&
+                  "bg-[var(--surface,#fff)] text-[var(--t1,#222326)] shadow-[0_1px_2px_rgb(16_24_40_/_0.05),inset_0_0_0_1px_var(--line,#e6e6e6)]",
+              )}
+            >
+              <SettingsIcon className="size-4 shrink-0" />
+              <span className={cn("truncate", collapsed && "hidden")}>{t("nav.settings")}</span>
+            </button>
             <button
               onClick={() => setCollapsed((v) => !v)}
               className="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-[var(--t3,#8a8f98)] transition-colors hover:bg-black/5 hover:text-[var(--t2,#62666d)]"
@@ -394,76 +398,4 @@ const NAV_ICONS: Record<string, React.ReactNode> = {
   ai: <Sparkles className="size-4" />,
 };
 
-function SettingsPopover({
-  follow,
-  health,
-  compact,
-    onFollow,
-    onHealth,
-    onCompact,
-    onOpenSettings,
-    collapsed,
-  }: {
-  follow: boolean;
-  health: boolean;
-  compact: boolean;
-  onFollow: (v: boolean) => void;
-  onHealth: (v: boolean) => void;
-  onCompact: (v: boolean) => void;
-  onOpenSettings: () => void;
-  collapsed: boolean;
-}) {
-  const { t } = useTranslation();
-  const Row = ({
-    label,
-    on,
-    onToggle,
-    disabled,
-  }: {
-    label: string;
-    on: boolean;
-    onToggle: (v: boolean) => void;
-    disabled?: boolean;
-  }) => (
-    <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-[0.76rem] text-[var(--t1,#222326)]">
-      <span>{label}</span>
-      <button
-        disabled={disabled}
-        onClick={() => onToggle(!on)}
-        className={cn(
-          "relative h-[18px] w-[34px] rounded-full border transition-colors",
-          on ? "border-[var(--st-accent,#5e6ad2)] bg-[var(--st-accent,#5e6ad2)]" : "border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)]",
-          disabled && "opacity-50",
-        )}
-      >
-        <span
-          className="absolute top-1/2 size-3 rounded-full bg-white shadow-sm transition-all"
-          style={{ left: on ? "17px" : "3px", transform: "translateY(-50%)" }}
-        />
-      </button>
-    </div>
-  );
 
-  return (
-    <div
-      className={cn(
-        "absolute bottom-[2.6rem] left-1 z-[110] w-56 rounded-xl border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-1.5 shadow-2xl",
-        collapsed && "left-1",
-      )}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-        {t("settingsPopover.title")}
-      </div>
-      <Row label={t("settingsPopover.followLogs")} on={follow} onToggle={onFollow} />
-      <Row label={t("settingsPopover.liveHealth")} on={health} onToggle={onHealth} disabled />
-      <Row label={t("settingsPopover.compactDensity")} on={compact} onToggle={onCompact} />
-      <button
-        onClick={onOpenSettings}
-        className="mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[0.76rem] text-[var(--t2,#62666d)] hover:bg-black/5"
-      >
-        <SettingsIcon className="size-3.5" /> {t("settingsPopover.openSettings")}
-      </button>
-    </div>
-  );
-}

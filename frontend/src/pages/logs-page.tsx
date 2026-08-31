@@ -4,6 +4,7 @@ import { ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/runtime-provider";
 import { LogView } from "@/components/log-view";
+import { AiExplainButton } from "@/components/ai-explain";
 import { StatusDot } from "@/lib/status";
 import type { LogSource } from "@/ipc/protocol";
 
@@ -38,7 +39,22 @@ export function LogsPage() {
         ))}
       </aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <LogView source={source} height="100%" />
+        <LogView
+          source={source}
+          height="100%"
+          extraActions={({ lines }) => {
+            const svc = current != null ? rt.services[current] : undefined;
+            return (
+              <AiExplainButton
+                lines={lines}
+                source={source}
+                serviceKind={svc?.kind ?? null}
+                servicePort={svc?.port ?? null}
+                serviceState={svc?.state ?? null}
+              />
+            );
+          }}
+        />
       </div>
     </div>
   );

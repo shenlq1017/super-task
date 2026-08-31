@@ -113,7 +113,7 @@ pub async fn post_telemetry(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn device_id(headers: &HeaderMap) -> String {
+pub(crate) fn device_id(headers: &HeaderMap) -> String {
     headers
         .get("x-device-id")
         .and_then(|value| value.to_str().ok())

@@ -132,3 +132,55 @@ GatewaySlot
   yaml（`YAML_CONFLICT` 时网关保持运行）→ 重新生成 → 运行中则 stop→start（非热重载）。
 - 路由 target 服务未运行不阻塞网关启动（转发目标不达是上游的事）；`up` 顺序为先
   服务后网关。
+
+---
+
+## 8. AI 模块（2.1）
+
+AI 是**应用级**能力，不走 workspace 引擎：配置/模板/用量存 appdata（`AppData.ai*` 字段），
+key 存应用级 secrets 文件（`%APPDATA%/SuperTask/secrets.env`，逻辑 id `supertask.ai`），
+与 workspace `.env.local` 完全隔离。壳层 `src-tauri/src/ai.rs` 是唯一编排点（沿 cloud.rs 先例），
+业务在 core `ai/`。
+
+```
+crates/supertask-core/src/ai/
+  mod.rs        # ProviderConfig / NamedAiConfig / 模板 / key 存取 / complete 编排
+  client.rs     # AiHttp trait + UreqAiHttp（ureq）；openai 与 anthropic 双风格请求/解析
+  prompt.rs     # 三场景 system/user 构建（纯函数，尾部 200 行 / 32KiB 截断）
+  sanitize.rs   # 掩码（secret 值精确替换 + 敏感行整行 <redacted>）
+```
+
+- 数据卫生（契约见 ipc.md §10.13）：sanitize 在请求体组装前完成，单测断言原始值
+  不出现在请求体；错误文本经 `redact_key` 抹 key；预算按字符 ÷4 粗估，
+  `context_window` 更小时按窗口收口，超限 `AI_CONTEXT_TOO_LARGE`。
+- 传输参考 dbx 快照（`references/dbx/2026-08-29-8f54385/`，Apache-2.0，只读）：
+  per-request timeout、代理判定（裸 host:port 补 http、loopback 绕过）、错误脱敏
+  （`categorized_http_error`）、provider 预设表与模板限额均取自该调研
+  （`docs/research/2026-08-29-v2-1-dbx-ai-reference.md`）。
+- 命名多配置 + 默认配置（dbx `ai_configs` 语义的文件存储版）；旧单配置字段只读迁移。
+- 重试偏差备案：仅临时错误（429/5xx/超时/网络）线性退避重试 ≤`max_retries`（默认 2），
+  spec §4.3 原「无自动重试」据此放宽；一次业务调用只计 1 次用量。
+- 明确不做：CLI provider、Agent/Ask 对话、流式输出、后台/定时调用（IDE 场景由
+  1.5 `supertask mcp` 覆盖）。
+
+## 9. README 导入器（2.1）
+
+与 AI 模块同期的**确定性规则引擎**（spec §3）：纯函数、零网络、零 LLM，人确认是最后闸门。
+业务在 core `importer/`，壳层命令随 `src-tauri/src/commands.rs`（`import.readme` /
+`import.readmeApply`，契约 ipc.md §10.14），应用链复用 1.1 merge 向导与 base_hash 机制。
+
+```
+crates/supertask-core/src/importer/
+  mod.rs        # 模块入口
+  readme.rs     # 发现/解码/抽取/分类/与 scan 融合（含 golden fixtures 测试）
+```
+
+- 关键不变式：**scan 事实优先**——文件系统扫描骨架不动，README 只补全缺失字段或新增
+  scan 不认识的服务/脚本；字段冲突时 scan 值保留、README 值进「建议」列
+  （`merge::FieldMeta` provenance，向导双值可见）。
+- 确定性可重复：同输入两次导入结果一致，`import.readmeApply` 因此可以应用前重导入
+  （与 `workspace.scanApply` 重扫描同型），不需要把草稿在 IPC 里来回传。
+- 噪声与提示：无法解析/忽略的命令计入「N 条命令未识别」warning；`export PORT=…`
+  只进端口提示不写 port 字段；secret 形态的 env 提示只记变量名不回显值。
+- golden 快照：`tests/golden/readme/`（spring-node / python / go / 中文 / 纯噪声五类，
+  fixtures 在 `tests/fixtures/readme/`），更新规则同 gateway golden（重写文件后重跑确认）。

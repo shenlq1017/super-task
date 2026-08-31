@@ -84,6 +84,26 @@ pub struct AppData {
     /// 2.0 §9：遥测开关（默认关；不在同步白名单内）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cloud_telemetry: bool,
+    /// 2.1 §4.1：AI provider 配置（key 不在这里，见 ai::AI_SECRET_ID）。
+    /// 2.1 升级后为「旧单配置」遗留字段：新真源是 `ai_configs` 命名多配置；
+    /// `ai_configs` 为空时本字段作为唯一配置的迁移来源（ai::configs() 视图）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<crate::ai::ProviderConfig>,
+    /// 2.1 §4.3：AI 按日用量计数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_usage: Option<crate::ai::AiUsage>,
+    /// 2.1 升级：命名 AI 配置（name 唯一；首个成为默认）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_configs: Vec<crate::ai::NamedAiConfig>,
+    /// 2.1 升级：默认配置 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_default_config: Option<String>,
+    /// 2.1 升级：全局自定义指令（≤8000 字符，注入所有 AI 场景 system）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_global_instructions: Option<String>,
+    /// 2.1 升级：场景 Prompt 模板（enabled 者注入 system；激活总量 ≤16000 字符）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_templates: Vec<crate::ai::AiPromptTemplate>,
     /// Unknown keys preserved across v1 to v2 migrate and save.
     #[serde(default, flatten)]
     pub extra: IndexMap<String, Value>,
@@ -109,6 +129,12 @@ impl Default for AppData {
             metrics_enabled: true,
             cloud_endpoint: None,
             cloud_telemetry: false,
+            ai: None,
+            ai_usage: None,
+            ai_configs: Vec::new(),
+            ai_default_config: None,
+            ai_global_instructions: None,
+            ai_templates: Vec::new(),
             extra: IndexMap::new(),
         }
     }

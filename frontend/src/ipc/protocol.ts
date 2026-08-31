@@ -88,15 +88,36 @@ export const cmd = {
   CLOUD_MIGRATE_APPLY: "cloud.migrate.apply",
   CLOUD_ENDPOINT_SET: "cloud.endpoint.set",
   CLOUD_TELEMETRY_SET: "cloud.telemetry.set",
+  // 2.1（ipc.md §10.13）：AI 助手 + README 导入
+  IMPORT_README: "import.readme",
+  IMPORT_README_APPLY: "import.readmeApply",
+  AI_STATUS: "ai.status",
+  AI_COMPLETE: "ai.complete",
+  AI_CONFIG_SAVE: "ai.config.save",
+  AI_CONFIG_DELETE: "ai.config.delete",
+  AI_CONFIG_DEFAULT: "ai.config.default",
+  AI_INSTRUCTIONS_SAVE: "ai.instructions.save",
+  AI_TEMPLATE_SAVE: "ai.template.save",
+  AI_TEMPLATE_DELETE: "ai.template.delete",
+  AI_MODELS: "ai.models",
+  // 运行页终端（ipc.md §10.15）
+  TERM_OPEN: "term.open",
+  TERM_WRITE: "term.write",
+  TERM_RESIZE: "term.resize",
+  TERM_CLOSE: "term.close",
   APP_IMPORT_RECENTS: "app.importRecents",
   APP_UPDATE_CHECK: "app.update.check",
   APP_UPDATE_INSTALL: "app.update.install",
 } as const;
 
+// Tauri v2 事件名只允许字母数字与 `-` `/` `:` `_`，不能用点号（st.* 会静默失败）；
+// 与 core ipc::event 常量保持一致。
 export const event = {
-  RUNTIME: "st.runtime",
-  LOGS: "st.logs",
-  OPERATION: "st.operation",
+  RUNTIME: "st-runtime",
+  LOGS: "st-logs",
+  OPERATION: "st-operation",
+  TERM: "st-term",
+  AI: "st-ai",
 } as const;
 
 export type FeatureStatus = "live" | "preview" | "soon";
@@ -237,7 +258,7 @@ export type ProfilesActivateOut = { spec: unknown; hash: string; active: string 
 /** st.metrics 事件信封负载。 */
 export type MetricsEventPayload = {
   protocol: number;
-  event: "st.metrics";
+  event: "st-metrics";
   workspace_id: string;
   ts_ms: number;
   payload: { services: Record<string, ServiceMetrics | null> };
@@ -568,7 +589,7 @@ export type LogSnapshotOut = { items: LogLine[]; next_seq: number };
 // Event payloads emitted by the engine bridge.
 export type RuntimeEventPayload = {
   protocol: number;
-  event: "st.runtime";
+  event: "st-runtime";
   workspace_id: string;
   ts_ms: number;
   payload: {
@@ -581,7 +602,7 @@ export type RuntimeEventPayload = {
 
 export type LogsEventPayload = {
   protocol: number;
-  event: "st.logs";
+  event: "st-logs";
   workspace_id: string;
   ts_ms: number;
   payload: { items: LogLine[] };
@@ -677,7 +698,7 @@ export type OpState = "queued" | "running" | "succeeded" | "failed" | "cancelled
 
 export type OperationEventPayload = {
   protocol: number;
-  event: "st.operation";
+  event: "st-operation";
   workspace_id: string | null;
   ts_ms: number;
   payload: {
@@ -693,6 +714,14 @@ export type OperationEventPayload = {
 
 export type ScanMergeStatus = "added" | "match_same" | "match_diff" | "missing" | "id_conflict";
 
+/** 2.1：字段来源（scan/readme/default；readme_value 仅冲突时出现，scan 值保留）。 */
+export type FieldMeta = {
+  field: string;
+  source: string;
+  confidence?: string | null;
+  readme_value?: string | null;
+};
+
 export type ScanMergeItem = {
   service_id: string;
   status: ScanMergeStatus;
@@ -701,12 +730,38 @@ export type ScanMergeItem = {
   field_diffs: string[];
   candidate_id: string | null;
   selected: boolean;
+  /** 2.1 README 导入：字段来源；普通 scan 预览无此字段 */
+  fields_meta?: FieldMeta[] | null;
 };
 
 export type ScanPreviewOut = { items: ScanMergeItem[]; warnings: string[] };
 
+/** 2.1：脚本合并项（README scripts 草稿）。 */
+export type ScriptMergeItem = {
+  script_id: string;
+  status: ScanMergeStatus;
+  discovered: ScriptSpec | null;
+  current: ScriptSpec | null;
+  selected: boolean;
+  fields_meta?: FieldMeta[] | null;
+};
+
+/** 2.1 `import.readme` 输出：与 scanPreview 同形 + 脚本项 + README 路径。 */
+export type ReadmePreviewOut = {
+  items: ScanMergeItem[];
+  script_items: ScriptMergeItem[];
+  warnings: string[];
+  readme_path: string | null;
+};
+
 export type MergeAction = "add" | "keep" | "update";
-export type MergeChoice = { id: string; action: MergeAction; fields?: string[] };
+export type MergeChoice = {
+  id: string;
+  action: MergeAction;
+  fields?: string[];
+  /** 2.1：脚本项为 "script"；缺省 = service */
+  target?: "service" | "script";
+};
 
 export type IdeTarget = "explorer" | "cursor" | "idea" | "code";
 export type OpenIdeOut = { accepted: boolean; ide: string; path: string };
@@ -853,5 +908,142 @@ export type CloudTelemetryOut = { enabled: boolean };
 
 /** Endpoint editing is intentionally local-only until a backend setting exists. */
 export type CloudEndpointSetOut = { endpoint: string; supported?: boolean; local_only?: boolean };
+
+// ---------------------------------------------------------------------------
+// 2.1 DTOs — AI 助手（ipc.md §10.13；key 永不回显，sanitize 在后端）
+// ---------------------------------------------------------------------------
+
+export type AiTask = "explain_logs" | "config_suggest" | "enrich_draft" | "test_connection";
+
+/** API 风格（mirror core ai::ApiStyle，serde snake_case）。 */
+export type AiApiStyle = "openai_completions" | "anthropic_messages";
+export type AiAuthMethod = "api_key" | "bearer";
+/** provider 预设 key（与 core PROVIDER_PRESETS 同源；CLI provider 不做）。 */
+export type AiProviderKey =
+  | "openai-compatible"
+  | "claude"
+  | "deepseek"
+  | "qwen"
+  | "minimax"
+  | "gemini"
+  | "ollama"
+  | "custom";
+
+export type AiConfigOut = {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  timeout_secs: number;
+  max_tokens: number;
+  provider: string;
+  api_style?: AiApiStyle | null;
+  auth_method: AiAuthMethod;
+  proxy_enabled: boolean;
+  proxy_url?: string | null;
+  context_window?: number | null;
+  max_retries: number;
+};
+
+export type AiConfigSummary = {
+  id: string;
+  name: string;
+  is_default: boolean;
+  provider: string;
+  model: string;
+  base_url: string;
+};
+
+export type AiTemplate = { id: string; name: string; content: string; enabled: boolean };
+
+export type AiStatusOut = {
+  configs: AiConfigSummary[];
+  default_id?: string | null;
+  templates: AiTemplate[];
+  global_instructions?: string | null;
+  /** key 是否已设置（布尔，绝不回明文）。 */
+  key_set: boolean;
+  usage_today: AiUsage;
+};
+
+/** ai.config.save 入参（camelCase，mirror shell AiConfigSaveIn serde rename_all=camelCase）。 */
+export type AiConfigSaveIn = {
+  id?: string | null;
+  name: string;
+  baseUrl?: string | null;
+  model: string;
+  timeoutSecs?: number | null;
+  maxTokens?: number | null;
+  provider?: string;
+  apiStyle?: AiApiStyle | null;
+  authMethod?: AiAuthMethod | null;
+  proxyEnabled?: boolean;
+  proxyUrl?: string | null;
+  contextWindow?: number | null;
+  maxRetries?: number | null;
+  /** None 不动；"" 清除；非空覆盖。 */
+  apiKey?: string | null;
+};
+
+export type AiTemplateSaveIn = { id?: string | null; name: string; content: string; enabled: boolean };
+
+export type AiUsage = { date: string; count: number };
+
+export type AiCompleteOut = {
+  text: string;
+  usage: AiUsage;
+  model: string;
+  /** 端点返回的 token 用量（旧端点可能缺省）。 */
+  tokens?: { prompt_tokens?: number; completion_tokens?: number } | null;
+};
+
+/** explain_logs payload：服务上下文可选，日志行由调用方按当前筛选取。 */
+export type AiExplainPayload = {
+  service?: { id: string; kind: string; port?: number | null; state?: string | null } | null;
+  lines: string[];
+};
+
+/** config_suggest payload：yaml 文本（后端 sanitize）+ 已知问题列表。 */
+export type AiConfigSuggestPayload = {
+  yaml: string;
+  problems: string[];
+};
+
+/** st-ai 事件负载：`ai.complete` 流式 Markdown 增量。 */
+export type AiStreamPayload = {
+  request_id: string;
+  delta: string;
+};
+
+export type AiStreamEnvelope = {
+  protocol: number;
+  event: "st-ai";
+  workspace_id: string | null;
+  ts_ms: number;
+  payload: AiStreamPayload;
+};
+
+// ---------------------------------------------------------------------------
+// 运行页终端 DTOs（ipc.md §10.15；mirror `crates/supertask-core/src/term.rs`）
+// ---------------------------------------------------------------------------
+
+/** `term.open` 输出：session_id 后续 write/resize/close 与 st.term 事件使用。 */
+export type TermOpenOut = { session_id: number; shell: string };
+
+/** st.term 事件信封负载（workspace_id 恒为 null：会话是 UI 作用域）。 */
+export type TermEventPayload = {
+  session_id: number;
+  kind: "output" | "exited";
+  data?: string;
+  exit_code?: number;
+};
+
+export type TermEventEnvelope = {
+  protocol: number;
+  event: "st-term";
+  workspace_id: string | null;
+  ts_ms: number;
+  payload: TermEventPayload;
+};
 
 

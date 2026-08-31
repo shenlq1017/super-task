@@ -35,15 +35,15 @@ impl AppState {
         }
         let connect_options = SqliteConnectOptions::from_str(&url)
             .map_err(|error| AppError::Internal(format!("SQLite URL 无效: {error}")))?
+            // The pragma is per-connection, so it must live on the connect options
+            // for `ON DELETE CASCADE` to hold on every pooled connection.
+            .foreign_keys(true)
             .create_if_missing(true);
         let mut options = SqlitePoolOptions::new();
         // Every pooled SQLite connection gets a distinct :memory: database. A
         // single connection is therefore required for tests and local use.
         options = options.max_connections(if is_memory { 1 } else { 8 });
         let pool = options.connect_with(connect_options).await?;
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&pool)
-            .await?;
         sqlx::migrate!().run(&pool).await?;
         Ok(Self { pool, config })
     }

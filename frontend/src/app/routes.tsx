@@ -18,9 +18,11 @@ import { GitPage } from "../pages/git-page";
 import { DockerPage } from "../pages/docker-page";
 import { GatewayPage } from "../pages/gateway-page";
 import { CloudPage } from "../pages/cloud-page";
+import { AiPage } from "../pages/ai-page";
 import { useFeatures } from "../providers/session-provider";
 import { useWorkspace } from "../providers/workspace-provider";
 import { OperationProvider } from "../providers/operation-provider";
+import { UnsavedGuardProvider } from "../providers/unsaved-guard";
 
 const LIVE_PAGES: Record<string, ComponentType> = {
   run: RunPage,
@@ -34,6 +36,7 @@ const LIVE_PAGES: Record<string, ComponentType> = {
   docker: DockerPage,
   gateway: GatewayPage,
   cloud: CloudPage,
+  ai: AiPage,
   settings: SettingsPage,
 };
 
@@ -63,7 +66,8 @@ export function AppRoutes() {
   return (
     <OperationProvider>
       <Routes>
-        <Route element={<AppShell />}>
+        {/* 未保存守卫包住整个 shell（AppShell 自身也用 useOpenWorkspace → confirmLeave） */}
+        <Route element={<UnsavedGuardProvider><AppShell /></UnsavedGuardProvider>}>
           <Route
             path="/welcome"
             element={

@@ -9,6 +9,8 @@ import type {
   RuntimeSnapshot,
   ScanMergeItem,
   ScanPreviewOut,
+  ReadmePreviewOut,
+  ServiceSpec,
   ScriptRuntimeView,
   ServiceRuntimeView,
   ForeignService,
@@ -30,8 +32,12 @@ import type {
   CloudSyncOut,
   CloudMigratePlanOut,
   CloudMigrateApplyOut,
+  AiConfigOut,
+  AiStatusOut,
+  AiTask,
+  AiTemplate,
 } from "./protocol";
-import { PROTOCOL, cmd } from "./protocol";
+import { PROTOCOL, cmd, event } from "./protocol";
 
 // ---------------------------------------------------------------------------
 // In-memory demo workspace so the UI is fully interactive in a plain browser
@@ -271,6 +277,43 @@ const mockCloud = {
   telemetryEnabled: false,
   endpoint: "https://cloud.supertask.local.example",
 };
+
+/** 2.1 AI mock（确定性回文；命名多配置 + 模板/全局指令；key 只存布尔，绝不回显）。 */
+let mockAiSeq = 0;
+const mockAi = {
+  configs: [] as { id: string; name: string; isDefault: boolean; provider: string; model: string; baseUrl: string; timeoutSecs: number; maxTokens: number; authMethod: string; proxyEnabled: boolean; proxyUrl: string | null; contextWindow: number | null; maxRetries: number }[],
+  templates: [] as { id: string; name: string; content: string; enabled: boolean }[],
+  instructions: "" as string,
+  keySet: false,
+  usage: { date: "", count: 0 } as { date: string; count: number },
+};
+function mockAiUsage() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (mockAi.usage.date !== today) mockAi.usage = { date: today, count: 0 };
+  return { date: mockAi.usage.date, count: mockAi.usage.count };
+}
+function mockAiDefault() {
+  return mockAi.configs.find((c) => c.isDefault) ?? mockAi.configs[0] ?? null;
+}
+function mockAiEmitChunk(requestId: string, delta: string) {
+  mockEmit(event.AI, { request_id: requestId, delta });
+}
+
+function mockAiEcho(task: AiTask, payload: Record<string, unknown>): string {
+  const mirror = JSON.stringify(payload);
+  const reversed = [...mirror].reverse().join("");
+  if (task === "explain_logs") {
+    const lines = Array.isArray(payload.lines) ? payload.lines.length : 0;
+    return `【Mock AI · explain_logs】已收到 ${lines} 行日志（确定性回文镜像）：\n\n${reversed.slice(0, 120)}`;
+  }
+  if (task === "config_suggest") {
+    return `【Mock AI · config_suggest】建议保持现状即可；以下为参考稿（确定性回文镜像）：\n\n\`\`\`yaml\n${reversed.slice(0, 80)}\n\`\`\``;
+  }
+  if (task === "test_connection") {
+    return "OK";
+  }
+  return `【Mock AI · enrich_draft】草稿增强（确定性回文镜像）：\n\n${reversed.slice(0, 120)}`;
+}
 const state = {
   opened: false,
   spec: demoSpec(),
@@ -366,7 +409,7 @@ function snapshot(): RuntimeSnapshot {
 
 /** 1.6：网关状态变化 → 广播 st.runtime（对齐引擎 emit_runtime 语义）。 */
 function emitGatewayRuntime() {
-  mockEmit("st.runtime", { reason: "full", services: snapshot().services, script: null, gateway: snapshot().gateway });
+  mockEmit("st-runtime", { reason: "full", services: snapshot().services, script: null, gateway: snapshot().gateway });
 }
 
 function toYaml(spec: SuperTaskFile): string {
@@ -472,7 +515,7 @@ function emitOperation(
   result: unknown,
 ) {
   mockEmit(
-    "st.operation",
+    "st-operation",
     { operation_id: operationId, kind, state: opState, progress, message, error_code: errorCode, result },
   );
 }
@@ -793,6 +836,88 @@ function mockScanPreview(): ScanPreviewOut {
 }
 
 /**
+ * 2.1 README 导入 mock（ipc.md §10.13）：README-only 新增服务（带 provenance/置信度）
+ * + 脚本合并项 + 端口提示；未打开工作区时 warnings 给人话提示。
+ */
+function mockReadmePreview(): ReadmePreviewOut {
+  const spec = state.spec;
+  const base = mockScanPreview();
+  // README-only 新增：python 服务（uvicorn）
+  const readmeAdded: ScanMergeItem = {
+    service_id: "uvicorn-api",
+    status: "added",
+    discovered: {
+      kind: "python",
+      enabled: true,
+      labels: {},
+      port: null,
+      ports: [],
+      env: {},
+      env_file: [],
+      depends_on: [],
+      grace_secs: 15,
+      health: null,
+      extra_args: ["app:app", "--reload"],
+      jvm_args: [],
+      dir: ".",
+      module: "uvicorn",
+      entry: null,
+      script: null,
+    } as ServiceSpec,
+    current: null,
+    field_diffs: [],
+    candidate_id: null,
+    selected: false,
+    fields_meta: [
+      { field: "kind", source: "readme", confidence: "high" },
+      { field: "dir", source: "readme", confidence: "high" },
+      { field: "module", source: "readme", confidence: "high" },
+      { field: "extra_args", source: "readme", confidence: "high" },
+    ],
+  };
+  // README 命中已有 node 服务：字段冲突 → scan 值保留，README 值进建议列
+  const hitItems: ScanMergeItem[] = base.items.map((it) =>
+    it.status === "match_same" && it.discovered?.script
+      ? {
+          ...it,
+          fields_meta: [
+            { field: "dir", source: "scan" },
+            {
+              field: "script",
+              source: "scan",
+              readme_value: String(it.discovered.script) === "dev" ? "start" : "dev",
+            },
+          ],
+        }
+      : it,
+  );
+  return {
+    items: [...hitItems, readmeAdded],
+    script_items: [
+      {
+        script_id: "install",
+        status: spec.scripts["install"] ? "match_diff" : "added",
+        discovered: {
+          cmds: ["npm install"],
+          cwd: null,
+          env: {},
+          timeout_secs: 1800,
+          depends_on: [],
+        },
+        current: spec.scripts["install"] ?? null,
+        selected: !spec.scripts["install"],
+        fields_meta: [{ field: "cmds", source: "readme", confidence: "high" }],
+      },
+    ],
+    warnings: [
+      "README 提示端口 8000（uvicorn app:app）；请确认后手填到服务 port",
+      "1 条命令未识别，已忽略",
+    ],
+    readme_path: "README.md",
+  };
+}
+
+/**
  * 1.4 Taskfile 导入 mock（ipc.md §10.8）：含插值 / internal / deps / id 冲突样例，
  * 与 demoSpec.scripts.build 冲突验证 id_conflict 默认 keep 分支。
  */
@@ -851,6 +976,106 @@ function mockTaskfilePreview(): TaskfilePreviewOut {
 }
 
 /** Browser / `vite` without WebView: same shapes as Tauri, no real spawn. */
+// ---------------------------------------------------------------------------
+// Mock 终端（ipc.md §10.15）：确定性假 shell（浏览器 dev 演示，不拉真实进程）。
+// 事件序列与 Tauri 真链路一致（st.term 信封 + kind output/exited）。
+// ---------------------------------------------------------------------------
+
+type MockTermSession = { id: number; cwd: string; line: string };
+
+const mockTerms = new Map<number, MockTermSession>();
+let mockTermSeq = 0;
+
+function mockTermEmit(
+  sessionId: number,
+  kind: "output" | "exited",
+  data?: string,
+  exitCode?: number,
+) {
+  mockEmit("st-term", {
+    session_id: sessionId,
+    kind,
+    ...(data !== undefined ? { data } : {}),
+    ...(exitCode !== undefined ? { exit_code: exitCode } : {}),
+  });
+}
+
+function mockTermPrompt(s: MockTermSession): string {
+  return `\r\n\x1b[36m[mock] ${s.cwd}\x1b[0m \x1b[32m$\x1b[0m `;
+}
+
+function mockTermExec(s: MockTermSession, raw: string): { out: string; exit: boolean } {
+  const argv = raw.trim().split(/\s+/).filter(Boolean);
+  const name = argv[0] ?? "";
+  switch (name) {
+    case "":
+      return { out: "", exit: false };
+    case "help":
+      return { out: "可用命令：help · echo · pwd · ls/dir · ver · date · clear · exit", exit: false };
+    case "echo":
+      return { out: argv.slice(1).join(" "), exit: false };
+    case "pwd":
+      return { out: s.cwd, exit: false };
+    case "ls":
+    case "dir":
+      return { out: "src/  package.json  supertask.yaml", exit: false };
+    case "ver":
+      return { out: "SuperTask mock shell（浏览器演示，不拉起真实进程）", exit: false };
+    case "date":
+      return { out: new Date().toLocaleString(), exit: false };
+    case "clear":
+      return { out: "\x1b[2J\x1b[3J\x1b[H", exit: false };
+    case "exit":
+      return { out: "", exit: true };
+    default:
+      return {
+        out: `\x1b[31m${name}: command not found\x1b[0m（mock 假 shell，输入 help 查看可用命令）`,
+        exit: false,
+      };
+  }
+}
+
+function mockTermHandleInput(s: MockTermSession, data: string) {
+  // 假 shell 只按行驱动：退格/回车/Ctrl+C，ESC 控制序列整体忽略（无历史/光标编辑）
+  const chars = Array.from(data);
+  let i = 0;
+  while (i < chars.length) {
+    const ch = chars[i];
+    if (ch === "\x1b") {
+      i += 3;
+      continue;
+    }
+    i += 1;
+    if (ch === "\r") {
+      const raw = s.line;
+      s.line = "";
+      mockTermEmit(s.id, "output", "\r\n");
+      const { out, exit } = mockTermExec(s, raw);
+      if (exit) {
+        mockTerms.delete(s.id);
+        mockTermEmit(s.id, "exited", undefined, 0);
+        return;
+      }
+      if (out) mockTermEmit(s.id, "output", `${out}\r\n`);
+      mockTermEmit(s.id, "output", mockTermPrompt(s));
+      continue;
+    }
+    if (ch === "\u007f") {
+      s.line = s.line.slice(0, -1);
+      mockTermEmit(s.id, "output", "\b \b");
+      continue;
+    }
+    if (ch === "\x03") {
+      s.line = "";
+      mockTermEmit(s.id, "output", `^C${mockTermPrompt(s)}`);
+      continue;
+    }
+    if (ch < " " || ch === "\x7f") continue;
+    s.line += ch;
+    mockTermEmit(s.id, "output", ch);
+  }
+}
+
 export async function mockInvoke(command: string, args?: Record<string, unknown>): Promise<unknown> {
   if (command === "session.hello") {
     const protocol = Number(args?.protocol ?? PROTOCOL);
@@ -875,7 +1100,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         { id: "docker", path: "/docker", status: "live", since: "1.3" },
         { id: "gateway", path: "/gateway", status: "live", since: "1.6" },
         { id: "cloud", path: "/cloud", status: "live", since: "2.0" },
-        { id: "ai", path: "/ai", status: "soon", since: "2.1" },
+        { id: "ai", path: "/ai", status: "live", since: "2.1" },
         { id: "settings", path: "/settings", status: "live", since: "1.0" },
       ],
     };
@@ -1962,6 +2187,39 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   }
 
   // -------------------------------------------------------------------------
+  // 2.1：README 导入（ipc.md §10.13）
+  // -------------------------------------------------------------------------
+
+  if (command === "import.readme") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    return mockReadmePreview();
+  }
+
+  if (command === "import.readmeApply") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    const choices = (args?.choices as { id: string; action: string; target?: string }[]) ?? [];
+    const preview = mockReadmePreview();
+    for (const c of choices) {
+      if (c.action === "keep") continue;
+      if (c.target === "script") {
+        const item = preview.script_items.find((s) => s.script_id === c.id);
+        if (item?.discovered && !state.spec.scripts[c.id]) {
+          state.spec.scripts[c.id] = item.discovered;
+        }
+        continue;
+      }
+      const item = preview.items.find((s) => s.service_id === c.id);
+      if (item?.discovered && c.action === "add" && !state.spec.services[c.id]) {
+        state.spec.services[c.id] = item.discovered;
+      }
+    }
+    const text = toYaml(state.spec);
+    return { spec: state.spec, hash: hashOf(text), warnings: ["已应用 README 草稿（mock）"] };
+  }
+
+  // -------------------------------------------------------------------------
   // 1.4：Taskfile 导入（ipc.md §10.8）
   // -------------------------------------------------------------------------
 
@@ -2098,6 +2356,233 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   if (command === cmd.CLOUD_TELEMETRY_SET) {
     mockCloud.telemetryEnabled = !!args?.enabled;
     return { enabled: mockCloud.telemetryEnabled };
+  }
+
+  // ---- 2.1 AI（mock：命名多配置 + 确定性回文；未配置 → AI_NOT_CONFIGURED） ----
+  if (command === cmd.AI_CONFIG_SAVE) {
+    const input = (args?.input ?? {}) as Record<string, unknown>;
+    const name = String(input.name ?? "").trim();
+    const baseUrl = String(input.baseUrl ?? "").trim().replace(/\/$/, "");
+    const model = String(input.model ?? "").trim();
+    if (!name || name.length > 50) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "配置名不能为空且不超过 50 字符", retryable: false };
+    }
+    const dupe = mockAi.configs.some(
+      (c) => c.name.toLowerCase() === name.toLowerCase() && c.id !== input.id,
+    );
+    if (dupe) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: `配置名 ${name} 已存在`, retryable: false };
+    }
+    if (input.baseUrl != null && !/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(baseUrl)) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "base_url 无效", retryable: false };
+    }
+    if (!model) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "model 不能为空", retryable: false };
+    }
+    let id = typeof input.id === "string" ? input.id : "";
+    if (id && mockAi.configs.some((c) => c.id === id)) {
+      mockAi.configs = mockAi.configs.map((c) =>
+        c.id === id
+          ? { ...c, name, baseUrl, model, provider: String(input.provider ?? c.provider) }
+          : c,
+      );
+    } else {
+      id = `mock-cfg-${++mockAiSeq}`;
+      mockAi.configs.push({
+        id,
+        name,
+        isDefault: mockAi.configs.length === 0,
+        provider: String(input.provider ?? "openai-compatible"),
+        model,
+        baseUrl,
+        timeoutSecs: Number(input.timeoutSecs ?? 30) || 30,
+        maxTokens: Number(input.maxTokens ?? 8192) || 8192,
+        authMethod: String(input.authMethod ?? "api_key"),
+        proxyEnabled: !!input.proxyEnabled,
+        proxyUrl: input.proxyUrl ? String(input.proxyUrl) : null,
+        contextWindow: input.contextWindow != null ? Number(input.contextWindow) : null,
+        maxRetries: Number(input.maxRetries ?? 2),
+      });
+    }
+    if (typeof input.apiKey === "string") mockAi.keySet = input.apiKey.length > 0;
+    const saved = mockAi.configs.find((c) => c.id === id)!;
+    const out: AiConfigOut = {
+      id: saved.id,
+      name: saved.name,
+      base_url: saved.baseUrl,
+      model: saved.model,
+      timeout_secs: saved.timeoutSecs,
+      max_tokens: saved.maxTokens,
+      provider: saved.provider,
+      api_style: saved.provider === "claude" ? "anthropic_messages" : "openai_completions",
+      auth_method: saved.authMethod === "bearer" ? "bearer" : "api_key",
+      proxy_enabled: saved.proxyEnabled,
+      proxy_url: saved.proxyUrl,
+      context_window: saved.contextWindow,
+      max_retries: saved.maxRetries,
+    };
+    return out;
+  }
+  if (command === cmd.AI_CONFIG_DELETE) {
+    const id = String(args?.id ?? "");
+    mockAi.configs = mockAi.configs.filter((c) => c.id !== id);
+    if (mockAi.configs.length && !mockAi.configs.some((c) => c.isDefault)) mockAi.configs[0].isDefault = true;
+    return { ok: true };
+  }
+  if (command === cmd.AI_CONFIG_DEFAULT) {
+    const id = String(args?.id ?? "");
+    if (!mockAi.configs.some((c) => c.id === id)) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `AI 配置不存在: ${id}`, retryable: false };
+    }
+    mockAi.configs = mockAi.configs.map((c) => ({ ...c, isDefault: c.id === id }));
+    return { ok: true };
+  }
+  if (command === cmd.AI_INSTRUCTIONS_SAVE) {
+    const text = String(args?.text ?? "").trim();
+    if (text.length > 8000) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "全局指令超过 8000 字符", retryable: false };
+    }
+    mockAi.instructions = text;
+    return { text };
+  }
+  if (command === cmd.AI_TEMPLATE_SAVE) {
+    const input = (args?.input ?? {}) as Record<string, unknown>;
+    const name = String(input.name ?? "").trim();
+    const content = String(input.content ?? "").trim();
+    if (!name || name.length > 50) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "模板名不能为空且不超过 50 字符", retryable: false };
+    }
+    if (!content || content.length > 8000) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "模板内容不能为空且不超过 8000 字符", retryable: false };
+    }
+    let id = typeof input.id === "string" ? input.id : "";
+    if (id && mockAi.templates.some((t) => t.id === id)) {
+      mockAi.templates = mockAi.templates.map((t) =>
+        t.id === id ? { ...t, name, content, enabled: !!input.enabled } : t,
+      );
+    } else {
+      id = `mock-tpl-${++mockAiSeq}`;
+      mockAi.templates.push({ id, name, content, enabled: !!input.enabled });
+    }
+    const saved = mockAi.templates.find((t) => t.id === id)!;
+    const out: AiTemplate = { id: saved.id, name: saved.name, content: saved.content, enabled: saved.enabled };
+    return out;
+  }
+  if (command === cmd.AI_TEMPLATE_DELETE) {
+    const id = String(args?.id ?? "");
+    if (!mockAi.templates.some((t) => t.id === id)) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `模板不存在: ${id}`, retryable: false };
+    }
+    mockAi.templates = mockAi.templates.filter((t) => t.id !== id);
+    return { ok: true };
+  }
+  if (command === cmd.AI_STATUS) {
+    const def = mockAiDefault();
+    const out: AiStatusOut = {
+      configs: mockAi.configs.map((c) => ({
+        id: c.id,
+        name: c.name,
+        is_default: c.isDefault,
+        provider: c.provider,
+        model: c.model,
+        base_url: c.baseUrl,
+      })),
+      default_id: def?.id ?? null,
+      templates: [...mockAi.templates],
+      global_instructions: mockAi.instructions || null,
+      key_set: mockAi.keySet,
+      usage_today: mockAiUsage(),
+    };
+    return out;
+  }
+  if (command === cmd.AI_MODELS) {
+    if (!mockAiDefault()) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "AI 未配置，请先在 /ai 页新增配置", retryable: false };
+    }
+    return ["demo-model", "demo-model-mini", "qwen2.5:7b"];
+  }
+  if (command === cmd.AI_COMPLETE) {
+    const def = mockAiDefault();
+    if (!def) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "AI 未配置，请先在 /ai 页新增配置", retryable: false };
+    }
+    if (!mockAi.keySet && def.provider !== "ollama") {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "AI key 未设置，请先在 /ai 页保存密钥", retryable: false };
+    }
+    const task = String(args?.task ?? "") as AiTask;
+    if (!["explain_logs", "config_suggest", "enrich_draft", "test_connection"].includes(task)) {
+      throw { protocol: PROTOCOL, code: "PROTOCOL", message: `未知 ai.complete task: ${task}`, retryable: false };
+    }
+    mockAi.usage.count += 1;
+    const payload = (args?.payload ?? {}) as Record<string, unknown>;
+    const fullText = mockAiEcho(task, payload);
+    const requestId = args?.requestId ? String(args.requestId) : "";
+    if (requestId) {
+      const chunkSize = 20;
+      for (let i = 0; i < fullText.length; i += chunkSize) {
+        mockAiEmitChunk(requestId, fullText.slice(i, i + chunkSize));
+        await new Promise((r) => setTimeout(r, 35));
+      }
+    }
+    return {
+      text: fullText,
+      usage: mockAiUsage(),
+      model: def.model,
+      tokens: { prompt_tokens: 10, completion_tokens: 6 },
+    };
+  }
+
+  // ---- 运行页终端（mock：确定性假 shell；序列与真链路一致） ----
+  if (command === cmd.TERM_OPEN) {
+    const serviceId = args?.serviceId ? String(args.serviceId) : null;
+    const svc = serviceId ? state.spec.services[serviceId] : null;
+    if (serviceId && !svc) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `没有服务 ${serviceId}`, retryable: false };
+    }
+    const cwd = svc ? `${state.spec.root}/${svc.module ?? svc.dir ?? "."}` : state.spec.root;
+    mockTermSeq += 1;
+    const s: MockTermSession = { id: mockTermSeq, cwd, line: "" };
+    mockTerms.set(s.id, s);
+    const banner =
+      "\x1b[1;36mSuperTask mock 终端\x1b[0m（浏览器演示：确定性假 shell，不拉起真实进程）\r\n" +
+      "输入 \x1b[1mhelp\x1b[0m 查看可用命令。\r\n";
+    mockTermEmit(s.id, "output", banner + mockTermPrompt(s));
+    return { session_id: s.id, shell: "mock-shell" };
+  }
+  if (command === cmd.TERM_WRITE) {
+    const sessionId = Number(args?.sessionId ?? 0);
+    const s = mockTerms.get(sessionId);
+    if (!s) {
+      throw {
+        protocol: PROTOCOL,
+        code: "TERM_SESSION_NOT_FOUND",
+        message: `终端会话不存在或已退出: ${sessionId}`,
+        retryable: false,
+      };
+    }
+    // 异步处理输入，对齐真链路「write 立即返回、输出经 st.term 流回」的语义
+    const data = String(args?.data ?? "");
+    setTimeout(() => {
+      const cur = mockTerms.get(sessionId);
+      if (cur) mockTermHandleInput(cur, data);
+    }, 10);
+    return { accepted: true };
+  }
+  if (command === cmd.TERM_RESIZE) {
+    const sessionId = Number(args?.sessionId ?? 0);
+    if (!mockTerms.has(sessionId)) {
+      throw {
+        protocol: PROTOCOL,
+        code: "TERM_SESSION_NOT_FOUND",
+        message: `终端会话不存在或已退出: ${sessionId}`,
+        retryable: false,
+      };
+    }
+    return { accepted: true };
+  }
+  if (command === cmd.TERM_CLOSE) {
+    mockTerms.delete(Number(args?.sessionId ?? 0));
+    return { accepted: true };
   }
 
   throw {

@@ -1,5 +1,6 @@
 //! SuperTask engine. Spec: `docs/spec/`.
 
+pub mod ai;
 pub mod appdata;
 pub mod cloud;
 pub mod discover;
@@ -12,6 +13,7 @@ pub mod git;
 pub mod graph;
 pub mod health;
 pub mod ide;
+pub mod importer;
 pub mod ipc;
 pub mod launcher;
 pub mod lock;
@@ -31,6 +33,7 @@ pub mod scan;
 pub mod secrets;
 pub mod spec;
 pub mod taskfile;
+pub mod term;
 pub mod template;
 pub mod toolchain;
 

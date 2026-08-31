@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, Result};
-use crate::spec::{ServiceSpec, SuperTaskFile};
+use crate::spec::{ScriptSpec, ServiceSpec, SuperTaskFile};
 
 /// 扫描器负责的字段。`update` 只覆盖这些字段，其余一律保留 current。
 /// 1.4 §5.4：字段所有权扩展 `build_tool`（gradle 草稿带 `build_tool: gradle`）。
@@ -33,12 +33,45 @@ pub struct ScanMergeItem {
     pub candidate_id: Option<String>,
     /// 默认动作：Added=false，其余=true（保留语义）
     pub selected: bool,
+    /// 2.1 README 导入：字段来源（scan/readme/default + 置信度）；普通 scan 预览为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields_meta: Option<Vec<FieldMeta>>,
+}
+
+/// 2.1：字段来源元数据（spec §3.4 provenance）。source ∈ scan | readme | default；
+/// `readme_value` 仅在「scan 值保留 + README 建议值」冲突时出现（双值展示）。
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldMeta {
+    pub field: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readme_value: Option<String>,
+}
+
+/// id → 字段来源列表（服务用 service_id，脚本用 script_id 作键）。
+pub type FieldMetas = indexmap::IndexMap<String, Vec<FieldMeta>>;
+
+/// 2.1：脚本合并项（README 导入的 scripts 草稿走同一向导确认）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ScriptMergeItem {
+    pub script_id: String,
+    pub status: MergeStatus,
+    pub discovered: Option<ScriptSpec>,
+    pub current: Option<ScriptSpec>,
+    pub selected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields_meta: Option<Vec<FieldMeta>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanPreview {
     pub items: Vec<ScanMergeItem>,
     pub warnings: Vec<String>,
+    /// 2.1：脚本合并项；普通 scan 预览为空（序列化时省略，老前端不受影响）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub script_items: Vec<ScriptMergeItem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -55,6 +88,16 @@ pub struct MergeChoice {
     pub action: MergeAction,
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// 2.1：脚本项为 `script`；缺省 = service（1.1 契约兼容）。
+    #[serde(default)]
+    pub target: Option<MergeTarget>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeTarget {
+    Service,
+    Script,
 }
 
 /// 生成扫描合并预览。匹配规则可重复：相同输入两次调用结果完全一致。
@@ -63,10 +106,86 @@ pub fn preview(
     discovered: &SuperTaskFile,
     scan_warnings: Vec<String>,
 ) -> ScanPreview {
+    preview_with_sources(current, discovered, scan_warnings, None)
+}
+
+/// 2.1：带来源元数据的预览（README 导入）。`sources` 提供 readme 置信度标注；
+/// 同时产出 scripts 合并项（普通 scan 预览传 None，script_items 为空）。
+pub fn preview_with_sources(
+    current: &SuperTaskFile,
+    discovered: &SuperTaskFile,
+    scan_warnings: Vec<String>,
+    sources: Option<(&FieldMetas, &FieldMetas)>,
+) -> ScanPreview {
+    let items = build_items(current, discovered);
+    let items = match sources {
+        None => items,
+        Some((svc, _)) => items
+            .into_iter()
+            .map(|mut item| {
+                item.fields_meta = svc.get(&item.service_id).cloned();
+                item
+            })
+            .collect(),
+    };
+    let script_items = build_script_items(current, discovered).map_or_else(Vec::new, |mut v| {
+        if let Some((_, scripts)) = sources {
+            for item in &mut v {
+                item.fields_meta = scripts.get(&item.script_id).cloned();
+            }
+        }
+        v
+    });
     ScanPreview {
-        items: build_items(current, discovered),
+        items,
         warnings: scan_warnings,
+        script_items,
     }
+}
+
+/// scripts 合并项：discovered 有而 current 无 → Added；同 id 比较 cmds；
+/// current 独有 → Missing。无 IdConflict 概念（脚本无身份字段）。
+fn build_script_items(
+    current: &SuperTaskFile,
+    discovered: &SuperTaskFile,
+) -> Option<Vec<ScriptMergeItem>> {
+    if discovered.scripts.is_empty() {
+        return None;
+    }
+    let mut items = Vec::new();
+    for (id, spec_d) in &discovered.scripts {
+        let status = match current.scripts.get(id) {
+            None => MergeStatus::Added,
+            Some(cur) => {
+                if cur.cmds == spec_d.cmds {
+                    MergeStatus::MatchSame
+                } else {
+                    MergeStatus::MatchDiff
+                }
+            }
+        };
+        items.push(ScriptMergeItem {
+            script_id: id.clone(),
+            status,
+            discovered: Some(spec_d.clone()),
+            current: current.scripts.get(id).cloned(),
+            selected: status != MergeStatus::Added,
+            fields_meta: None,
+        });
+    }
+    for (id, spec_c) in &current.scripts {
+        if !discovered.scripts.contains_key(id) {
+            items.push(ScriptMergeItem {
+                script_id: id.clone(),
+                status: MergeStatus::Missing,
+                discovered: None,
+                current: Some(spec_c.clone()),
+                selected: true,
+                fields_meta: None,
+            });
+        }
+    }
+    Some(items)
 }
 
 /// 按用户选择合并。从 current 克隆出发，reserved 段（templates/git/x-* 等）永不丢。
@@ -80,74 +199,137 @@ pub fn apply(
         return Ok(out);
     }
     let items = build_items(current, discovered);
+    let script_items = build_script_items(current, discovered).unwrap_or_default();
     for choice in choices {
-        let item = items
-            .iter()
-            .find(|i| i.service_id == choice.id)
-            .ok_or_else(|| {
-                Error::new(ErrorCode::NotFound, format!("预览项不存在: {}", choice.id))
-            })?;
-        match choice.action {
-            MergeAction::Keep => {}
-            MergeAction::Add => {
-                if !matches!(item.status, MergeStatus::Added | MergeStatus::IdConflict) {
+        match choice.target {
+            Some(MergeTarget::Script) => apply_script_choice(&mut out, &script_items, choice)?,
+            _ => apply_service_choice(&mut out, &items, choice)?,
+        }
+    }
+    Ok(out)
+}
+
+/// 2.1：脚本项应用。`update` 整体替换（cmds 只来自文档、用户已在向导确认）。
+fn apply_script_choice(
+    out: &mut SuperTaskFile,
+    script_items: &[ScriptMergeItem],
+    choice: &MergeChoice,
+) -> Result<()> {
+    let item = script_items
+        .iter()
+        .find(|i| i.script_id == choice.id)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::NotFound,
+                format!("脚本预览项不存在: {}", choice.id),
+            )
+        })?;
+    match choice.action {
+        MergeAction::Keep => {}
+        MergeAction::Add => {
+            if !matches!(item.status, MergeStatus::Added) {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("脚本 {} 不是新增项，无法 add", choice.id),
+                ));
+            }
+            let spec = item
+                .discovered
+                .as_ref()
+                .expect("added 脚本项必带 discovered");
+            if out.scripts.contains_key(&choice.id) {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("脚本 id 已存在: {}", choice.id),
+                ));
+            }
+            out.scripts.insert(choice.id.clone(), spec.clone());
+        }
+        MergeAction::Update => {
+            let disc = match (item.discovered.as_ref(), item.current.as_ref()) {
+                (Some(d), Some(_)) => d,
+                _ => {
                     return Err(Error::new(
                         ErrorCode::NotFound,
-                        format!("{} 不是新增/冲突项，无法 add", choice.id),
-                    ));
+                        format!("脚本 {} 没有可更新的匹配项", choice.id),
+                    ))
                 }
-                let spec = item
-                    .discovered
-                    .as_ref()
-                    .expect("added/conflict 项必带 discovered");
-                let key = item
-                    .candidate_id
-                    .clone()
-                    .unwrap_or_else(|| item.service_id.clone());
-                if out.services.contains_key(&key) {
-                    return Err(Error::new(
-                        ErrorCode::SpecInvalid,
-                        format!("id 已存在: {key}"),
-                    ));
-                }
-                out.services.insert(key, spec.clone());
+            };
+            out.scripts.insert(choice.id.clone(), disc.clone());
+        }
+    }
+    Ok(())
+}
+
+fn apply_service_choice(
+    out: &mut SuperTaskFile,
+    items: &[ScanMergeItem],
+    choice: &MergeChoice,
+) -> Result<()> {
+    let item = items
+        .iter()
+        .find(|i| i.service_id == choice.id)
+        .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("预览项不存在: {}", choice.id)))?;
+    match choice.action {
+        MergeAction::Keep => {}
+        MergeAction::Add => {
+            if !matches!(item.status, MergeStatus::Added | MergeStatus::IdConflict) {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    format!("{} 不是新增/冲突项，无法 add", choice.id),
+                ));
             }
-            MergeAction::Update => {
-                let disc = match (item.discovered.as_ref(), item.current.as_ref()) {
-                    (Some(d), Some(_)) => d,
-                    _ => {
-                        return Err(Error::new(
-                            ErrorCode::NotFound,
-                            format!("{} 没有可更新的匹配项", choice.id),
-                        ))
-                    }
-                };
-                let fields: Vec<&str> = match &choice.fields {
-                    Some(wanted) => SCANNER_OWNED_FIELDS
-                        .iter()
-                        .copied()
-                        .filter(|f| wanted.iter().any(|w| w == f))
-                        .collect(),
-                    None => SCANNER_OWNED_FIELDS.to_vec(),
-                };
-                let cur = out
-                    .services
-                    .get_mut(&item.service_id)
-                    .expect("match/conflict 项的 current 必在表内");
-                for field in fields {
-                    match field {
-                        "kind" => cur.kind = disc.kind.clone(),
-                        "module" => cur.module = disc.module.clone(),
-                        "dir" => cur.dir = disc.dir.clone(),
-                        "package_manager" => cur.package_manager = disc.package_manager,
-                        "build_tool" => cur.build_tool = disc.build_tool.clone(),
-                        _ => unreachable!("SCANNER_OWNED_FIELDS 白名单"),
-                    }
+            let spec = item
+                .discovered
+                .as_ref()
+                .expect("added/conflict 项必带 discovered");
+            let key = item
+                .candidate_id
+                .clone()
+                .unwrap_or_else(|| item.service_id.clone());
+            if out.services.contains_key(&key) {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("id 已存在: {key}"),
+                ));
+            }
+            out.services.insert(key, spec.clone());
+        }
+        MergeAction::Update => {
+            let disc = match (item.discovered.as_ref(), item.current.as_ref()) {
+                (Some(d), Some(_)) => d,
+                _ => {
+                    return Err(Error::new(
+                        ErrorCode::NotFound,
+                        format!("{} 没有可更新的匹配项", choice.id),
+                    ))
+                }
+            };
+            let fields: Vec<&str> = match &choice.fields {
+                Some(wanted) => SCANNER_OWNED_FIELDS
+                    .iter()
+                    .copied()
+                    .filter(|f| wanted.iter().any(|w| w == f))
+                    .collect(),
+                None => SCANNER_OWNED_FIELDS.to_vec(),
+            };
+            let cur = out
+                .services
+                .get_mut(&item.service_id)
+                .expect("match/conflict 项的 current 必在表内");
+            for field in fields {
+                match field {
+                    "kind" => cur.kind = disc.kind.clone(),
+                    "module" => cur.module = disc.module.clone(),
+                    "dir" => cur.dir = disc.dir.clone(),
+                    "package_manager" => cur.package_manager = disc.package_manager,
+                    "build_tool" => cur.build_tool = disc.build_tool.clone(),
+                    _ => unreachable!("SCANNER_OWNED_FIELDS 白名单"),
                 }
             }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// 身份一致：kind 相同，且 spring-boot 的 module / node 的 dir / compose 的
@@ -205,6 +387,7 @@ fn push_match_item(
         field_diffs: diffs,
         candidate_id: None,
         selected: true,
+        fields_meta: None,
     });
 }
 
@@ -258,6 +441,7 @@ fn build_items(current: &SuperTaskFile, discovered: &SuperTaskFile) -> Vec<ScanM
                 field_diffs: Vec::new(),
                 candidate_id: Some(candidate),
                 selected: true,
+                fields_meta: None,
             });
             continue;
         }
@@ -278,6 +462,7 @@ fn build_items(current: &SuperTaskFile, discovered: &SuperTaskFile) -> Vec<ScanM
             field_diffs: Vec::new(),
             candidate_id: None,
             selected: false,
+            fields_meta: None,
         });
     }
 
@@ -291,6 +476,7 @@ fn build_items(current: &SuperTaskFile, discovered: &SuperTaskFile) -> Vec<ScanM
                 field_diffs: Vec::new(),
                 candidate_id: None,
                 selected: true,
+                fields_meta: None,
             });
         }
     }
@@ -340,6 +526,7 @@ mod tests {
                 id: "web".into(),
                 action: MergeAction::Add,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -371,6 +558,7 @@ mod tests {
                 id: "api".into(),
                 action: MergeAction::Keep,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -400,6 +588,7 @@ mod tests {
                 id: "api".into(),
                 action: MergeAction::Keep,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -433,6 +622,7 @@ mod tests {
                 id: "web".into(),
                 action: MergeAction::Update,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -457,6 +647,7 @@ mod tests {
                 id: "web".into(),
                 action: MergeAction::Update,
                 fields: Some(vec!["port".into(), "dir".into()]),
+                target: None,
             }],
         )
         .unwrap();
@@ -470,6 +661,7 @@ mod tests {
                 id: "web".into(),
                 action: MergeAction::Update,
                 fields: Some(vec!["kind".into(), "package_manager".into()]),
+                target: None,
             }],
         )
         .unwrap();
@@ -501,6 +693,7 @@ mod tests {
                 id: "legacy".into(),
                 action: MergeAction::Keep,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -566,6 +759,7 @@ mod tests {
                 id: "app".into(),
                 action: MergeAction::Add,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -601,6 +795,7 @@ mod tests {
                 id: "api".into(),
                 action: MergeAction::Update,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -634,11 +829,13 @@ mod tests {
                     id: "web".into(),
                     action: MergeAction::Add,
                     fields: None,
+                    target: None,
                 },
                 MergeChoice {
                     id: "api".into(),
                     action: MergeAction::Keep,
                     fields: None,
+                    target: None,
                 },
             ],
         )
@@ -700,6 +897,7 @@ mod tests {
                 id: "redis".into(),
                 action: MergeAction::Add,
                 fields: None,
+                target: None,
             }],
         )
         .unwrap();
@@ -731,6 +929,7 @@ mod tests {
                 id: "api".into(),
                 action: MergeAction::Update,
                 fields: Some(vec!["build_tool".into()]),
+                target: None,
             }],
         )
         .unwrap();
@@ -750,6 +949,7 @@ mod tests {
             id: id.into(),
             action,
             fields: None,
+            target: None,
         };
         // 未知 id
         let err = apply(&current, &discovered, &[choice("nope", MergeAction::Keep)]).unwrap_err();

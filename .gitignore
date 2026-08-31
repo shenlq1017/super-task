@@ -8,5 +8,10 @@ node_modules
 dist
 .tauri-init
 src-tauri/gen
+/references
+**/target/
+*.log
+design_outputs/
 
-examples/**/target/
+# 云参考服务默认库（SUPERTASK_DATABASE_URL=sqlite://supertask-cloud.db）：本机跑服务端即产生，含口令 hash
+supertask-cloud.db*

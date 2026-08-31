@@ -17,9 +17,11 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WindowEvent};
 
+pub mod ai;
 pub mod cloud;
 mod commands;
 mod state;
+pub mod term;
 
 use state::{AppDataHandle, Exiting, TrayItems};
 
@@ -158,6 +160,11 @@ pub(crate) fn request_exit(app: &AppHandle) {
         return;
     }
     let engine = app.state::<Arc<supertask_core::Engine>>();
+    // 终端会话先清场（ConPTY 关闭即整树终止），再停工作区
+    {
+        let term = app.state::<term::TermHandle>();
+        term.0.close_all();
+    }
     let result = engine.close();
     // §8.3 第 4 步：关托盘与主窗口（顺带清理 resources_table）
     app.cleanup_before_exit();
@@ -253,6 +260,8 @@ pub fn run() {
     let hub = state::new_hub();
     let appdata = state::init_appdata();
     let pending_update = state::new_pending_update();
+    // 运行页终端（ipc.md §10.15）：PTY 会话托管（桥线程在 setup 中启动）
+    let term_mgr = Arc::new(supertask_core::term::PtyManager::new());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -267,6 +276,7 @@ pub fn run() {
         .manage(engine.clone())
         .manage(hub.clone())
         .manage(appdata.clone())
+        .manage(term::TermHandle(term_mgr.clone()))
         .manage({
             let data = appdata.lock().expect("appdata lock");
             cloud::CloudHandle::new(&data)
@@ -293,6 +303,7 @@ pub fn run() {
         })
         .setup(move |app| {
             spawn_event_bridge(app.handle().clone(), engine, hub);
+            term::spawn_term_bridge(app.handle().clone(), term_mgr);
 
             let tray_items = build_tray(app.handle())?;
             app.manage(tray_items);
@@ -335,6 +346,8 @@ pub fn run() {
             commands::workspace_scan_apply,
             commands::import_taskfile_preview,
             commands::import_taskfile_apply,
+            commands::import_readme_preview,
+            commands::import_readme_apply,
             commands::system_discover,
             commands::system_kill_process,
             commands::yaml_get,
@@ -368,6 +381,15 @@ pub fn run() {
             commands::docker_images,
             commands::docker_build,
             commands::docker_build_cancel,
+            // 2.1 AI
+            commands::ai_config_save,
+            commands::ai_config_delete,
+            commands::ai_config_default,
+            commands::ai_instructions_save,
+            commands::ai_template_save,
+            commands::ai_template_delete,
+            commands::ai_status,
+            commands::ai_models,
             commands::ai_complete,
             commands::toolchain_install,
             commands::toolchain_upgrade,
@@ -399,6 +421,11 @@ pub fn run() {
             commands::gateway_stop,
             commands::gateway_restart,
             commands::gateway_trust,
+            // 运行页终端（ipc.md §10.15）
+            term::term_open,
+            term::term_write,
+            term::term_resize,
+            term::term_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

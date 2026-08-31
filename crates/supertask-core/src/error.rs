@@ -122,6 +122,16 @@ pub enum ErrorCode {
     CloudEncryptRequired,
     CloudQuotaExceeded,
     CloudProtocolError,
+    // ---- 2.1 ----
+    AiNotConfigured,
+    AiRequestFailed,
+    AiTimeout,
+    AiContextTooLarge,
+    ReadmeNotFound,
+    // ---- 运行页终端（ipc.md §10.15）----
+    TermSessionNotFound,
+    TermSpawnFailed,
+    TermLimit,
 }
 
 #[derive(Debug, Error)]
@@ -262,6 +272,12 @@ mod tests {
             (ErrorCode::GatewayBinaryMissing, "GATEWAY_BINARY_MISSING"),
             (ErrorCode::GatewayConfigInvalid, "GATEWAY_CONFIG_INVALID"),
             (ErrorCode::GatewayStartFailed, "GATEWAY_START_FAILED"),
+            // 2.1
+            (ErrorCode::ReadmeNotFound, "README_NOT_FOUND"),
+            // 终端（§10.15）
+            (ErrorCode::TermSessionNotFound, "TERM_SESSION_NOT_FOUND"),
+            (ErrorCode::TermSpawnFailed, "TERM_SPAWN_FAILED"),
+            (ErrorCode::TermLimit, "TERM_LIMIT"),
         ];
         for (code, expected) in pairs {
             let value = serde_yaml::to_value(code).expect("serialize ErrorCode");

@@ -919,10 +919,8 @@ fn apply_params(files: &mut [(String, Vec<u8>)], params: &BTreeMap<String, Strin
     }
 }
 
-/// 组合模板的生成计划：选中块（依赖闭合）+ 端口分配后的 services 片段 + 文件并集。
+/// 组合模板的生成计划：端口分配后的 services 片段 + 文件并集。
 struct BlockPlan {
-    /// 选中块的 id（含自动闭合的依赖，按清单顺序）。
-    selected_ids: Vec<String>,
     /// (服务 id, 已写入端口的 services 片段)。
     services: Vec<(String, Value)>,
     /// 选中块的文件并集（清单顺序）。
@@ -1029,7 +1027,6 @@ fn plan_blocks(
             .collect::<Vec<_>>(),
     );
     Ok(Some(BlockPlan {
-        selected_ids: chosen,
         services,
         files,
     }))

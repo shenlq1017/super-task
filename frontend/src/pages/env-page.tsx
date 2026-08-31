@@ -10,6 +10,7 @@ import { useWorkspace } from "../providers/workspace-provider";
 import { useYaml } from "@/providers/yaml-provider";
 import { useOperations } from "../providers/operation-provider";
 import { useToast } from "@/components/ui/toast";
+import { useUnsavedEntry } from "@/providers/unsaved-guard";
 import { apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade, apiYamlSaveForm } from "../ipc/api";
 import { IpcFailure, type ManagerAvailability, type NetworkSpec, type ToolProbe, type ToolchainProbeOut } from "../ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
@@ -248,19 +249,28 @@ function NetworkCard() {
 
   const set = (patch: NetworkSpec) => setDraft((prev) => ({ ...prev, ...patch }));
 
-  const save = async () => {
-    if (!spec || !ws.state.workspaceId) return;
+  const save = async (): Promise<boolean> => {
+    if (!spec || !ws.state.workspaceId) return false;
     setBusy(true);
     try {
       await apiYamlSaveForm({ ...spec, network: draft }, yaml.state.hash);
       await yaml.actions.reload();
       toast(t("pages.env.networkSaved"), "ok");
+      return true;
     } catch (e) {
       toast(e instanceof IpcFailure ? errorDisplayText(e.code, e.message) : String(e), "err");
+      return false;
     } finally {
       setBusy(false);
     }
   };
+
+  // 未保存守卫：网络草稿与 spec 有差异即视为脏
+  useUnsavedEntry(
+    "env.network",
+    () => JSON.stringify(draft) !== JSON.stringify(net ?? {}),
+    save,
+  );
 
   const hasWs = ws.state.workspaceId != null;
   const proxy = draft.proxy ?? {};

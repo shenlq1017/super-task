@@ -1,9 +1,10 @@
 const LAST_KEY = "st:lastWorkspace";
 const RECENTS_KEY = "st:recents";
-const CARDS_COLLAPSED_KEY = "st:runCardsCollapsed";
 const LOG_WRAP_KEY = "st:logWrap";
 const LOG_LIMIT_KEY = "st:logLineLimit";
 const LOG_SHOW_TIME_KEY = "st:logShowTime";
+const COMPACT_KEY = "st:compactDensity";
+const LOG_FOLLOW_KEY = "st:logFollow";
 
 export function readLastWorkspace(): string | null {
   try {
@@ -60,19 +61,26 @@ export function mergeRecents(server: string[], local: string[]): string[] {
   return out;
 }
 
-export function readCardsCollapsedPref(): boolean | null {
+/** 运行页服务列表宽度（px）：min 240 / max 400，默认 344（21.5rem）。 */
+const CARD_WIDTH_KEY = "st:runCardWidth";
+export const RUN_CARD_MIN_WIDTH = 240;
+export const RUN_CARD_MAX_WIDTH = 400;
+export const RUN_CARD_DEFAULT_WIDTH = 344;
+
+export function readRunCardWidthPref(): number {
   try {
-    const v = localStorage.getItem(CARDS_COLLAPSED_KEY);
-    if (v === null) return null;
-    return v === "1";
+    const n = Number(localStorage.getItem(CARD_WIDTH_KEY));
+    return Number.isFinite(n) && n > 0
+      ? Math.min(RUN_CARD_MAX_WIDTH, Math.max(RUN_CARD_MIN_WIDTH, n))
+      : RUN_CARD_DEFAULT_WIDTH;
   } catch {
-    return null;
+    return RUN_CARD_DEFAULT_WIDTH;
   }
 }
 
-export function writeCardsCollapsedPref(collapsed: boolean) {
+export function writeRunCardWidthPref(width: number) {
   try {
-    localStorage.setItem(CARDS_COLLAPSED_KEY, collapsed ? "1" : "0");
+    localStorage.setItem(CARD_WIDTH_KEY, String(Math.round(Math.min(RUN_CARD_MAX_WIDTH, Math.max(RUN_CARD_MIN_WIDTH, width)))));
   } catch {
     /* ignore */
   }
@@ -124,6 +132,41 @@ export function readLogShowTimePref(): boolean {
 export function writeLogShowTimePref(show: boolean) {
   try {
     localStorage.setItem(LOG_SHOW_TIME_KEY, show ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readCompactPref(): boolean {
+  try {
+    return localStorage.getItem(COMPACT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeCompactPref(compact: boolean) {
+  try {
+    localStorage.setItem(COMPACT_KEY, compact ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 日志视图默认跟随底部（新挂载的 LogView 以此为初始值）。 */
+export function readLogFollowPref(): boolean {
+  try {
+    const v = localStorage.getItem(LOG_FOLLOW_KEY);
+    if (v === null) return true;
+    return v === "1";
+  } catch {
+    return true;
+  }
+}
+
+export function writeLogFollowPref(follow: boolean) {
+  try {
+    localStorage.setItem(LOG_FOLLOW_KEY, follow ? "1" : "0");
   } catch {
     /* ignore */
   }

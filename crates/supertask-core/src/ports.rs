@@ -206,7 +206,7 @@ fn parse_proc_net_tcp(text: &str) -> Vec<(String, u16, u64)> {
     out
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn macos_listeners() -> Result<Vec<TcpListener>> {
     let out = Command::new("lsof")
         .args(["-nP", "-iTCP", "-sTCP:LISTEN"])
@@ -230,7 +230,8 @@ fn macos_listeners() -> Result<Vec<TcpListener>> {
 
 /// 解析 `lsof -nP -iTCP -sTCP:LISTEN` 输出（跳表头）：`PID` 第 2 列，
 /// `NAME` 形如 `*:8081` / `127.0.0.1:8081` / `[::]:6379`。
-#[cfg(not(target_os = "linux"))]
+/// 纯解析逻辑，`test` 下全平台编译以便单测覆盖。
+#[cfg(any(target_os = "macos", test))]
 fn parse_lsof_listeners(text: &str) -> Vec<TcpListener> {
     let mut out = Vec::new();
     for line in text.lines().skip(1) {

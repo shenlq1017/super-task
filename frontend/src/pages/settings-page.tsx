@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useOutletContext } from "react-router-dom";
 import { Cloud, Loader2, Settings2 } from "lucide-react";
+import type { ShellCtx } from "../app/AppShell";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,14 +26,16 @@ function PrefRow({
   desc,
   checked,
   onChange,
+  disabled,
 }: {
   label: string;
   desc: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <label className="flex items-center justify-between gap-4 py-1.5 text-[0.875rem] text-[var(--t1,#222326)]">
+    <label className={cn("flex items-center justify-between gap-4 py-1.5 text-[0.875rem] text-[var(--t1,#222326)]", disabled && "opacity-60")}>
       <span>
         {label}
         <span className="block text-[0.75rem] leading-relaxed text-[var(--t3,#8a8f98)]">{desc}</span>
@@ -39,6 +43,7 @@ function PrefRow({
       <input
         type="checkbox"
         checked={checked}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
         aria-label={label}
         className="shrink-0"
@@ -345,6 +350,7 @@ function SettingsPageInner() {
   const { state } = useSession();
   const { toast } = useToast();
   const { t } = useTranslation();
+  const shell = useOutletContext<ShellCtx>();
   const [theme, setTheme] = useState(state.app?.prefs.theme ?? "light");
   const [locale, setLocale] = useState<string>(state.app?.prefs?.locale ?? "auto");
   const [restore, setRestore] = useState(state.app?.prefs.restoreLast ?? true);
@@ -489,6 +495,29 @@ function SettingsPageInner() {
                 {t("pages.settings.autoResolved", { locale: resolvedAuto })}
               </p>
             ) : null}
+
+            {/* 原设置弹框三项迁入：紧凑密度 / 跟随日志即时生效并持久化；健康检查未落地保持禁用占位 */}
+            <div className="mt-4 flex flex-col divide-y divide-[var(--line,#e6e6e6)] border-t border-[var(--line,#e6e6e6)] pt-1">
+              <PrefRow
+                label={t("pages.settings.compactDensity")}
+                desc={t("pages.settings.compactDensityDesc")}
+                checked={shell.compact}
+                onChange={shell.setCompact}
+              />
+              <PrefRow
+                label={t("pages.settings.followLogs")}
+                desc={t("pages.settings.followLogsDesc")}
+                checked={shell.defaultFollow}
+                onChange={shell.setDefaultFollow}
+              />
+              <PrefRow
+                label={t("pages.settings.liveHealth")}
+                desc={t("pages.settings.liveHealthDesc")}
+                checked={false}
+                onChange={() => {}}
+                disabled
+              />
+            </div>
           </Card>
 
           <CloudSettingsCard />

@@ -8,13 +8,21 @@ import { Separator } from "@/components/ui/separator";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { copyText } from "@/lib/copy-text";
-import { readCardsCollapsedPref, writeCardsCollapsedPref } from "@/lib/workspace-storage";
+import { openUrlInBrowser, localPortUrl } from "@/lib/open-url";
+import {
+  RUN_CARD_MAX_WIDTH,
+  RUN_CARD_MIN_WIDTH,
+  readRunCardWidthPref,
+  writeRunCardWidthPref,
+} from "@/lib/workspace-storage";
 import { EnvVariablesEditor } from "@/components/env-variables-editor";
 import { useRuntime } from "@/providers/runtime-provider";
 import { useWorkspace } from "@/providers/workspace-provider";
 import { useYaml } from "@/providers/yaml-provider";
 import { useToast } from "@/components/ui/toast";
 import { LogView } from "@/components/log-view";
+import { AiExplainButton } from "@/components/ai-explain";
+import { TerminalView } from "@/components/terminal-view";
 import {
   STATE_META,
   StatusDot,
@@ -67,9 +75,6 @@ import {
   ExternalLink,
   Copy,
   Check,
-  Lock,
-  PanelLeftClose,
-  PanelLeftOpen,
   Cpu,
   HardDrive,
   Boxes,
@@ -77,6 +82,7 @@ import {
   Loader2,
   Container,
   Network,
+  SquareTerminal,
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
@@ -300,6 +306,33 @@ function HealthSparkline({ ok }: { ok: boolean | null | undefined }) {
   );
 }
 
+/* ---------------- port link ---------------- */
+
+/** 可点击端口：拉起系统默认浏览器访问 http://localhost:<port>/ */
+function PortLink({ port, className }: { port: number; className?: string }) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  return (
+    <button
+      type="button"
+      className={cn(
+        "group/port inline-flex cursor-pointer items-center gap-1 font-mono transition-colors duration-150 hover:underline",
+        className,
+      )}
+      title={t("pages.run.openPortTitle", { port })}
+      onClick={(e) => {
+        e.stopPropagation();
+        void openUrlInBrowser(localPortUrl(port)).then((ok) => {
+          if (!ok) toast(t("pages.run.openPortFailed", { port }), "err");
+        });
+      }}
+    >
+      {port}
+      <ExternalLink className="size-3 opacity-40 transition-opacity duration-150 group-hover/port:opacity-100" />
+    </button>
+  );
+}
+
 /* ---------------- service card ---------------- */
 
 function ServiceCard({
@@ -386,7 +419,7 @@ function ServiceCard({
             className={cn(
               "grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50",
               isRunning
-                ? "border-transparent text-[var(--t3,#8a8f98)] hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)]"
+                ? "border-transparent text-[var(--st-danger,#dc2626)] hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)]"
                 : "border-transparent text-[var(--t3,#8a8f98)] hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)]",
             )}
             title={isRunning ? t("common.stop") : t("common.start")}
@@ -424,7 +457,7 @@ function ServiceCard({
 
       <div className="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--t2,#62666d)]">
         <span className="font-medium" style={{ color: meta.color }}>{stateLabel(svc.state)}</span>
-        {svc.port ? <span className="font-mono">{svc.port}</span> : null}
+        {svc.port ? <PortLink port={svc.port} className="text-[var(--t1,#222326)]" /> : null}
         {svc.pid ? (
           <span className="font-mono">pid {svc.pid}</span>
         ) : svc.kind === "compose" ? (
@@ -847,7 +880,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   const ws = useWorkspace();
   const runtime = useRuntime();
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"logs" | "env" | "health" | "config" | "metrics" | "container" | "proxy">("logs");
+  const [tab, setTab] = useState<"logs" | "env" | "health" | "config" | "metrics" | "terminal" | "container" | "proxy">("logs");
   const [confirmStop, setConfirmStop] = useState(false);
   const [building, setBuilding] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -893,9 +926,10 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
         : t("pages.run.stackSpring");
   const topo = spec?.depends_on?.length ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") }) : t("pages.run.noDeps");
 
-  type DetailTab = "logs" | "env" | "health" | "config" | "metrics" | "container" | "proxy";
+  type DetailTab = "logs" | "env" | "health" | "config" | "metrics" | "terminal" | "container" | "proxy";
   const tabs: { k: DetailTab; label: string; icon: typeof FileText }[] = [
     { k: "logs", label: t("nav.logs"), icon: FileText },
+    { k: "terminal", label: t("pages.run.tabTerminal"), icon: SquareTerminal },
     { k: "env", label: t("pages.run.tabEnv"), icon: Settings2 },
     { k: "health", label: t("pages.run.tabHealth"), icon: Activity },
     { k: "config", label: t("nav.config"), icon: FileText },
@@ -904,13 +938,6 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
     ...(isCompose ? [{ k: "container" as DetailTab, label: t("nav.docker"), icon: Container }] : []),
     // 1.6：代理 Tab 仅网关已配置且启用时显示（本服务视角：网关状态 + 指向本服务的路由）
     ...(rt.state.gateway ? [{ k: "proxy" as DetailTab, label: t("pages.run.lockProxy"), icon: Network }] : []),
-  ];
-  const locked = [
-    // 终端 PTY 从未进入路线图任何版本（2026-08-26 界面设计文档标注「1.5」与
-    // 路线图/1.5 规格「能搬家：导出包+CLI+MCP」冲突，以路线图为准）→ 标注待排期；
-    // 容器 Tab 1.3、代理 Tab 1.6（网关）均已上线为正式 Tab，不再列入锁定项；
-    // 指标 1.2 已上线为正式 Tab。
-    { label: t("pages.run.lockTerminal"), v: t("pages.run.unscheduled") },
   ];
 
   return (
@@ -1029,20 +1056,17 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
 
       {/* meta strip */}
       <div className="mx-4 mt-2 flex flex-wrap items-center gap-x-[1.1rem] gap-y-1.5 rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-3.5 py-2">
-        <Meta k={t("pages.run.metaPort")} v={svc.port != null ? `${svc.port}` : "—"} accent />
+        {svc.port != null ? (
+          <Meta k={t("pages.run.metaPort")} v={<PortLink port={svc.port} className="font-bold text-[var(--st-accent,#5e6ad2)]" />} />
+        ) : (
+          <Meta k={t("pages.run.metaPort")} v="—" accent />
+        )}
         <Meta k={t("pages.run.metaStack")} v={stack} />
         <Meta k={t("pages.run.metaTopo")} v={topo} muted />
         <Meta
           k="PID"
-          v={
-            svc.pid != null
-              ? `${svc.pid}${isRunning ? " · Job Object" : ""}`
-              : isCompose
-                ? t("pages.run.containerManaged")
-                : "—"
-          }
+          v={svc.pid != null ? `${svc.pid}` : isCompose ? t("pages.run.containerManaged") : "—"}
         />
-        <Meta k={t("pages.run.metaLog")} v={`service:${id}`} mono />
         <Meta k={t("pages.run.metaUptime")} v={svc.started_at_ms ? fmtDuration(svc.started_at_ms) : "—"} ok={isRunning} />
       </div>
 
@@ -1064,18 +1088,33 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
             </button>
           ))}
         </div>
-        {locked.map((l) => (
-          <span key={l.label} className="inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[0.73rem] text-[var(--t3,#8a8f98)]">
-            <span className="grid size-3.5 place-items-center rounded bg-black/5"><Lock className="size-3" /></span>
-            {l.label}
-            <Badge variant="secondary" className="text-[9px]">{l.v}</Badge>
-          </span>
-        ))}
       </div>
 
       {/* panels：日志等宽区域内部滚动，不外层滚动 */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {tab === "logs" ? <LogView source={source} className="min-h-0 flex-1" height="100%" /> : null}
+        {tab === "logs" ? (
+          <LogView
+            source={source}
+            className="min-h-0 flex-1"
+            height="100%"
+            extraActions={({ lines }) => (
+              <AiExplainButton
+                lines={lines}
+                source={source}
+                serviceKind={svc.kind}
+                servicePort={svc.port}
+                serviceState={svc.state}
+              />
+            )}
+          />
+        ) : null}
+        {tab === "terminal" ? (
+          <TerminalView
+            workspaceId={ws.state.workspaceId ?? ""}
+            serviceId={id}
+            className="min-h-0 flex-1"
+          />
+        ) : null}
         {tab === "env" ? (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <EnvPanel id={id} compact={compact} />
@@ -1289,7 +1328,7 @@ function Meta({
   ok,
 }: {
   k: string;
-  v: string;
+  v: ReactNode;
   accent?: boolean;
   muted?: boolean;
   mono?: boolean;
@@ -1372,7 +1411,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
     <div
       onClick={onOpen}
       className={cn(
-        "group/scr relative flex h-[5.7rem] cursor-pointer flex-col overflow-hidden rounded-xl border bg-[var(--surface,#fff)] p-2.5 transition-all",
+        "group/scr relative flex h-[5.7rem] cursor-pointer flex-col overflow-hidden rounded-[var(--r-md,12px)] border bg-[var(--surface,#fff)] p-2.5 transition-all duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))]",
         selected ? "border-[var(--st-accent,#5e6ad2)] bg-[color-mix(in_oklch,var(--st-accent,#5e6ad2)_6%,white)] ring-1 ring-[var(--st-accent,#5e6ad2)]/30" : "border-[var(--line,#e6e6e6)] hover:border-[var(--line-strong,#d0d6e0)]",
       )}
     >
@@ -1384,7 +1423,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
           {isRunning ? (
             <button
               type="button"
-              className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--st-danger,#dc2626)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] disabled:cursor-not-allowed disabled:opacity-50"
               title={t("pages.run.stopScriptTitle")}
               onClick={() => setConfirmStop(true)}
             >
@@ -1657,7 +1696,7 @@ function ScriptDetail({ id }: { id: string }) {
         <Meta k={t("pages.run.metaCmds")} v={t("pages.run.cmdCount", { n: spec.cmds.length })} />
         <Meta k={t("pages.run.metaCwd")} v={spec.cwd ?? t("pages.run.wsRoot")} muted />
         <Meta k={t("pages.run.metaTimeout")} v={`${spec.timeout_secs ?? 1800}s`} />
-        <Meta k="PID" v={view?.pid != null ? `${view.pid} · Job Object` : "—"} />
+        <Meta k="PID" v={view?.pid != null ? `${view.pid}` : "—"} />
         <Meta k={t("pages.run.metaLog")} v={`script:${id}`} mono />
         <Meta
           k={t("pages.run.metaLastExit")}
@@ -1668,7 +1707,12 @@ function ScriptDetail({ id }: { id: string }) {
 
       {/* logs：与日志页共用 LogView，来源 script:{id} */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 pt-3">
-        <LogView source={source} className="min-h-0 flex-1" height="100%" />
+        <LogView
+          source={source}
+          className="min-h-0 flex-1"
+          height="100%"
+          extraActions={({ lines }) => <AiExplainButton lines={lines} source={source} />}
+        />
       </div>
     </div>
   );
@@ -1755,7 +1799,7 @@ function GroupHeader({
           type="button"
           onClick={onStop}
           disabled={running === 0}
-          className="grid size-6 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] hover:text-[var(--st-danger,#dc2626)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="grid size-6 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--st-danger,#dc2626)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] disabled:cursor-not-allowed disabled:opacity-50"
           title={t("pages.run.groupStop")}
         >
           <Square className="size-3" />
@@ -1776,8 +1820,7 @@ export function RunPage() {
   const serviceIds = Object.keys(rt.state.services);
   const scriptIds = ws.state.spec ? Object.keys(ws.state.spec.scripts) : [];
   const running = serviceIds.filter((i) => rt.state.services[i].state === "running").length;
-  const totalItems = serviceIds.length + scriptIds.length;
-  const [cardsCollapsed, setCardsCollapsed] = useState(() => readCardsCollapsedPref() ?? totalItems === 1);
+  const [cardWidth, setCardWidth] = useState(() => readRunCardWidthPref());
 
   // 1.7 §8.1：分组（spec.group 字段；无分组时渲染与旧版一致）
   const groups = useMemo(
@@ -1822,16 +1865,29 @@ export function RunPage() {
     }
   };
 
-  useEffect(() => {
-    if (readCardsCollapsedPref() === null && totalItems === 1) setCardsCollapsed(true);
-  }, [totalItems]);
+  const clampCardWidth = (w: number) => Math.min(RUN_CARD_MAX_WIDTH, Math.max(RUN_CARD_MIN_WIDTH, w));
 
-  const toggleCards = () => {
-    setCardsCollapsed((v) => {
-      const next = !v;
-      writeCardsCollapsedPref(next);
-      return next;
-    });
+  // 服务列表宽度拖拽：按下后由 window 收集 move/up，避免拖出把手丢失事件
+  const onResizeHandlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = cardWidth;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev: PointerEvent) => {
+      setCardWidth(clampCardWidth(startWidth + ev.clientX - startX));
+    };
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      const next = clampCardWidth(startWidth + ev.clientX - startX);
+      setCardWidth(next);
+      writeRunCardWidthPref(next);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   };
 
   const sel =
@@ -1845,57 +1901,20 @@ export function RunPage() {
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      {/* card column：仅卡片列表自身滚动 */}
+      {/* card column：仅卡片列表自身滚动；宽度可拖拽（min/max 见 workspace-storage） */}
       <section
         className={cn(
-          "flex shrink-0 flex-col border-r border-[var(--line,#e6e6e6)] transition-[width] duration-200 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))]",
-          cardsCollapsed ? "w-12" : "w-[21.5rem]",
-          compact && !cardsCollapsed && "p-2",
-          !cardsCollapsed && "p-3",
+          "flex shrink-0 flex-col border-r border-[var(--line,#e6e6e6)] p-3",
+          compact && "p-2",
         )}
-        style={
-          cardsCollapsed
-            ? undefined
-            : { background: "linear-gradient(180deg, color-mix(in_oklch, var(--st-accent,#5e6ad2) 2.5%, transparent) 0%, transparent 22%)" }
-        }
+        style={{
+          width: cardWidth,
+          background: "linear-gradient(180deg, color-mix(in_oklch, var(--st-accent,#5e6ad2) 2.5%, transparent) 0%, transparent 22%)",
+        }}
       >
-        {cardsCollapsed ? (
-          <div className="flex h-full flex-col items-center gap-2 py-2">
-            <button
-              type="button"
-              onClick={toggleCards}
-              className="grid size-8 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] text-[var(--t2,#62666d)] transition-colors hover:border-[var(--t3,#8a8f98)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--t1,#222326)]"
-              title={t("pages.run.expandList")}
-            >
-              <PanelLeftOpen className="size-4" />
-            </button>
-            {serviceIds.length === 1 ? (
-              <button
-                type="button"
-                onClick={() => setSelected({ kind: "service", id: serviceIds[0] })}
-                className="flex flex-col items-center gap-1 px-1 py-2"
-                title={serviceIds[0]}
-              >
-                <StatusDot state={rt.state.services[serviceIds[0]].state} size={8} />
-                <span className="font-mono text-[0.58rem] text-[var(--t3,#8a8f98)] [writing-mode:vertical-rl]">
-                  {serviceIds[0]}
-                </span>
-              </button>
-            ) : null}
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center gap-2 px-1 pb-2 pt-1">
+        <div className="flex items-center gap-2 px-1 pb-2 pt-1">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.run.servicesHeader")}</span>
               <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">{t("pages.run.serviceCountRunning", { total: serviceIds.length, running })}</span>
-              <button
-                type="button"
-                onClick={toggleCards}
-                className="ml-auto grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] text-[var(--t2,#62666d)] transition-colors hover:border-[var(--t3,#8a8f98)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--t1,#222326)]"
-                title={totalItems === 1 ? t("pages.run.collapseListSingle") : t("pages.run.collapseList")}
-              >
-                <PanelLeftClose className="size-3.5" />
-              </button>
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
               {serviceIds.length === 0 ? (
@@ -1994,9 +2013,17 @@ export function RunPage() {
                 </>
               ) : null}
             </div>
-          </>
-        )}
       </section>
+
+      {/* 宽度拖拽把手：压住右侧 border，hover / 拖拽时高亮 */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        onPointerDown={onResizeHandlePointerDown}
+        className="group relative -ml-px z-10 w-1.5 shrink-0 cursor-col-resize"
+      >
+        <div className="absolute inset-y-0 left-0 w-px bg-[var(--st-accent,#5e6ad2)] opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
+      </div>
 
       {/* detail：外层不滚动，滚动交给日志框体 / 各 Tab 面板 */}
       <section

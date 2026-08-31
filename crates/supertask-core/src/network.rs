@@ -356,7 +356,7 @@ impl NoWindow for std::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::{GoNetworkSpec, MavenNetworkSpec, ProxySpec, PythonNetworkSpec};
+    use crate::spec::{MavenNetworkSpec, ProxySpec, PythonNetworkSpec};
 
     fn app_net(mode: &str) -> AppNetwork {
         AppNetwork {

@@ -2,6 +2,7 @@
 # cargo test -p supertask-core 全量 + CLI/MCP 测试 + 壳 cargo check + 前端 tsc/vite build。
 # Unix 侧跑 proc 平台层契约测试（进程组终止、端口表解析）——Windows 本机已覆盖 Windows 路径。
 # 1.5：CLI 集成（up 拓扑/等待/退出码、锁互斥）与导出包导出→导入往返在三平台各自执行。
+# v2.0-1：cloud job 跑 supertask-cloud-server 测试并构建 cloud-console 管理控制台。
 name: ci
 
 on:
@@ -43,3 +44,23 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  # 云参考服务 + 管理控制台：服务端测试不依赖控制台产物，两步各自独立成立。
+  cloud:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cloud server tests
+        run: cargo test -p supertask-cloud-server
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cloud-console/package-lock.json
+      - name: console build
+        working-directory: cloud-console
+        run: |
+          npm ci
+          npm run build

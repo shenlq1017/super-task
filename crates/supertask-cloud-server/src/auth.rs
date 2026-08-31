@@ -138,7 +138,7 @@ pub async fn account_from_bearer(
         .ok_or(AppError::Unauthorized)
 }
 
-fn hash_password(password: &str) -> Result<String, AppError> {
+pub fn hash_password(password: &str) -> Result<String, AppError> {
     let mut salt = [0u8; 16];
     getrandom(&mut salt).map_err(|e| AppError::Internal(e.to_string()))?;
     let salt = SaltString::encode_b64(&salt).map_err(|e| AppError::Internal(e.to_string()))?;

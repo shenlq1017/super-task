@@ -1582,6 +1582,43 @@ impl Engine {
         })
     }
 
+    // ---- 运行页终端（ipc.md §10.15）：cwd + 环境链（PTY 会话由壳层托管）----
+
+    /// 终端目标目录与环境。service_id 缺省 = 工作区根 + 工作区环境链；
+    /// 指定服务 = 服务 cwd（与启动一致，复用 plan cwd_rel 解析）+ 服务环境链
+    /// （§6.3 环境链 + 1.7 §7 镜像/代理注入，注入最低优先级）。
+    pub fn term_target(&self, service_id: Option<&str>) -> Result<crate::term::TermTarget> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let app_net = self.app_network.lock().expect("app_network lock").clone();
+        let root = g.root.clone();
+        let env = match service_id {
+            Some(id) => {
+                let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
+                build_service_env(&eff_spec, id, &root, app_net.as_ref())?
+            }
+            None => {
+                let (file_env, _warnings) =
+                    crate::secrets::load_file_layers(&g.spec, &root, None)?;
+                let mut env = g.spec.env.clone();
+                for (k, v) in file_env {
+                    env.insert(k, v);
+                }
+                let eff_net = crate::network::resolve(g.spec.network.as_ref(), app_net.as_ref())?;
+                let (_, _inject_warns) = crate::network::inject_env(&eff_net, &root, &mut env);
+                env
+            }
+        };
+        let cwd = match service_id {
+            Some(id) => {
+                let run_spec = crate::launcher::plan_service_in(&g.spec, id, Some(&root))?;
+                resolve_cwd(&root, &run_spec.cwd_rel)?
+            }
+            None => root.clone(),
+        };
+        Ok(crate::term::TermTarget { cwd, env })
+    }
+
     // ---- profile ----
 
     pub fn profiles_list(&self) -> Result<crate::ipc::ProfilesListOutput> {
