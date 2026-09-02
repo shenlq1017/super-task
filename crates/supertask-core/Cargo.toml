@@ -42,7 +42,7 @@ getrandom = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 # 1.4 proc 平台层：进程组 setpgid/killpg、Linux PDEATHSIG（复用标准封装，不裸写 libc）
-nix = { version = "0.29", default-features = false, features = ["process", "signal", "user"] }
+nix = { version = "0.31", default-features = false, features = ["process", "signal", "user"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
