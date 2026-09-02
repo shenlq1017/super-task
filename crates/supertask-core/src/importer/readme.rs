@@ -1406,7 +1406,11 @@ mod tests {
     fn golden(name: &str, text: &str) {
         let path = format!("tests/golden/readme/{name}.yaml");
         match std::fs::read_to_string(&path) {
-            Ok(want) => assert_eq!(text, want, "golden {name} 不一致（更新请重写 golden 文件）"),
+            Ok(want) => assert_eq!(
+                text,
+                want.replace("\r\n", "\n"),
+                "golden {name} 不一致（更新请重写 golden 文件）"
+            ),
             Err(_) => {
                 let p = PathBuf::from(&path);
                 std::fs::create_dir_all(p.parent().unwrap()).unwrap();

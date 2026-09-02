@@ -235,7 +235,7 @@ unsafe fn free_blob(blob: windows::Win32::Security::Cryptography::CRYPT_INTEGER_
     use windows::Win32::Foundation::LocalFree;
     use windows::Win32::Foundation::HLOCAL;
     if !blob.pbData.is_null() {
-        let _ = LocalFree(HLOCAL(blob.pbData as _));
+        let _ = LocalFree(Some(HLOCAL(blob.pbData as _)));
     }
 }
 

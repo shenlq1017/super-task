@@ -6,6 +6,9 @@
 
 [![CI](https://github.com/shenlq1017/super-task/actions/workflows/ci.yml/badge.svg)](https://github.com/shenlq1017/super-task/actions/workflows/ci.yml)
 
+SuperTask 的主要交付形态是可视化桌面应用，Windows 下为 EXE。
+README 里提到的「页面」均指桌面应用内的可视化工作台。
+
 ---
 
 AI 时代带来了一个意想不到的副作用:
@@ -26,41 +29,37 @@ AI 助手为了「帮你验证」,拉起了一堆服务;
 记进一份 `supertask.yaml`——从此一键或一条命令拉起整个栈:
 按顺序、等健康、聚日志;收工时,一键清掉整棵进程树。
 
-## 30 秒上手
+## 30 秒上手桌面应用
 
-把「Spring 后端 + Node 前端」的启动方式记一次:
+打开 SuperTask 桌面应用后，大多数操作都可以直接在可视化工作台完成，不需要先写脚本。
+用内置 Demo 工作区可以快速体验完整流程:
 
-```yaml
-version: 1
-name: my-stack
-services:
-  user-api:
-    kind: spring-boot
-    module: user-api
-    port: 8081
-    health:
-      type: http
-      http: http://127.0.0.1:8081/actuator/health
-  web:
-    kind: node
-    dir: web
-    port: 5173
-    script: dev
-    depends_on:
-      - user-api
-scripts:
-  build:
-    cmds:
-      - mvn -q clean package -DskipTests
+```bash
+npm ci
+npm --prefix frontend ci
+npm run tauri:dev
 ```
 
-然后三选一(或者都用):
+如果已安装发行版，直接双击 `SuperTask.exe` 即可；上面的命令用于从源码启动桌面应用。
 
-| 方式 | 怎么做 |
-|------|--------|
-| 桌面 | 打开工作区 → 指向目录 → 「全部启动」 |
-| 命令行 | `supertask up --wait healthy` |
-| AI 编辑器 | MCP 一行配置:`{ "mcpServers": { "supertask": { "command": "supertask", "args": ["mcp"] } } }` |
+应用启动后，在「打开工作区」中选择 `examples/node-demo/`，点击「启动全部」。
+这个 Demo 只有 Node 前置要求，不需要先安装 Maven 或 Docker；进入后可以切换服务、
+查看健康状态和聚合日志，再点击「停止全部」收场。
+
+![SuperTask 桌面应用运行页 Demo：服务状态、依赖关系、端口与聚合日志](docs/readme-demo.png)
+
+桌面应用已经覆盖常用流程:
+
+- 工作区:打开目录、最近工作区、扫描项目生成配置、导入/导出工作区包;
+- 运行:启动/重启/停止单个服务或全部服务，查看端口、健康检查、环境和实时日志;
+- 配置:表单编辑 `supertask.yaml`，也可以切换到 YAML 视图;
+- 环境、网关、容器、Git、AI:按需使用，不影响最基本的本地启动流程。
+
+CLI 和 MCP 作为桌面应用之外的辅助入口，用于自动化、CI 和 AI 编辑器接入，
+与桌面端共用同一份工作区模型。
+
+需要把配置纳入 git 时，直接在桌面应用的配置页编辑并保存 `supertask.yaml`；
+也可以手写后再由桌面端打开。
 
 ## 起得来 — 一键拉起既有项目
 
@@ -81,7 +80,7 @@ scripts:
 
 - 一键杀整棵进程树,子进程也不例外;`down` 之后,端口是真的释放了。
 - 让 Cursor / Claude 通过 MCP 管理服务:编辑器一关,服务随之清场——AI 时代,不该有孤儿进程。
-- CLI 同样干脆:`supertask up / down / status / logs`,退出码透传,能直接进 CI 流水线。
+- 需要自动化或接入 CI 时，再使用 CLI 作为桌面应用的辅助入口。
 
 ## 带得走 — 工作区跟着你跑
 
@@ -92,17 +91,45 @@ scripts:
 
 ## 和你现在用的比
 
-| | 几个终端 | docker compose | Shell / 任务脚本 | AI 自己拉 |
-|---|---|---|---|---|
-| 按依赖顺序启动 | 自己记 | ⚠️ 只排序,不等就绪 | 手写 | 指望不上 |
-| 健康通过才算起来 | 手动 curl | ⚠️ 能配,Java 栈不好写 | 手写 | ❌ |
-| 聚合日志与状态 | 散在 N 个窗口 | `docker logs` 逐个看 | ❌ | ❌ |
-| 一键停止、无残留 | 逐个杀,Windows 常杀不掉子进程 | ✅ | 手写 | ❌ 工具关了服务还在 |
-| Spring Boot 热重载 / 调试 | ✅ | 得先容器化,Windows 卷挂载慢 | ✅ | ✅ |
-| 启动知识进仓库 | ❌ 在人脑里 | ✅ compose.yml | ✅ 在脚本里 | ❌ |
-
-一句话:**像终端和脚本一样跑宿主机裸进程,但有 compose 的声明、顺序与清场语义**。
+| | 几个终端 | docker compose | Shell / 任务脚本 | AI 自己拉 | SuperTask 桌面 EXE |
+|---|---|---|---|---|---|
+| 可视化工作台 | ❌ | 第三方 UI | ❌ | ❌ | ✅ |
+| 按依赖顺序启动 | 自己记 | ⚠️ 只排序,不等就绪 | 手写 | 指望不上 | ✅ |
+| 健康通过才算起来 | 手动 curl | ⚠️ 能配,Java 栈不好写 | 手写 | ❌ | ✅ |
+| 聚合日志与状态 | 散在 N 个窗口 | `docker logs` 逐个看 | ❌ | ❌ | ✅ |
+| 一键停止、无残留 | 逐个杀,Windows 常杀不掉子进程 | ✅ | 手写 | ❌ 工具关了服务还在 | ✅ |
+| Spring Boot 热重载 / 调试 | ✅ | 得先容器化,Windows 卷挂载慢 | ✅ | ✅ | ✅ 宿主机直接跑 |
+| 启动知识进仓库 | ❌ 在人脑里 | ✅ compose.yml | ✅ 在脚本里 | ❌ | ✅ `supertask.yaml` |
+一句话:**用桌面工作台管理宿主机裸进程,同时拥有 compose 的声明、顺序与清场语义**。
 容器只是六种服务之一,不是前提;AI 起的服务,也有人负责收场。
+
+## 和相似开源项目的区别
+
+这些项目都很成熟，SuperTask 不试图替代它们的强项。区别在于默认工作流:
+它们通常解决「执行任务」「管理容器」或「守护某类进程」中的一个问题，
+SuperTask 解决的是**已经存在的本机多服务项目，如何让团队用桌面应用一键启动、观察并完整收场**。
+
+| 开源项目 | 它更擅长的场景 | SuperTask 的区别 |
+|------|------|------|
+| [Docker Compose](https://github.com/docker/compose) | 声明和编排容器、网络与卷 | 不要求先容器化；把宿主机上的 Spring Boot、Node、Python、Go 进程作为一等公民，同时也能管理 Compose 服务 |
+| [orckit](https://github.com/dominicbartl/orckit) | YAML 编排、依赖启动、健康检查、仪表盘和 MCP | 更偏 CLI/TUI 开发者工具；SuperTask 以桌面应用为主，理解 Spring Boot module，优先解决 Windows 本机进程的启动与清场 |
+| [Taskfile](https://github.com/go-task/task) | 用 YAML 定义可复用的一次性任务 | `scripts` 只是辅助；SuperTask 重点监管长期运行的 service，提供启动顺序、健康通过、日志、状态和停止语义 |
+| [Just](https://github.com/casey/just) / Make | 轻量命令入口和构建任务 | 不需要记命令或打开终端；桌面应用的表单、服务卡片和 YAML/CLI/MCP 共用同一份配置 |
+| [PM2](https://github.com/Unitech/pm2) | Node.js 进程守护、日志和集群 | 不局限于 Node；对 Spring Boot 多模块、跨语言依赖、端口和健康检查做工作区级管理，桌面端可视化查看 |
+| [Overmind](https://github.com/DarthSim/overmind) | 基于 Procfile 的多进程终端工作流 | SuperTask 有结构化服务模型和桌面状态面板，能表达服务类型、依赖、健康检查，并在 Windows 上清理整棵进程树 |
+| [Dockge](https://github.com/louislam/dockge) | Docker Compose 的可视化管理界面 | Dockge 的边界是 Docker Compose；SuperTask 的核心场景是本机代码项目，Docker 只是可选的一种服务类型 |
+| [Tilt](https://github.com/tilt-dev/tilt) | 容器 / Kubernetes 的本地开发工作流 | 更适合云原生和容器开发；SuperTask 更轻，面向 Windows 本机已有的 Java + Node 项目，不要求引入容器平台 |
+| [Runme](https://github.com/runmedev/runme) | 把 Markdown 里的命令变成可执行 runbook | SuperTask 可以从 README 导入启动草稿，但最终产物是可持续监管的工作区，而不是一次次执行 Notebook 单元 |
+
+### SuperTask 的核心优势
+
+- **宿主机优先**:不改变项目的运行方式，不为本地调试强行增加 Docker 层。
+- **跨语言且懂 Spring**:同一个工作区可以混合 Maven 多模块、Node、Python、Go 和 Compose，依赖关系、端口和健康检查统一管理。
+- **桌面应用优先但不锁定**:新人点击 EXE 内的工作台即可上手，熟悉命令行的人继续用 YAML、CLI 和 MCP，三者不会维护三套配置。
+- **启动和收场是一对语义**:依赖服务健康后才继续启动；停止时沿着进程树清理，减少 Windows 上端口占用和孤儿进程。
+- **把排查信息放在同一处**:服务状态、CPU/内存、端口、环境和聚合日志围绕当前工作区展示，减少在多个终端和 IDE 窗口之间切换。
+
+选择建议很简单:只跑容器选 Docker Compose / Dockge；只跑一次性命令选 Taskfile / Just；只守护 Node 进程选 PM2；如果要把现有的本机多语言项目变成可点击、可观察、可收场的桌面工作区，选 SuperTask。
 
 ## 示例工作区
 
@@ -123,7 +150,7 @@ scripts:
 git clone https://github.com/shenlq1017/super-task && cd super-task
 npm ci                 # 根目录 Tauri CLI
 npm --prefix frontend ci
-npm run tauri:dev      # 桌面应用(纯前端调试用 npm run dev,走 mock IPC)
+npm run tauri:dev      # 启动桌面应用
 ```
 
 CLI 与测试:

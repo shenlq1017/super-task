@@ -125,7 +125,7 @@ impl WindowsJob {
         };
         let ok = unsafe {
             QueryInformationJobObject(
-                self.handle,
+                Some(self.handle),
                 JobObjectBasicProcessIdList,
                 std::ptr::from_mut(&mut list).cast(),
                 std::mem::size_of::<PidList>() as u32,
@@ -150,7 +150,7 @@ impl WindowsJob {
         unsafe {
             let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
             let ok = QueryInformationJobObject(
-                self.handle,
+                Some(self.handle),
                 JobObjectBasicAccountingInformation,
                 std::ptr::from_mut(&mut info).cast(),
                 std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
