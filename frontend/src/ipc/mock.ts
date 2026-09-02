@@ -36,6 +36,7 @@ import type {
   AiStatusOut,
   AiTask,
   AiTemplate,
+  ServiceMetrics,
 } from "./protocol";
 import { PROTOCOL, cmd, event } from "./protocol";
 
@@ -1120,6 +1121,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         npm: { found: true, version: "10.7.0", path: "/usr/local/bin/npm" },
         pnpm: emptyProbe,
         yarn: emptyProbe,
+        bun: emptyProbe,
         gateway: {
           nginx: { found: true, version: "1.26.1", path: "C:/mock/nginx/nginx.exe" },
           caddy: { found: true, version: "2.8.4", path: "C:/mock/caddy/caddy.exe" },
@@ -1218,23 +1220,38 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     npm: "20",
     pnpm: "9",
     yarn: "1",
+    bun: "1",
+    python: "3.12",
+    go: "1.23",
   };
 
   function ensureProbe(): ToolchainProbeOut {
     state.probe ??= {
-      java: { found: true, version: "17.0.10", path: "/usr/lib/jvm/java-17" },
+      java: { found: true, version: "17.0.10", path: "/usr/lib/jvm/java-17/bin/java" },
       maven: { found: true, version: "3.9.6", path: "/opt/maven" },
       gradle: { found: false, version: null, path: null },
       node: { found: false, version: null, path: null },
       npm: { found: true, version: "10.7.0", path: "/usr/local/bin/npm" },
       pnpm: emptyProbe,
       yarn: emptyProbe,
+      bun: emptyProbe,
+      // 1.7：python / go 默认缺失，与 node 同样用于演示安装流程（安装成功后原地翻为 found）
+      python: { found: false, version: null, path: null },
+      go: { found: false, version: null, path: null },
       managers: MOCK_MANAGERS,
       gateway: {
         nginx: { found: true, version: "1.26.1", path: "C:/mock/nginx/nginx.exe" },
         caddy: { found: true, version: "2.8.4", path: "C:/mock/caddy/caddy.exe" },
         apache: emptyProbe,
       },
+      // P1：本机已装枚举样例（java 走注册表/目录多版本，node 走 nvm 目录）
+      installs: [
+        { tool: "java", version: "17.0.10", home: "/usr/lib/jvm/java-17", source: "directory", active: true },
+        { tool: "java", version: "11.0.20", home: "C:/Program Files/Java/jdk-11", source: "registry", active: false },
+        { tool: "java", version: "21.0.3", home: "C:/Program Files/Java/jdk-21", source: "env_var", active: false },
+        { tool: "node", version: "20.18.1", home: "C:/Users/demo/AppData/Roaming/nvm/v20.18.1", source: "nvm_dir", active: false },
+        { tool: "node", version: "22.17.1", home: "C:/Users/demo/AppData/Roaming/nvm/v22.17.1", source: "nvm_dir", active: false },
+      ],
     };
     return state.probe;
   }
@@ -1243,10 +1260,27 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     return { ...ensureProbe() };
   }
 
+  // S1：可选版本列表（真机 = 白名单 ∪ mise ls-remote；mock 给静态近似值）
+  if (command === "toolchain.versions") {
+    return {
+      tools: {
+        java: ["21", "17", "11", "lts", "21.0.2", "22.0.0"],
+        maven: ["3.9", "3", "lts"],
+        node: ["20", "22", "18", "lts", "20.18.0"],
+        npm: ["20", "lts"],
+        pnpm: ["9", "10", "lts"],
+        yarn: ["1", "lts"],
+        bun: ["1", "lts"],
+        python: ["3.12", "3.13", "3.11", "lts", "3.12.4"],
+        go: ["1.23", "1.22", "lts", "1.23.1"],
+      },
+    };
+  }
+
   if (command === "toolchain.install" || command === "toolchain.upgrade") {
     const tool = ((args?.tool as string) ?? "").trim();
     if (!(tool in MOCK_DEFAULT_VERSIONS)) {
-      throw { protocol: PROTOCOL, code: "SPEC_INVALID", message: `tool 仅接受 java|maven|node|npm|pnpm|yarn，收到 ${tool}`, retryable: false };
+      throw { protocol: PROTOCOL, code: "SPEC_INVALID", message: `tool 仅接受 java|maven|node|npm|pnpm|yarn|bun|python|go，收到 ${tool}`, retryable: false };
     }
     const version = ((args?.version as string) ?? MOCK_DEFAULT_VERSIONS[tool]).trim();
     const isLts = version.toLowerCase() === "lts";
@@ -1347,6 +1381,64 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     return { operation_id: null, spec: state.spec, hash, restart_required: false, notes };
   }
 
+  // env.effective：与真机语义一致——引擎自报最近一次启动注入的生效环境
+  // （工作区 env < 服务 env < 端口自动注入；未启动过 → 空快照）
+  if (command === "env.effective") {
+    const id = args?.id as string;
+    const svc = state.services[id];
+    if (!svc) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `没有服务 ${id}`, retryable: false };
+    }
+    const specSvc = state.spec.services[id];
+    const entries: { key: string; value: string; source: string }[] = [];
+    const seen = new Set<string>();
+    for (const [k, v] of Object.entries(state.spec.env ?? {})) {
+      if (!seen.has(k)) entries.push({ key: k, value: String(v), source: "workspace" });
+      seen.add(k);
+    }
+    for (const [k, v] of Object.entries(specSvc?.env ?? {})) {
+      entries.push({ key: k, value: String(v), source: "service" });
+      seen.add(k);
+    }
+    const portKey =
+      specSvc?.kind === "spring-boot" ? "SERVER_PORT" : ["node", "python", "go"].includes(specSvc?.kind ?? "") ? "PORT" : null;
+    const port = specSvc?.port ?? svc.port;
+    if (portKey && port != null && !seen.has(portKey)) {
+      entries.push({ key: portKey, value: String(port), source: "port" });
+    }
+    return { id, captured_at_ms: svc.started_at_ms, entries };
+  }
+
+  // spring.inspect：mock 下给一份典型 Spring Boot 配置，演示静态解析视图
+  if (command === "spring.inspect") {
+    const id = args?.id as string;
+    const specSvc = state.spec.services[id];
+    if (!specSvc || specSvc.kind !== "spring-boot") {
+      return { id, server_port: null, entries: [], warnings: [] };
+    }
+    const file = "src/main/resources/application.yml";
+    const devFile = "src/main/resources/application-dev.yml";
+    const port = specSvc.port ?? 8080;
+    return {
+      id,
+      server_port: port,
+      entries: [
+        { key: "server.port", value: String(port), file, masked: false },
+        { key: "spring.application.name", value: id, file, masked: false },
+        { key: "spring.profiles.active", value: "dev", file, masked: false },
+        { key: "spring.datasource.url", value: "jdbc:mysql://localhost:3306/demo", file, masked: false },
+        { key: "spring.datasource.username", value: "root", file, masked: false },
+        { key: "spring.datasource.password", value: "••••••", file, masked: true },
+        { key: "management.endpoints.web.exposure.include", value: "health,info", file, masked: false },
+        // profile 文件：演示 base vs dev 覆盖/新增视角
+        { key: "server.port", value: String(port + 1000), file: devFile, masked: false },
+        { key: "spring.datasource.url", value: "jdbc:mysql://dev-host:3306/demo", file: devFile, masked: false },
+        { key: "logging.level.root", value: "DEBUG", file: devFile, masked: false },
+      ],
+      warnings: [],
+    };
+  }
+
   if (command === "secrets.status") {
     const keys = [...mockSecrets.entries()].map(([key]) => ({
       key,
@@ -1423,9 +1515,21 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   }
 
   if (command === "metrics.snapshot") {
-    const services: Record<string, null> = {};
+    // 与真机语义对齐：仅运行中的非 compose 服务有宿主进程指标；值由 id 哈希决定（确定性）
+    const services: Record<string, ServiceMetrics | null> = {};
     for (const s of Object.values(state.services)) {
-      services[s.id] = s.state === "running" ? null : null;
+      if (s.state !== "running" || s.kind === "compose") {
+        services[s.id] = null;
+        continue;
+      }
+      let h = 0;
+      for (let i = 0; i < s.id.length; i++) h = (h * 31 + s.id.charCodeAt(i)) >>> 0;
+      services[s.id] = {
+        cpu_percent: (h % 40) / 10,
+        memory_bytes: (180 + (h % 320)) * 1024 * 1024,
+        process_count: 1 + (h % 4),
+        sampled_at_ms: Date.now(),
+      };
     }
     return { services };
   }

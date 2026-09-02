@@ -60,7 +60,7 @@ function containerStateChip(state: string) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold",
+        "inline-flex h-5 items-center gap-1 rounded-full px-2 font-mono text-[10px] font-semibold leading-none",
         running && "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]",
         exited && "bg-[var(--st-danger-tint,#fdecec)] text-[var(--st-danger,#dc2626)]",
         !running && !exited && "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]",
@@ -86,7 +86,7 @@ function healthChip(health: string | null | undefined) {
         ? "bg-[var(--st-danger-tint,#fdecec)] text-[var(--st-danger,#dc2626)]"
         : "bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)]";
   return (
-    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold", cls)}>
+    <span className={cn("inline-flex h-5 items-center rounded-full px-2 font-mono text-[10px] font-semibold leading-none", cls)}>
       {health}
     </span>
   );
@@ -346,14 +346,14 @@ export function DockerPage() {
                 <>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{t("pages.docker.engineOnline")}</span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-[var(--st-ok-tint,#e9f7ed)] px-2 py-0.5 text-[11px] font-medium text-[var(--st-ok-deep,#1e7e35)]">
+                    <span className="inline-flex h-5 items-center gap-1 rounded-full bg-[var(--st-ok-tint,#e9f7ed)] px-2 text-[11px] font-medium leading-none text-[var(--st-ok-deep,#1e7e35)]">
                       <span className="size-1.5 rounded-full bg-[var(--st-ok,#27a644)]" /> {t("states.running")}
                     </span>
                     {probe.version ? <Badge variant="outline" className="font-mono text-[10px]">docker {probe.version}</Badge> : null}
                     {probe.compose_version ? (
                       <Badge variant="outline" className="font-mono text-[10px]">compose {probe.compose_version}</Badge>
                     ) : (
-                      <span className="rounded-full bg-[var(--st-warn-tint,#fff8e1)] px-2 py-0.5 text-[11px] font-medium text-[var(--st-warn,#9a6700)]">
+                      <span className="inline-flex h-5 items-center rounded-full bg-[var(--st-warn-tint,#fff8e1)] px-2 text-[11px] font-medium leading-none text-[var(--st-warn,#9a6700)]">
                         {t("pages.docker.composeMissing")}
                       </span>
                     )}
@@ -609,7 +609,7 @@ export function DockerPage() {
                           {op ? (
                             <span
                               className={cn(
-                                "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                                "inline-flex h-5 items-center rounded-full px-2 text-[11px] font-semibold leading-none",
                                 OP_STATE_META[op.state].cls,
                               )}
                               title={op.message ?? undefined}

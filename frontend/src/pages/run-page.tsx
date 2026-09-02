@@ -21,6 +21,7 @@ import { useWorkspace } from "@/providers/workspace-provider";
 import { useYaml } from "@/providers/yaml-provider";
 import { useToast } from "@/components/ui/toast";
 import { LogView } from "@/components/log-view";
+import { SpringConfigPanel } from "@/components/spring-config-panel";
 import { AiExplainButton } from "@/components/ai-explain";
 import { TerminalView } from "@/components/terminal-view";
 import {
@@ -42,6 +43,7 @@ import {
   apiPortsInspect,
   apiPortsSuggest,
   apiPortsAssign,
+  apiEnvEffective,
   apiScriptCancel,
   apiScriptRun,
   apiDockerProbe,
@@ -50,11 +52,13 @@ import {
   apiGatewayStop,
   apiGatewayRestart,
   apiGatewayStatus,
+  apiToolchainProbe,
 } from "../ipc/api";
 import { IpcFailure } from "../ipc/protocol";
 import type {
   ContainerSummary,
   DockerProbe,
+  EnvEffectiveOut,
   GatewayStatusOut,
   IdeTarget,
   LogSource,
@@ -64,6 +68,7 @@ import type {
   ServiceRuntimeView,
   ServiceSpec,
   SuperTaskFile,
+  ToolchainProbeOut,
 } from "@/ipc/protocol";
 import {
   Play,
@@ -81,16 +86,23 @@ import {
   Hammer,
   Loader2,
   Container,
+  MemoryStick,
   Network,
+  Braces,
   SquareTerminal,
   ChevronDown,
   ChevronRight,
+  ArrowLeftRight,
+  Layers,
 } from "lucide-react";
 import type { ShellCtx } from "../app/AppShell";
 
 /* ---------------- helpers ---------------- */
 
 function serviceCmd(id: string, s: ServiceSpec): string {
+  // Empty arrays are omitted by the Rust IPC serializer; keep command previews
+  // usable for older workspaces and for services without extra arguments.
+  const extraArgs = s.extra_args ?? [];
   if (s.kind === "compose") {
     // 1.3：compose 服务由引擎执行 `docker compose -f <file> up -d --no-deps <service>`
     return `docker compose up -d --no-deps ${s.service ?? id}`;
@@ -104,13 +116,13 @@ function serviceCmd(id: string, s: ServiceSpec): string {
   if (s.kind === "python") {
     const mod = s.module ?? "";
     const base = mod ? `python -m ${mod}` : `python ${s.entry ?? ""}`.trimEnd();
-    return [base, ...s.extra_args].join(" ");
+    return [base, ...extraArgs].join(" ");
   }
   if (s.kind === "go") {
-    return `go run ${s.package ?? "."}${s.extra_args.length ? ` ${s.extra_args.join(" ")}` : ""}`;
+    return `go run ${s.package ?? "."}${extraArgs.length ? ` ${extraArgs.join(" ")}` : ""}`;
   }
   if (s.kind === "generic") {
-    return [s.program ?? "?", ...(s.args ?? []), ...s.extra_args].join(" ");
+    return [s.program ?? "?", ...(s.args ?? []), ...extraArgs].join(" ");
   }
   // 单模块（module "." 或缺省）省略 -pl，与引擎 plan_spring 的行为一致
   const module = s.module ?? "";
@@ -133,12 +145,12 @@ function KindBadge({ kind, buildTool }: { kind: string; buildTool?: string | nul
   const { label, color } = KIND_BADGE[kind] ?? fallback;
   return (
     <>
-      <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]">
+      <span className="inline-flex h-5 items-center gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[10px] font-semibold uppercase leading-none text-[var(--t2,#62666d)]">
         <span className="size-1.5 rounded-full" style={{ background: color }} />
         {label}
       </span>
       {buildTool === "gradle" ? (
-        <span className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]">
+        <span className="inline-flex h-5 items-center rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[10px] font-semibold uppercase leading-none text-[var(--t2,#62666d)]">
           gradle
         </span>
       ) : null}
@@ -308,10 +320,13 @@ function HealthSparkline({ ok }: { ok: boolean | null | undefined }) {
 
 /* ---------------- port link ---------------- */
 
-/** 可点击端口：拉起系统默认浏览器访问 http://localhost:<port>/ */
-function PortLink({ port, className }: { port: number; className?: string }) {
+/** 可点击端口：拉起系统默认浏览器访问 http://localhost:<port>/；服务未运行时为纯文本不可点击 */
+function PortLink({ port, className, disabled }: { port: number; className?: string; disabled?: boolean }) {
   const { t } = useTranslation();
   const { toast } = useToast();
+  if (disabled) {
+    return <span className={cn("inline-flex items-center gap-1 font-mono", className)}>{port}</span>;
+  }
   return (
     <button
       type="button"
@@ -357,11 +372,18 @@ function ServiceCard({
   // 停止是杀整棵进程树的破坏性操作，二次确认；中断 starting 不弹
   const [confirmStop, setConfirmStop] = useState(false);
 
+  const depsText = spec?.depends_on?.length
+    ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") })
+    : t("pages.run.noDeps");
   const foot = svc.last_error
     ? <span className="block truncate text-[11px] text-[var(--st-danger,#dc2626)]" title={svc.last_error}>⚠ {svc.last_error}</span>
-    : <span className="flex items-center gap-1 text-[11px] text-[var(--t3,#8a8f98)]">
-        <span className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px]">
-          {spec?.depends_on?.length ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") }) : t("pages.run.noDeps")}
+    : <span className="flex min-w-0 items-center gap-1 text-[11px] text-[var(--t3,#8a8f98)]">
+        {/* 依赖多时按卡片宽度单行截断出省略号，悬浮看完整列表 */}
+        <span
+          className="block h-5 max-w-full truncate rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[10px] leading-5 text-[var(--t3,#8a8f98)]"
+          title={depsText}
+        >
+          {depsText}
         </span>
       </span>;
 
@@ -370,7 +392,9 @@ function ServiceCard({
       onClick={onOpen}
       className={cn(
         // group/svc 让指示条用 group-hover/svc 触发；transition-all 覆盖颜色/边框/阴影
-        "group/svc relative flex h-[5.7rem] cursor-pointer flex-col overflow-hidden rounded-[var(--r-md,12px)] border bg-[var(--surface,#fff)] p-2.5 transition-all duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))]",
+        // @container：以卡片自身宽度做分级舍弃（窄卡先隐藏徽章/IDE，再隐藏重启，启停恒留）
+        // shrink-0：列表是 flex-col 滚动容器，服务多时禁止 flex 压缩卡片（否则 overflow-hidden 裁掉底行且滚动条失效）
+        "group/svc relative flex h-[5.7rem] shrink-0 @container cursor-pointer flex-col overflow-hidden rounded-[var(--r-md,12px)] border bg-[var(--surface,#fff)] p-2.5 transition-all duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))]",
         selected
           // 原型：选中 = 极淡紫底 + 紫色淡外环（0 0 0 3px rgb(94 106 210 / .1)）
           ? "border-[rgb(94_106_210_/_0.45)] bg-[rgb(94_106_210_/_0.045)] shadow-[0_0_0_3px_rgb(94_106_210_/_0.1)]"
@@ -394,19 +418,25 @@ function ServiceCard({
       />
       <div className="flex items-center gap-2">
         <StatusDot state={svc.state} size={8} />
-        <span className="truncate text-[0.88rem] font-semibold text-[var(--t1,#222326)]">{id}</span>
-        <KindBadge kind={svc.kind} buildTool={spec?.build_tool} />
+        <span className="truncate text-[0.88rem] font-semibold text-[var(--t1,#222326)]" title={id}>{id}</span>
+        {/* 窄卡（<300px）先舍弃信息类徽章，把宽度还给服务名 */}
+        <span className="inline-flex shrink-0 items-center gap-2 @max-[300px]:hidden">
+          <KindBadge kind={svc.kind} buildTool={spec?.build_tool} />
+        </span>
         {external ? (
-          <span className="shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--t2,#62666d)]" title={t("pages.run.externalTitle")}>
+          <span className="inline-flex h-5 items-center shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[10px] font-semibold uppercase leading-none text-[var(--t2,#62666d)] @max-[300px]:hidden" title={t("pages.run.externalTitle")}>
             {t("pages.run.externalShort")}
           </span>
         ) : null}
         <div className="ml-auto flex gap-1 opacity-50 transition-opacity group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
-          <IdeOpenMenu variant="icon" />
+          <span className="inline-flex @max-[300px]:hidden">
+            <IdeOpenMenu variant="icon" />
+          </span>
           {isRunning ? (
             <button
               type="button"
-              className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--st-warn-line,#f0dcb0)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)] transition-colors duration-150 hover:border-[#E0C080] hover:bg-[rgb(234_179_8_/_0.2)] disabled:cursor-not-allowed disabled:opacity-50"
+              // 极窄卡（<250px）再舍弃次级操作：重启；启停恒留
+              className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--st-warn-line,#f0dcb0)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)] transition-colors duration-150 hover:border-[#E0C080] hover:bg-[rgb(234_179_8_/_0.2)] disabled:cursor-not-allowed disabled:opacity-50 @max-[250px]:hidden"
               title={external ? t("pages.run.restartExternalTitle") : t("common.restart")}
               disabled={isBusy}
               onClick={() => runtime.actions.restartOne(id)}
@@ -457,9 +487,9 @@ function ServiceCard({
 
       <div className="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--t2,#62666d)]">
         <span className="font-medium" style={{ color: meta.color }}>{stateLabel(svc.state)}</span>
-        {svc.port ? <PortLink port={svc.port} className="text-[var(--t1,#222326)]" /> : null}
+        {svc.port ? <PortLink port={svc.port} disabled={!isRunning} className="text-[var(--t1,#222326)]" /> : null}
         {svc.pid ? (
-          <span className="font-mono">pid {svc.pid}</span>
+          <span className="font-mono @max-[250px]:hidden">pid {svc.pid}</span>
         ) : svc.kind === "compose" ? (
           // 1.3 §5.3：compose 服务无宿主进程，pid 恒为 null
           <span
@@ -469,7 +499,7 @@ function ServiceCard({
             {t("pages.run.containerManaged")}
           </span>
         ) : null}
-        {isRunning && svc.started_at_ms ? <span className="font-mono text-[var(--t3,#8a8f98)]">· {fmtDuration(svc.started_at_ms)}</span> : null}
+        {isRunning && svc.started_at_ms ? <span className="text-[var(--t3,#8a8f98)]"> · <span className="font-mono text-[var(--st-accent,#5e6ad2)]">{fmtDuration(svc.started_at_ms)}</span></span> : null}
       </div>
 
       <div className="mt-1.5 min-h-[1.05rem] overflow-hidden">{foot}</div>
@@ -477,7 +507,7 @@ function ServiceCard({
   );
 }
 
-/* ---------------- env panel ---------------- */
+/* ---------------- ports panel（自「环境」拆出：端口检查 / 建议 / 改端口） ---------------- */
 
 type PortCheck = {
   port: number;
@@ -485,7 +515,7 @@ type PortCheck = {
   message: string;
 };
 
-function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
+function PortsPanel({ id, compact }: { id: string; compact: boolean }) {
   const ws = useWorkspace();
   const yaml = useYaml();
   const runtime = useRuntime();
@@ -495,17 +525,15 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
   const svc = spec?.services[id];
   const isRunning = runtime.state.services[id]?.state === "running";
   const [portDraft, setPortDraft] = useState<string>(String(svc?.port ?? ""));
-  const [envDraft, setEnvDraft] = useState<Record<string, string>>(() => svc?.env ?? {});
   const [portBusy, setPortBusy] = useState(false);
   const [portCheck, setPortCheck] = useState<PortCheck | null>(null);
   const [portCandidates, setPortCandidates] = useState<number[]>([]);
 
   useEffect(() => {
     setPortDraft(String(svc?.port ?? ""));
-    setEnvDraft(svc?.env ?? {});
     setPortCheck(null);
     setPortCandidates([]);
-  }, [id, svc?.port, JSON.stringify(svc?.env)]);
+  }, [id, svc?.port]);
 
   if (!svc) return null;
 
@@ -601,24 +629,6 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
     }
   };
 
-  const saveEnv = async () => {
-    if (!spec) return;
-    const next: SuperTaskFile = {
-      ...spec,
-      services: {
-        ...spec.services,
-        [id]: { ...svc, env: envDraft },
-      },
-    };
-    const ok = await yaml.actions.saveForm(next);
-    if (ok) {
-      await ws.actions.refreshSpec();
-      toast(t("pages.run.envSaved"), "ok");
-    } else {
-      toast(yaml.state.error ?? t("operations.savedFailed"), "err");
-    }
-  };
-
   return (
     <div className={cn("flex flex-col gap-5 p-4", compact && "gap-4 p-3")}>
       <section className="flex flex-col gap-2">
@@ -680,15 +690,367 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
           </p>
         ) : null}
       </section>
+    </div>
+  );
+}
 
-      <Separator />
+/* ---------------- env panel（「变量」Tab：环境变量编辑 + 生效快照 + Spring 配置） ---------------- */
 
+function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
+  const ws = useWorkspace();
+  const yaml = useYaml();
+  const runtime = useRuntime();
+  const { toast } = useToast();
+  const { t } = useTranslation();
+  const spec = ws.state.spec;
+  const svc = spec?.services[id];
+  const [envDraft, setEnvDraft] = useState<Record<string, string>>(() => svc?.env ?? {});
+  const [effEnv, setEffEnv] = useState<EnvEffectiveOut | null>(null);
+  const svcRt = runtime.state.services[id];
+  const effEnvState = svcRt?.state;
+  const effEnvStartedAt = svcRt?.started_at_ms ?? null;
+  const isSpring = svc?.kind === "spring-boot";
+
+  useEffect(() => {
+    setEnvDraft(svc?.env ?? {});
+    // yaml 重载会替换 spec 对象，svc?.env 引用变化即重置草稿
+  }, [id, svc?.env]);
+
+  // 生效环境快照：启动/重启后自动刷新（引擎自报，未启动过为空快照）
+  useEffect(() => {
+    const wid = ws.state.workspaceId;
+    if (!wid) return;
+    let alive = true;
+    apiEnvEffective(wid, id)
+      .then((out) => {
+        if (alive) setEffEnv(out);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [ws.state.workspaceId, id, effEnvState, effEnvStartedAt]);
+
+  if (!svc) return null;
+
+  const saveEnv = async () => {
+    if (!spec) return;
+    const next: SuperTaskFile = {
+      ...spec,
+      services: {
+        ...spec.services,
+        [id]: { ...svc, env: envDraft },
+      },
+    };
+    const ok = await yaml.actions.saveForm(next);
+    if (ok) {
+      await ws.actions.refreshSpec();
+      toast(t("pages.run.envSaved"), "ok");
+    } else {
+      toast(yaml.state.error ?? t("operations.savedFailed"), "err");
+    }
+  };
+
+  return (
+    <div className={cn("flex flex-col gap-5 p-4", compact && "gap-4 p-3")}>
+      {/* 可编辑项前置：环境变量是本 Tab 的高频操作，只读的项目配置沉底 */}
       <EnvVariablesEditor
         value={envDraft}
         onChange={setEnvDraft}
         onSave={saveEnv}
         saveDisabled={!ws.state.workspaceId}
       />
+
+      <Separator />
+
+      <section className="flex flex-col gap-2">
+        <div className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
+          <Braces className="size-3.5" /> {t("pages.run.effectiveEnv")}
+          {effEnv?.captured_at_ms ? (
+            <span className="font-mono text-[10px] font-normal normal-case text-[var(--t2,#62666d)]">
+              {t("pages.run.effectiveEnvAt", { time: fmtTime(effEnv.captured_at_ms) })}
+            </span>
+          ) : null}
+        </div>
+        {effEnv && effEnv.entries.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            {effEnv.entries.map((e) => (
+              <div
+                key={e.key}
+                className="flex items-center gap-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f7f8fa)] px-2 py-1"
+              >
+                <span className="w-[38%] shrink-0 truncate font-mono text-[0.78rem] font-medium text-[var(--t1,#222326)]" title={e.key}>{e.key}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[0.78rem] text-[var(--t2,#62666d)]" title={e.value}>{e.value}</span>
+                <span
+                  className="ml-auto shrink-0 rounded-full bg-[var(--surface,#fff)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--t3,#8a8f98)] ring-1 ring-[var(--line,#e2e5eb)]"
+                  title={t("pages.run.envSourceTitle")}
+                >
+                  {t(`pages.run.envSource.${e.source}`, { defaultValue: e.source })}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[0.72rem] text-[var(--t2,#62666d)]">
+            {svc.kind === "compose"
+              ? t("pages.run.effectiveEnvCompose")
+              : svcRt?.managed === false
+                ? t("pages.run.effectiveEnvExternal")
+                : t("pages.run.effectiveEnvEmpty")}
+          </p>
+        )}
+      </section>
+
+      {isSpring ? (
+        <>
+          <Separator />
+          <SpringConfigPanel
+            key={id}
+            workspaceId={ws.state.workspaceId ?? null}
+            serviceId={id}
+            specPort={svc.port ?? null}
+            svcEnv={svc?.env}
+            effEnvEntries={effEnv?.entries}
+            compact={compact}
+          />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/* ---------------- runtime panel（「环境」Tab：按 kind 展示运行时工具并切换版本） ---------------- */
+
+type RuntimeToolKey = "java" | "maven" | "node" | "python" | "go";
+
+/** kind → 运行时工具（顺序即展示序）；不在表内的 kind 走提示文案。 */
+const RUNTIME_TOOLS: Record<string, { key: RuntimeToolKey; label: string }[]> = {
+  "spring-boot": [
+    { key: "java", label: "JDK" },
+    { key: "maven", label: "Maven" },
+  ],
+  node: [{ key: "node", label: "Node.js" }],
+  python: [{ key: "python", label: "Python" }],
+  go: [{ key: "go", label: "Go" }],
+};
+
+/** 运行详情的版本选择只保存在服务 env，避免影响同一工作区的其他服务。 */
+const SERVICE_RUNTIME_ENV_KEY: Record<RuntimeToolKey, string> = {
+  java: "SUPERTASK_JAVA_VERSION",
+  maven: "SUPERTASK_MAVEN_VERSION",
+  node: "SUPERTASK_NODE_VERSION",
+  python: "SUPERTASK_PYTHON_VERSION",
+  go: "SUPERTASK_GO_VERSION",
+};
+
+function versionMajor(version: string): string {
+  return version.trim().replace(/^v/i, "").split(/[.\-_+]/, 1)[0]?.toLowerCase() ?? "";
+}
+
+function versionMatches(want: string | null | undefined, have: string): boolean {
+  if (!want) return false;
+  const normalizedWant = want.trim();
+  const normalizedHave = have.trim();
+  return normalizedWant.toLowerCase() === normalizedHave.toLowerCase() || normalizedHave.startsWith(`${normalizedWant}.`);
+}
+
+/**
+ * 运行环境：探测本机工具版本 + 当前服务的版本选择，可切换。
+ * 切换只写当前 service.env；缺失版本不进入此处的下拉，也不会隐式安装。
+ */
+function RuntimePanel({ id }: { id: string }) {
+  const ws = useWorkspace();
+  const yaml = useYaml();
+  const rt = useRuntime();
+  const { toast } = useToast();
+  const { t } = useTranslation();
+  const wsId = ws.state.workspaceId;
+  const kind = ws.state.spec?.services[id]?.kind ?? rt.state.services[id]?.kind ?? null;
+  const tools = kind ? (RUNTIME_TOOLS[kind] ?? null) : null;
+  const wsTc = ws.state.spec?.toolchain ?? null;
+  const svcRunning = rt.state.services[id]?.state === "running";
+
+  const [probe, setProbe] = useState<ToolchainProbeOut | null>(null);
+  const [probing, setProbing] = useState(true);
+  /** tool → 下拉草稿版本 */
+  const [draft, setDraft] = useState<Partial<Record<RuntimeToolKey, string>>>({});
+  /** tool → 正在保存的服务级版本选择 */
+  const [switching, setSwitching] = useState<Partial<Record<RuntimeToolKey, boolean>>>({});
+
+  const refresh = useCallback(async (force = false) => {
+    setProbing(true);
+    try {
+      setProbe(await apiToolchainProbe(force));
+    } catch {
+      /* 面板级只读信息：失败按未探测展示，可点刷新重试 */
+    } finally {
+      setProbing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const workspaceVersion = (tool: RuntimeToolKey): string | null => {
+    if (!wsTc) return null;
+    if (tool === "java") return wsTc.java ?? null;
+    if (tool === "maven") return wsTc.maven ?? null;
+    if (tool === "node") return wsTc.node ?? null;
+    if (tool === "python") return wsTc.python ?? null;
+    if (tool === "go") return wsTc.go ?? null;
+    return null;
+  };
+
+  const serviceVersion = (tool: RuntimeToolKey): string | null => {
+    const value = ws.state.spec?.services[id]?.env?.[SERVICE_RUNTIME_ENV_KEY[tool]];
+    return value?.trim() || null;
+  };
+
+  const switchVersion = async (tool: RuntimeToolKey, version: string) => {
+    const spec = ws.state.spec;
+    const svc = spec?.services[id];
+    if (!wsId || !yaml.state.hash || !spec || !svc || switching[tool]) return;
+    setSwitching((prev) => ({ ...prev, [tool]: true }));
+    try {
+      const next: SuperTaskFile = {
+        ...spec,
+        services: {
+          ...spec.services,
+          [id]: { ...svc, env: { ...svc.env, [SERVICE_RUNTIME_ENV_KEY[tool]]: version } },
+        },
+      };
+      const ok = await yaml.actions.saveForm(next);
+      if (!ok) {
+        toast(yaml.state.error ?? t("operations.savedFailed"), "err");
+        return;
+      }
+      await ws.actions.refreshSpec();
+      toast(t("pages.run.runtimeSwitched", { tool, version }), "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setSwitching((prev) => ({ ...prev, [tool]: false }));
+    }
+  };
+
+  if (!tools) {
+    return (
+      <div className="flex flex-col gap-3 p-4">
+        <p className="rounded-[var(--r-md,12px)] border border-dashed border-[var(--line-strong,#d0d6e0)] p-5 text-center text-[0.8rem] text-[var(--t3,#8a8f98)]">
+          {kind === "compose"
+            ? t("pages.run.runtimeComposeHint")
+            : t("pages.run.runtimeGenericHint")}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
+          {t("pages.run.runtimeTitle")}
+        </span>
+        <span className="min-w-0 flex-1 text-[0.72rem] text-[var(--t2,#62666d)]">{t("pages.run.runtimeSubtitle")}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          {svcRunning ? (
+            <Button size="sm" variant="warn" onClick={() => void rt.actions.restartOne(id)}>
+              <RotateCw className="size-3.5" /> {t("pages.run.runtimeRestart")}
+            </Button>
+          ) : null}
+          <Button size="sm" variant="soft" disabled={probing} onClick={() => void refresh(true)}>
+            {probing ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />}
+            {t("pages.env.reprobe")}
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {tools.map((tool) => {
+          const found = probe?.[tool.key] ?? null;
+          // PATH 未命中时仍使用后端的本机安装枚举。Windows GUI 进程可能
+          // 继承旧 PATH，但注册表/安装目录探测仍能确认工具已安装。
+          const discovered = (probe?.installs ?? []).filter((i) => i.tool === tool.key);
+          const selected = serviceVersion(tool.key) ?? workspaceVersion(tool.key);
+          const candidates: { version: string; active: boolean }[] = discovered.map((install) => ({
+            version: install.version,
+            active: install.active,
+          }));
+          if (found?.found && found.version && !candidates.some((candidate) => candidate.version === found.version)) {
+            candidates.push({ version: found.version, active: true });
+          }
+          // 每个主版本只保留一个本机安装：优先服务已选版本，其次 PATH 当前版本。
+          const byMajor = new Map<string, (typeof candidates)[number]>();
+          for (const candidate of candidates) {
+            const major = versionMajor(candidate.version);
+            const previous = byMajor.get(major);
+            if (!previous || versionMatches(selected, candidate.version) || (!previous.active && candidate.active)) {
+              byMajor.set(major, candidate);
+            }
+          }
+          const options = Array.from(byMajor.values()).map((candidate) => candidate.version);
+          const selectedLocal = options.find((version) => versionMatches(selected, version)) ?? null;
+          const draftV = draft[tool.key] ?? selectedLocal ?? options[0] ?? "";
+          const busy = switching[tool.key] === true;
+          return (
+            <div
+              key={tool.key}
+              className="flex flex-col gap-2 rounded-[var(--r-md,12px)] border border-[var(--line,#e6e6e6)] p-3 transition-colors duration-150 hover:border-[var(--line-strong,#d0d6e0)]"
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="text-[0.88rem] font-semibold text-[var(--t1,#222326)]">{tool.label}</span>
+                {selected ? <Badge variant="secondary">{t("pages.run.runtimePinned", { version: selected })}</Badge> : null}
+                {options.length > 0 ? (
+                  <span className="font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.run.runtimeInstalled")}</span>
+                ) : probing ? (
+                  <span className="font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.run.runtimeProbing")}</span>
+                ) : (
+                  <span className="font-mono text-[0.72rem] text-[var(--st-warn,#9a6700)]">{t("pages.run.runtimeMissing")}</span>
+                )}
+              </div>
+              {busy ? (
+                <div className="flex items-center gap-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] px-2 py-1.5 text-[0.75rem] text-[var(--t2,#62666d)]">
+                  <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                  <span className="min-w-0 flex-1 truncate">
+                    {t("pages.run.runtimeSwitching")}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  {options.length > 0 ? (
+                    <>
+                      <select
+                        className="h-8 min-w-0 cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-1.5 font-mono text-[0.75rem] text-[var(--t1,#222326)]"
+                        value={draftV}
+                        onChange={(e) => setDraft((prev) => ({ ...prev, [tool.key]: e.target.value }))}
+                        aria-label={t("pages.env.versionAria", { tool: tool.label })}
+                      >
+                        {options.map((v) => (
+                          <option key={v} value={v}>{v}</option>
+                        ))}
+                      </select>
+                      <Button
+                        size="sm"
+                        variant="default"
+                        disabled={!wsId || !yaml.state.hash || options.length < 2 || versionMatches(selected, draftV)}
+                        title={t("pages.run.runtimeSwitchTitle", { tool: tool.label, version: draftV })}
+                        onClick={() => void switchVersion(tool.key, draftV)}
+                      >
+                        {t("pages.run.runtimeSwitch")}
+                      </Button>
+                    </>
+                  ) : (
+                    <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.run.runtimeNoLocalVersions")}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="text-[0.72rem] leading-relaxed text-[var(--t3,#8a8f98)]">{t("pages.run.runtimeHint")}</p>
     </div>
   );
 }
@@ -753,7 +1115,7 @@ function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec
         >
           {t(`pages.run.health_${statusKey}`)}
         </span>
-        <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 py-0.5 text-[11px] font-medium text-[var(--t2,#62666d)]">
+        <span className="inline-flex h-5 items-center gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 text-[11px] font-medium leading-none text-[var(--t2,#62666d)]">
           <span
             className={cn(
               "size-1.5 rounded-full",
@@ -875,12 +1237,20 @@ function ConfigPanel({ id }: { id: string }) {
 
 /* ---------------- detail (service) ---------------- */
 
+function fmtMemBytes(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+}
+
 function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   const rt = useRuntime();
   const ws = useWorkspace();
   const runtime = useRuntime();
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"logs" | "env" | "health" | "config" | "metrics" | "terminal" | "container" | "proxy">("logs");
+  const [tab, setTab] = useState<"logs" | "vars" | "ports" | "runtime" | "health" | "config" | "metrics" | "terminal" | "container" | "proxy">("logs");
   const [confirmStop, setConfirmStop] = useState(false);
   const [building, setBuilding] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -926,11 +1296,14 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
         : t("pages.run.stackSpring");
   const topo = spec?.depends_on?.length ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") }) : t("pages.run.noDeps");
 
-  type DetailTab = "logs" | "env" | "health" | "config" | "metrics" | "terminal" | "container" | "proxy";
+  type DetailTab = "logs" | "vars" | "ports" | "runtime" | "health" | "config" | "metrics" | "terminal" | "container" | "proxy";
   const tabs: { k: DetailTab; label: string; icon: typeof FileText }[] = [
     { k: "logs", label: t("nav.logs"), icon: FileText },
     { k: "terminal", label: t("pages.run.tabTerminal"), icon: SquareTerminal },
-    { k: "env", label: t("pages.run.tabEnv"), icon: Settings2 },
+    // 「环境」Tab 拆分：变量（env vars + 生效快照）、端口（检查/建议/改端口）、环境（运行时工具版本）
+    { k: "vars", label: t("pages.run.tabEnv"), icon: Braces },
+    { k: "ports", label: t("pages.run.tabPorts"), icon: ArrowLeftRight },
+    { k: "runtime", label: t("pages.run.tabRuntime"), icon: Layers },
     { k: "health", label: t("pages.run.tabHealth"), icon: Activity },
     { k: "config", label: t("nav.config"), icon: FileText },
     { k: "metrics", label: t("pages.run.tabMetrics"), icon: Activity },
@@ -950,7 +1323,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
           <KindBadge kind={svc.kind} buildTool={spec?.build_tool} />
           {external ? (
             <span
-              className="shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 py-0.5 text-[11px] font-medium text-[var(--t2,#62666d)]"
+              className="inline-flex h-5 items-center shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 text-[11px] font-medium leading-none text-[var(--t2,#62666d)]"
               title={t("pages.run.externalMonitorTitle")}
             >
               {t("pages.run.externalMonitor")}
@@ -958,13 +1331,22 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
           ) : null}
           <span
             className={cn(
-              "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
+              "inline-flex h-5 items-center shrink-0 rounded-full px-2 text-[11px] font-medium leading-none",
               isRunning ? "bg-[var(--ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]" : "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]",
             )}
           >
             {stateLabel(svc.state)}
             {isRunning && svc.started_at_ms ? ` · ${fmtDuration(svc.started_at_ms)}` : ""}
           </span>
+          {isRunning && rt.state.metrics[id]?.memory_bytes != null ? (
+            <span
+              className="inline-flex h-5 items-center shrink-0 gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 text-[11px] font-medium leading-none text-[var(--t2,#62666d)]"
+              title={t("pages.run.metaMemory")}
+            >
+              <MemoryStick className="size-3" aria-hidden />
+              {fmtMemBytes(rt.state.metrics[id]?.memory_bytes)}
+            </span>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <IdeOpenMenu variant="button" />
@@ -1050,24 +1432,24 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
           }}
         >
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-          {copied ? <span>{t("common.copied")}</span> : null}
         </button>
       </div>
 
-      {/* meta strip */}
-      <div className="mx-4 mt-2 flex flex-wrap items-center gap-x-[1.1rem] gap-y-1.5 rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-3.5 py-2">
+      {/* meta strip：单行不换行；拓扑字段 flex-1 占剩余宽度截断（见 Meta truncate），其余字段 shrink-0 不被挤压 */}
+      <div className="mx-4 mt-2 flex flex-nowrap items-center gap-x-[1.1rem] overflow-hidden rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-3.5 py-2">
         {svc.port != null ? (
-          <Meta k={t("pages.run.metaPort")} v={<PortLink port={svc.port} className="font-bold text-[var(--st-accent,#5e6ad2)]" />} />
+          <Meta k={t("pages.run.metaPort")} v={<PortLink port={svc.port} disabled={!isRunning} className="font-semibold text-[var(--st-accent,#5e6ad2)]" />} />
         ) : (
           <Meta k={t("pages.run.metaPort")} v="—" accent />
         )}
         <Meta k={t("pages.run.metaStack")} v={stack} />
-        <Meta k={t("pages.run.metaTopo")} v={topo} muted />
+        <Meta k={t("pages.run.metaTopo")} v={topo} muted truncate title={topo} />
         <Meta
           k="PID"
+          mono
           v={svc.pid != null ? `${svc.pid}` : isCompose ? t("pages.run.containerManaged") : "—"}
         />
-        <Meta k={t("pages.run.metaUptime")} v={svc.started_at_ms ? fmtDuration(svc.started_at_ms) : "—"} ok={isRunning} />
+        <Meta k={t("pages.run.metaUptime")} mono ok={isRunning} v={svc.started_at_ms ? fmtDuration(svc.started_at_ms) : "—"} />
       </div>
 
       {/* segbar */}
@@ -1115,9 +1497,19 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
             className="min-h-0 flex-1"
           />
         ) : null}
-        {tab === "env" ? (
+        {tab === "vars" ? (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <EnvPanel id={id} compact={compact} />
+          </div>
+        ) : null}
+        {tab === "ports" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <PortsPanel id={id} compact={compact} />
+          </div>
+        ) : null}
+        {tab === "runtime" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <RuntimePanel key={id} id={id} />
           </div>
         ) : null}
         {tab === "health" ? (
@@ -1152,20 +1544,13 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
 
 function MetricsPanel({ id, metric, compose = false }: { id: string; metric: ServiceMetrics | null; compose?: boolean }) {
   const { t } = useTranslation();
-  const fmtBytes = (n: number | null | undefined) => {
-    if (n == null) return "—";
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
-    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-  };
   const emptyHint = compose
     ? t("pages.run.metricsComposeHint")
     : t("pages.run.metricsEmptyHint", { id });
   return (
     <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3">
       <MetricTile icon={<Cpu className="size-4" />} label="CPU" value={metric?.cpu_percent == null ? "—" : `${metric.cpu_percent.toFixed(1)}%`} />
-      <MetricTile icon={<HardDrive className="size-4" />} label={t("pages.run.metaMemory")} value={fmtBytes(metric?.memory_bytes)} />
+      <MetricTile icon={<HardDrive className="size-4" />} label={t("pages.run.metaMemory")} value={fmtMemBytes(metric?.memory_bytes)} />
       <MetricTile icon={<Boxes className="size-4" />} label={t("pages.run.metaProcTree")} value={metric?.process_count == null ? "—" : t("pages.run.procCount", { n: metric.process_count })} />
       <div className="sm:col-span-3 text-[0.72rem] text-[var(--t3,#8a8f98)]">
         {metric ? t("pages.run.lastSample", { time: new Date(metric.sampled_at_ms).toLocaleTimeString() }) : emptyHint}
@@ -1271,7 +1656,7 @@ function ContainerPanel({ id }: { id: string }) {
             {container.health ? (
               <span
                 className={cn(
-                  "inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[11px] font-semibold",
+                  "inline-flex h-5 items-center rounded-full px-2 font-mono text-[11px] font-semibold leading-none",
                   container.health === "healthy"
                     ? "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]"
                     : container.health === "unhealthy"
@@ -1326,6 +1711,8 @@ function Meta({
   muted,
   mono,
   ok,
+  truncate,
+  title,
 }: {
   k: string;
   v: ReactNode;
@@ -1333,18 +1720,30 @@ function Meta({
   muted?: boolean;
   mono?: boolean;
   ok?: boolean;
+  /** 值可能很长（如依赖拓扑）：按容器宽度单行截断出省略号，完整内容走 title */
+  truncate?: boolean;
+  title?: string;
 }) {
   return (
-    <span className="relative inline-flex items-center gap-[0.45rem] pl-[1.1rem] first:pl-0 [&:not(:first-child)]:before:absolute [&:not(:first-child)]:before:left-0 [&:not(:first-child)]:before:top-1/2 [&:not(:first-child)]:before:h-[0.9em] [&:not(:first-child)]:before:w-px [&:not(:first-child)]:before:-translate-y-1/2 [&:not(:first-child)]:before:bg-[var(--line-strong,#d0d6e0)] [&:not(:first-child)]:before:content-['']">
-      <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{k}</span>
+    <span
+      className={cn(
+        "relative inline-flex items-center gap-[0.45rem] pl-[1.1rem] first:pl-0 [&:not(:first-child)]:before:absolute [&:not(:first-child)]:before:left-0 [&:not(:first-child)]:before:top-1/2 [&:not(:first-child)]:before:h-3 [&:not(:first-child)]:before:w-px [&:not(:first-child)]:before:-translate-y-1/2 [&:not(:first-child)]:before:bg-[var(--line-strong,#d0d6e0)] [&:not(:first-child)]:before:content-['']",
+        // 单行 meta 条内：普通字段不收缩；truncate 字段吃掉剩余宽度后自身截断（flex 换行按 max-content，wrap 容器里长字段必然独占整行）
+        truncate ? "min-w-0 flex-1 basis-0" : "shrink-0",
+      )}
+    >
+      {/* k/v 同字号同行高（leading-none + items-center），只靠颜色/字重区分，保证基线齐平；k 恒单行不收缩，压缩只发生在 v 上 */}
+      <span className="shrink-0 whitespace-nowrap text-[0.74rem] leading-none text-[var(--t3,#8a8f98)]">{k}</span>
       <span
+        title={title}
         className={cn(
-          "text-[0.78rem] font-medium",
-          mono || accent || ok ? "font-mono" : "",
-          accent && "font-mono font-bold text-[var(--st-accent,#5e6ad2)]",
-          ok && "font-mono font-bold text-[var(--st-ok-deep,#1e7e35)]",
-          muted && !accent && !ok && "text-[var(--t2,#62666d)]",
-          !accent && !ok && !muted && "font-mono text-[var(--t1,#222326)]",
+          "text-[0.74rem] font-medium leading-none",
+          (mono || accent || ok) && "font-mono",
+          accent && "font-semibold text-[var(--st-accent,#5e6ad2)]",
+          ok && "font-semibold text-[var(--st-ok-deep,#1e7e35)]",
+          muted && !accent && !ok && "font-normal text-[var(--t2,#62666d)]",
+          !accent && !ok && !muted && "text-[var(--t1,#222326)]",
+          truncate && "truncate",
         )}
       >
         {v}
@@ -1411,13 +1810,13 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
     <div
       onClick={onOpen}
       className={cn(
-        "group/scr relative flex h-[5.7rem] cursor-pointer flex-col overflow-hidden rounded-[var(--r-md,12px)] border bg-[var(--surface,#fff)] p-2.5 transition-all duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))]",
+        "group/scr relative flex h-[5.7rem] shrink-0 cursor-pointer flex-col overflow-hidden rounded-[var(--r-md,12px)] border bg-[var(--surface,#fff)] p-2.5 transition-all duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))]",
         selected ? "border-[var(--st-accent,#5e6ad2)] bg-[color-mix(in_oklch,var(--st-accent,#5e6ad2)_6%,white)] ring-1 ring-[var(--st-accent,#5e6ad2)]/30" : "border-[var(--line,#e6e6e6)] hover:border-[var(--line-strong,#d0d6e0)]",
       )}
     >
       <div className="flex items-center gap-2">
         <StatusDot state={scriptDotState(view ?? { state: "idle", last_exit: null, last_error: null })} size={8} />
-        <span className="truncate text-[0.88rem] font-semibold text-[var(--t1,#222326)]">{id}</span>
+        <span className="truncate text-[0.88rem] font-semibold text-[var(--t1,#222326)]" title={id}>{id}</span>
         <KindBadge kind="task" />
         <div className="ml-auto flex gap-1 opacity-50 transition-opacity group-hover/scr:opacity-100" onClick={(e) => e.stopPropagation()}>
           {isRunning ? (
@@ -1519,7 +1918,7 @@ function ProxyPanel({ id }: { id: string }) {
           </span>
           <span
             className={cn(
-              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold",
+              "inline-flex h-5 items-center gap-1 rounded-full px-2 font-mono text-[10px] font-semibold leading-none",
               GATEWAY_STATE_TINT[gw.state],
             )}
           >
@@ -1624,7 +2023,7 @@ function ScriptDetail({ id }: { id: string }) {
           <StatusDot state={scriptDotState(view ?? { state: "idle", last_exit: null, last_error: null })} size={10} />
           <h1 className="min-w-0 truncate text-[1.08rem] font-bold tracking-tight text-[var(--t1,#222326)]">{id}</h1>
           <KindBadge kind="task" />
-          <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium", chipCls)}>
+          <span className={cn("inline-flex h-5 items-center shrink-0 rounded-full px-2 text-[11px] font-medium leading-none", chipCls)}>
             {scriptStateLabel(view ?? { state: "idle", last_exit: null, last_error: null })}
           </span>
         </div>
@@ -1686,7 +2085,6 @@ function ScriptDetail({ id }: { id: string }) {
             onClick={copyCmds}
           >
             {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-            {copied ? <span>{t("common.copied")}</span> : null}
           </button>
         </div>
       </div>
@@ -1752,6 +2150,26 @@ function buildGroups(serviceIds: string[], spec: Record<string, ServiceSpec> | u
   return keys.map((k) => ({ key: k, label: k === "__ungrouped__" ? ungroupedLabel : k, ids: map.get(k)! }));
 }
 
+/**
+ * 统计行「总数 · 运行 N」：整串走 font-mono 会让 CJK 词回退系统字体、与数字基线错位，
+ * 这里文字用 UI 字体、数字单独 tabular-nums，并给运行数一个状态圆点，保证同高对齐。
+ */
+function RunningCounts({ total, running, className }: { total: number; running: number; className?: string }) {
+  const { t } = useTranslation();
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 leading-none text-[var(--t3,#8a8f98)]", className)}>
+      <span className="font-mono tabular-nums text-[var(--t2,#62666d)]">{total}</span>
+      <span aria-hidden className="text-[var(--line-strong,#d0d6e0)]">·</span>
+      <span
+        aria-hidden
+        className={cn("size-1.5 shrink-0 rounded-full", running > 0 ? "bg-[var(--st-ok,#27a644)]" : "bg-[var(--line-strong,#d0d6e0)]")}
+      />
+      <span>{t("pages.run.runningShort")}</span>
+      <span className={cn("font-mono tabular-nums", running > 0 ? "text-[var(--st-ok,#27a644)]" : "text-[var(--t2,#62666d)]")}>{running}</span>
+    </span>
+  );
+}
+
 function GroupHeader({
   label,
   ids,
@@ -1782,9 +2200,7 @@ function GroupHeader({
         {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
         <span className="truncate">{label}</span>
       </button>
-      <span className="font-mono text-[10px] text-[var(--t3,#8a8f98)]">
-        {t("pages.run.serviceCountRunning", { total: ids.length, running })}
-      </span>
+      <RunningCounts total={ids.length} running={running} className="text-[10px]" />
       <span className="ml-auto flex gap-1">
         <button
           type="button"
@@ -1914,16 +2330,16 @@ export function RunPage() {
       >
         <div className="flex items-center gap-2 px-1 pb-2 pt-1">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.run.servicesHeader")}</span>
-              <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">{t("pages.run.serviceCountRunning", { total: serviceIds.length, running })}</span>
+              <RunningCounts total={serviceIds.length} running={running} className="text-[11px]" />
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
               {serviceIds.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-[var(--line,#e6e6e6)] p-6 text-center text-sm text-[var(--t3,#8a8f98)]">
+                <div className="shrink-0 rounded-lg border border-dashed border-[var(--line,#e6e6e6)] p-6 text-center text-sm text-[var(--t3,#8a8f98)]">
                   {t("pages.run.noServices")}
                 </div>
               ) : hasGroups ? (
                 groups.map((grp) => (
-                  <div key={grp.key} className="flex flex-col gap-2">
+                  <div key={grp.key} className="flex shrink-0 flex-col gap-2">
                     <GroupHeader
                       label={grp.label}
                       ids={grp.ids}
@@ -1961,7 +2377,7 @@ export function RunPage() {
 
               {scriptIds.length > 0 ? (
                 <>
-                  <div className="flex items-center gap-2 px-1 pb-2 pt-4">
+                  <div className="flex shrink-0 items-center gap-2 px-1 pb-2 pt-4">
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.run.scriptsHeader")}</span>
                     <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">{scriptIds.length}</span>
                   </div>
@@ -1980,7 +2396,7 @@ export function RunPage() {
               {/* 1.6：网关状态行（独立于 services 列表；点击跳转 /gateway） */}
               {rt.state.gateway ? (
                 <>
-                  <div className="flex items-center gap-2 px-1 pb-2 pt-4">
+                  <div className="flex shrink-0 items-center gap-2 px-1 pb-2 pt-4">
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.gateway.title")}</span>
                     <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">
                       :{rt.state.gateway.port}
@@ -1989,7 +2405,7 @@ export function RunPage() {
                   <button
                     type="button"
                     onClick={() => navigate("/gateway")}
-                    className="flex w-full cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-3 py-2 text-left transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)]"
+                    className="flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-3 py-2 text-left transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)]"
                   >
                     <span
                       className={cn(

@@ -329,7 +329,7 @@ export function DiscoverPage() {
         <td className="px-4 py-2.5">
           <span className="flex flex-wrap gap-1">
             {s.ports.slice(0, 8).map((p) => (
-              <span key={p} className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[0.68rem] text-[var(--primary,#5E6AD2)]">
+              <span key={p} className="inline-flex h-5 items-center rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[0.68rem] leading-none text-[var(--primary,#5E6AD2)]">
                 {p}
               </span>
             ))}
@@ -434,7 +434,7 @@ export function DiscoverPage() {
                       onClick={() => toggleKind(k)}
                       disabled={count === 0 && !active}
                       className={cn(
-                        "inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[0.72rem] transition-colors duration-150 active:scale-95",
+                        "inline-flex h-5 cursor-pointer items-center gap-1 rounded-full border px-2 text-[0.72rem] leading-none transition-colors duration-150 active:scale-95",
                         active
                           ? "border-[var(--primary,#5E6AD2)] bg-[rgb(94_106_210_/_0.08)] text-[var(--primary,#5E6AD2)] hover:bg-[rgb(94_106_210_/_0.16)]"
                           : "border-[var(--line-strong,#d0d6e0)] text-[var(--t2,#62666d)] hover:border-[var(--t3,#8a8f98)] hover:bg-[var(--surface-2,#f3f4f5)]",
@@ -625,7 +625,7 @@ export function DiscoverPage() {
                 <DetailField label={t("pages.discover.colPorts")}>
                   <span className="flex flex-wrap gap-1">
                     {detailLive.ports.map((p) => (
-                      <span key={p} className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[0.7rem] text-[var(--primary,#5E6AD2)]">
+                      <span key={p} className="inline-flex h-5 items-center rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[0.7rem] leading-none text-[var(--primary,#5E6AD2)]">
                         {p}
                       </span>
                     ))}

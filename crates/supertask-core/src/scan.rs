@@ -184,22 +184,7 @@ pub fn scan_draft_with_runner(
         log_retention: None,
         extra: IndexMap::new(),
     };
-    // Maven 工程给一个「安装依赖」引导脚本；cwd 指向首个 reactor 根
-    let first_reactor = reactors.iter().map(|r| r.rel.clone()).next();
-    if let Some(rel) = first_reactor {
-        let cwd = if rel == "." { None } else { Some(rel) };
-        file.scripts.insert(
-            "bootstrap".into(),
-            ScriptSpec {
-                desc: Some("安装依赖".into()),
-                cmds: vec!["mvn -q -DskipTests install".into()],
-                cwd,
-                env: IndexMap::new(),
-                timeout_secs: Some(1800),
-                depends_on: vec![],
-            },
-        );
-    }
+    insert_maven_bootstrap(&mut file);
     file.apply_defaults();
     Ok((file, warnings))
 }
@@ -265,6 +250,77 @@ fn pom_modules(pom: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Maven reactor 引导安装（方案 B）：仅 `install` spring-boot 模块及其 reactor 上游，
+/// 跳过测试编译（`-Dmaven.test.skip=true`），避免全量 reactor + 测试代码拖垮 bootstrap。
+fn insert_maven_bootstrap(file: &mut SuperTaskFile) {
+    use std::collections::HashSet;
+
+    let mut entries: Vec<(&str, &str)> = Vec::new();
+    let mut seen = HashSet::new();
+    for svc in file.services.values() {
+        if svc.kind != "spring-boot" || svc.build_tool.as_deref() == Some("gradle") {
+            continue;
+        }
+        let module = svc.module.as_deref().unwrap_or(".");
+        let reactor_rel = svc.cwd.as_deref().unwrap_or(".");
+        if seen.insert((reactor_rel, module)) {
+            entries.push((reactor_rel, module));
+        }
+    }
+    if entries.is_empty() {
+        return;
+    }
+
+    let reactor_rels: HashSet<&str> = entries.iter().map(|(r, _)| *r).collect();
+    let script_cwd = if reactor_rels.len() == 1 {
+        let only = entries[0].0;
+        if only == "." {
+            None
+        } else {
+            Some(only.to_string())
+        }
+    } else {
+        None
+    };
+
+    let cmds: Vec<String> = entries
+        .iter()
+        .map(|(reactor_rel, module)| {
+            let use_file_flag = script_cwd.as_deref() != Some(*reactor_rel);
+            maven_bootstrap_install_cmd(reactor_rel, module, use_file_flag)
+        })
+        .collect();
+
+    file.scripts.insert(
+        "bootstrap".into(),
+        ScriptSpec {
+            desc: Some("安装依赖".into()),
+            cmds,
+            cwd: script_cwd,
+            env: IndexMap::new(),
+            timeout_secs: Some(1800),
+            depends_on: vec![],
+        },
+    );
+}
+
+fn maven_bootstrap_install_cmd(reactor_rel: &str, module: &str, use_file_flag: bool) -> String {
+    // Maven plugins commonly resolve shared files relative to the reactor
+    // root. Enter that root for mixed-reactor workspaces instead of using
+    // `-f`, so the child process sees the same basedir as a direct Maven run.
+    let prefix = if use_file_flag && reactor_rel != "." {
+        format!("cd \"{reactor_rel}\" && ")
+    } else {
+        String::new()
+    };
+    let mut parts = vec!["mvn".to_string(), "-q".to_string()];
+    if module != "." {
+        parts.extend(["-pl".into(), module.to_string(), "-am".into()]);
+    }
+    parts.extend(["install".into(), "-Dmaven.test.skip=true".into()]);
+    format!("{prefix}{}", parts.join(" "))
 }
 
 fn insert_spring_with_cwd(
@@ -1169,29 +1225,112 @@ fn sanitize_compose_id(raw: &str) -> (String, bool) {
 }
 
 fn detect_pm(root: &Path, dir: &Path, pkg_txt: &str) -> PackageManager {
-    if pkg_txt.contains("\"packageManager\"") && pkg_txt.contains("pnpm") {
-        return PackageManager::Pnpm;
-    }
-    if pkg_txt.contains("\"packageManager\"") && pkg_txt.contains("yarn") {
-        return PackageManager::Yarn;
-    }
     let base = if dir == Path::new(".") {
         root.to_path_buf()
     } else {
         root.join(dir)
     };
-    if base.join("pnpm-lock.yaml").is_file() {
-        PackageManager::Pnpm
-    } else if base.join("yarn.lock").is_file() {
-        PackageManager::Yarn
+
+    // A workspace package inherits the nearest package manager declaration or
+    // lockfile from its parent directory (for example front/core -> front).
+    // Walk upward from the service so sibling projects do not accidentally
+    // inherit settings from an unrelated directory.
+    let mut current = Some(base.as_path());
+    while let Some(dir) = current {
+        let package_json = if dir == base.as_path() {
+            Some(pkg_txt)
+        } else {
+            None
+        };
+        if let Some(pm) = package_json
+            .and_then(package_manager_field)
+            .or_else(|| read_package_manager_field(dir))
+        {
+            return pm;
+        }
+        if let Some(pm) = lockfile_manager(dir) {
+            return pm;
+        }
+        if dir == root {
+            break;
+        }
+        current = dir.parent().filter(|parent| parent.starts_with(root));
+    }
+    PackageManager::Npm
+}
+
+fn package_manager_field(package_json: &str) -> Option<PackageManager> {
+    let value = serde_json::from_str::<serde_json::Value>(package_json).ok()?;
+    let raw = value
+        .get("packageManager")?
+        .as_str()?
+        .trim()
+        .to_ascii_lowercase();
+    let name = raw.split('@').next().unwrap_or(&raw);
+    match name {
+        "npm" => Some(PackageManager::Npm),
+        "pnpm" => Some(PackageManager::Pnpm),
+        "yarn" => Some(PackageManager::Yarn),
+        "bun" => Some(PackageManager::Bun),
+        _ => None,
+    }
+}
+
+fn read_package_manager_field(dir: &Path) -> Option<PackageManager> {
+    let text = fs::read_to_string(dir.join("package.json")).ok()?;
+    package_manager_field(&text)
+}
+
+fn lockfile_manager(dir: &Path) -> Option<PackageManager> {
+    if dir.join("pnpm-lock.yaml").is_file() {
+        Some(PackageManager::Pnpm)
+    } else if dir.join("bun.lock").is_file() || dir.join("bun.lockb").is_file() {
+        Some(PackageManager::Bun)
+    } else if dir.join("yarn.lock").is_file() {
+        Some(PackageManager::Yarn)
+    } else if dir.join("package-lock.json").is_file() {
+        Some(PackageManager::Npm)
     } else {
-        PackageManager::Npm
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_bun_from_package_manager_or_lockfile() {
+        let root = std::env::temp_dir().join(format!("st-scan-bun-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("bun.lock"), "lockfileVersion = 1\n").unwrap();
+        assert_eq!(detect_pm(&root, Path::new("."), "{}"), PackageManager::Bun);
+        assert_eq!(
+            detect_pm(&root, Path::new("."), r#"{"packageManager":"bun@1.3.13"}"#),
+            PackageManager::Bun
+        );
+        fs::create_dir_all(root.join("front/core")).unwrap();
+        fs::write(
+            root.join("front/package.json"),
+            r#"{"packageManager":"bun@1.3.13","workspaces":["core"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("front/core/package.json"),
+            r#"{"scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_pm(
+                &root,
+                Path::new("front/core"),
+                "{\"scripts\":{\"dev\":\"vite\"}}"
+            ),
+            PackageManager::Bun
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn scans_spring_and_node() {
@@ -1314,6 +1453,10 @@ mod tests {
             file.scripts.get("bootstrap").map(|s| s.cwd.clone()),
             Some(None)
         );
+        assert_eq!(
+            file.scripts.get("bootstrap").unwrap().cmds,
+            vec!["mvn -q install -Dmaven.test.skip=true"]
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1359,6 +1502,12 @@ mod tests {
         // cwd 指向 reactor 子目录；-pl 路径相对 reactor
         assert_eq!(boot.cwd.as_deref(), Some("server"));
         assert_eq!(boot.module.as_deref(), Some("nest-store-bootstrap"));
+        let bootstrap = file.scripts.get("bootstrap").unwrap();
+        assert_eq!(bootstrap.cwd.as_deref(), Some("server"));
+        assert_eq!(
+            bootstrap.cmds,
+            vec!["mvn -q -pl nest-store-bootstrap -am install -Dmaven.test.skip=true"]
+        );
         // 库模块：pom 完全无 spring-boot 痕迹 → 静默跳过（不算用户错误）
         assert!(!file.services.contains_key("nest-store-common"));
         // 非 node 的 app/ 目录不误报

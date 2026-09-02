@@ -124,7 +124,7 @@
 
 **构建工具探测（1.4 §5.1）**：module 目录（单模块工程为 root）有 `build.gradle` / `build.gradle.kts` → gradle；有 `pom.xml` → maven；**两者并存 → `BUILD_TOOL_AMBIGUOUS`**（打开时警告 + 启动硬错误）；都没有 → 打开警告，启动按工具缺失（`MISSING_TOOL`）处理。
 
-**Maven 路径**：命令 `mvn.cmd -pl <module> spring-boot:run` + `extra_args`；`module` 为 `"."`（单模块工程）时省略 `-pl`，只跑 `spring-boot:run`。不要默认加 `-am`：Maven 会把 `spring-boot:run` 套到 reactor 里每一个项目（含没有该插件的聚合 POM），启动失败。需要 also-make 时写进 `extra_args`，或先跑 `scripts.bootstrap`（`mvn install`）。
+**Maven 路径**：命令 `mvn.cmd -pl <module> spring-boot:run` + `extra_args`；`module` 为 `"."`（单模块工程）时省略 `-pl`，只跑 `spring-boot:run`。**多模块 reactor**（cwd 处 `pom.xml` 的 `<modules>` 含该 module）时：启动前自动执行 `mvn -pl <module> -am install -Dmaven.test.skip=true`（仅装上游兄弟模块）；`spring-boot:run` **不加 `-am`**（否则会在聚合父 POM 上执行 run → 无 main class）。run 命令自动追加 `-Dmaven.test.skip=true`（用户 `extra_args` 已写则不再注入）。亦可手动跑 `scripts.bootstrap`。
 
 **Gradle 路径（1.4）**：命令 `gradlew[.bat] [:module:]bootRun` + `extra_args`；`module` 为 `"."` 时省略任务路径前缀，直接 `bootRun`。Gradle 自身解析跨模块任务依赖，无 `-pl`/`-am` 问题。执行优先 wrapper：root（或 module 目录）存在 `gradlew`（Unix）/ `gradlew.bat`（Windows）则用 wrapper（Unix 无执行位时经 `sh gradlew` 执行并警告一次）；否则用 PATH 的 `gradle`；都无 → `GRADLE_WRAPPER_MISSING`，建议 `gradle wrapper --gradle-version <x>`，不代装。`launch: jar` → `gradlew [:module:]bootJar`（默认不加 `-DskipTests` 等价物），artifact 识别在 `module/build/libs`，排除 `*-plain.jar` / `*-sources.jar` / `*-javadoc.jar`，零候选 `ARTIFACT_MISSING`、多候选 `JAR_AMBIGUOUS`，复用 1.2 jar 规则。
 
@@ -139,11 +139,11 @@
 | 字段 | 1.0 | 说明 |
 |------|-----|------|
 | `dir` | 必填 | 相对 root 的前端目录，沙箱校验 |
-| `package_manager` | 可选 | `npm` \| `pnpm` \| `yarn`；省略则按 lockfile / `packageManager` 探测 |
+| `package_manager` | 可选 | `npm` \| `pnpm` \| `yarn` \| `bun`；省略则按 lockfile / `packageManager` 探测 |
 | `script` | 可选 | 默认 `dev`，否则 `start`；都没有则不能启动 |
 
 工作目录：`root/dir`。  
-命令：`<pm>.cmd run <script>`；若有 `extra_args` 则 `--` 再追加。
+命令：`<pm>.cmd run <script>`（Bun 为 `bun run <script>`）；若有 `extra_args` 则 `--` 再追加。
 
 默认 `grace_secs`: **15**。默认 `health.type`: **tcp**（连 `127.0.0.1:port`）。
 
@@ -331,7 +331,7 @@ scripts:
   bootstrap:
     desc: 安装依赖
     cmds:
-      - mvn -q -DskipTests install
+      - mvn -q -pl user-service -am install -Dmaven.test.skip=true
       - pnpm --dir web install
 gateway: {}
 ```

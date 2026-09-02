@@ -418,7 +418,7 @@ fn classify(tokens: &[String]) -> Option<Classified> {
                 None
             }
         }
-        "npm" | "pnpm" | "yarn" => classify_pm(cmd, &args),
+        "npm" | "pnpm" | "yarn" | "bun" => classify_pm(cmd, &args),
         "pip" | "pip3" => {
             if args.first().copied() == Some("install") {
                 Some(script_spec(cmd, &args, "pip-install"))
@@ -542,6 +542,7 @@ fn pm_of(cmd: &str) -> PackageManager {
     match cmd {
         "pnpm" => PackageManager::Pnpm,
         "yarn" => PackageManager::Yarn,
+        "bun" => PackageManager::Bun,
         _ => PackageManager::Npm,
     }
 }
@@ -1081,6 +1082,7 @@ fn field_of(spec: &ServiceSpec, field: &str) -> Option<String> {
             PackageManager::Npm => "npm".into(),
             PackageManager::Pnpm => "pnpm".into(),
             PackageManager::Yarn => "yarn".into(),
+            PackageManager::Bun => "bun".into(),
         }),
         "package" => spec.package.clone(),
         "program" => spec.program.clone(),

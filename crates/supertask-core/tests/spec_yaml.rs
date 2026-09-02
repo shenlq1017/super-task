@@ -25,7 +25,7 @@ scripts:
   bootstrap:
     desc: 安装依赖
     cmds:
-      - mvn -q -DskipTests install
+      - mvn -q -pl user-service -am install -Dmaven.test.skip=true
 gateway: {}
 x-custom: { foo: 1 }
 "#;

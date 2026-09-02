@@ -262,7 +262,14 @@ export function AppShell() {
           >
             <Command className="size-3.5" />
             <span className={cn("text-[0.74rem]", collapsed && "hidden")}>{t("common.searchCommand")}</span>
-            <kbd className={cn("ml-auto font-mono text-[10px] text-[var(--t3,#8a8f98)]", collapsed && "hidden")}>⌘K</kbd>
+            <kbd
+              className={cn(
+                "ml-auto rounded-[5px] border border-[var(--line,#e6e6e6)] bg-[var(--bg,#f7f8f8)] px-1.5 py-0.5 font-mono text-[10px] leading-none text-[var(--t3,#8a8f98)] shadow-[0_1px_0_rgb(0_0_0_/_0.05)]",
+                collapsed && "hidden",
+              )}
+            >
+              ⌘K
+            </kbd>
           </button>
 
           {/* 导航分组 */}
@@ -330,12 +337,12 @@ export function AppShell() {
 
             <button
               onClick={() => setCmdOpen(true)}
-              className="mx-auto flex h-7 max-w-[28rem] flex-1 items-center gap-2 rounded-lg border border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] px-3 text-[var(--t3,#8a8f98)] transition-colors hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface,#fff)] hover:text-[var(--t2,#62666d)]"
+              className="mx-auto flex h-7 max-w-[28rem] flex-1 items-center gap-2 rounded-lg border border-[var(--line,#e6e6e6)] bg-[var(--bg,#f7f8f8)] px-3 text-[var(--t3,#8a8f98)] transition-colors hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface,#fff)] hover:text-[var(--t2,#62666d)]"
               title={t("common.searchCommandTitle")}
             >
               <Search className="size-3.5" />
               <span className="truncate text-[0.8rem]">{t("common.commandPaletteSearch")}</span>
-              <kbd className="ml-auto rounded border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--t3,#8a8f98)]">
+              <kbd className="ml-auto rounded-[5px] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-1.5 py-0.5 font-mono text-[10px] leading-none text-[var(--t3,#8a8f98)] shadow-[0_1px_0_rgb(0_0_0_/_0.05)]">
                 ⌘K
               </kbd>
             </button>

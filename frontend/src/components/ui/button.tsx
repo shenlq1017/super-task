@@ -39,14 +39,14 @@ const buttonVariants = cva(
       },
       size: {
         default:
-          "min-h-8 px-3.5 py-2 text-[0.78rem] leading-none has-data-[icon=inline-end]:pr-2.5 has-data-[icon=inline-start]:pl-2.5",
-        xs: "min-h-6 gap-1 rounded-[var(--r-sm,8px)] px-2 text-[0.72rem] leading-none has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3",
-        sm: "min-h-[1.7rem] gap-1 px-3 py-1.5 text-[0.75rem] leading-none has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [&_svg:not([class*='size-'])]:size-3.5",
-        lg: "min-h-9 gap-1.5 px-4 py-2 text-[0.82rem] leading-none has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
-        icon: "size-8 rounded-[var(--r-sm,8px)]",
-        "icon-xs": "size-6 rounded-[var(--r-sm,8px)] [&_svg:not([class*='size-'])]:size-3",
-        "icon-sm": "size-7 rounded-[var(--r-sm,8px)]",
-        "icon-lg": "size-9 rounded-[var(--r-sm,8px)]",
+          "min-h-9 px-3.5 py-2 text-sm leading-none has-data-[icon=inline-end]:pr-2.5 has-data-[icon=inline-start]:pl-2.5",
+        xs: "min-h-7 gap-1 rounded-[var(--r-sm,8px)] px-2 text-[0.75rem] leading-none has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3",
+        sm: "min-h-8 gap-1 px-3 py-1.5 text-[0.8125rem] leading-none has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [&_svg:not([class*='size-'])]:size-3.5",
+        lg: "min-h-10 gap-1.5 px-4 py-2 text-sm leading-none has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
+        icon: "size-9 rounded-[var(--r-sm,8px)]",
+        "icon-xs": "size-7 rounded-[var(--r-sm,8px)] [&_svg:not([class*='size-'])]:size-3",
+        "icon-sm": "size-8 rounded-[var(--r-sm,8px)]",
+        "icon-lg": "size-10 rounded-[var(--r-sm,8px)]",
       },
     },
     defaultVariants: {

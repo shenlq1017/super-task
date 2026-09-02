@@ -66,6 +66,7 @@ function ToolBtn({
   title,
   disabled,
   busy,
+  preserveSelection,
   onClick,
   className,
 }: {
@@ -76,6 +77,8 @@ function ToolBtn({
   title: string;
   disabled?: boolean;
   busy?: boolean;
+  /** 点击时阻止 mousedown 默认行为，避免按钮抢焦点导致页面文本选区被清空。 */
+  preserveSelection?: boolean;
   onClick: () => void;
   className?: string;
 }) {
@@ -87,6 +90,7 @@ function ToolBtn({
             type="button"
             aria-label={title}
             disabled={disabled || busy}
+            onMouseDown={preserveSelection ? (e) => e.preventDefault() : undefined}
             onClick={onClick}
             className={cn(
               toolBtnBase,
@@ -357,6 +361,7 @@ function LogToolbar({
         icon={<Copy className="size-3.5" />}
         title={t("logs.copySelectedHint")}
         disabled={!canCopy}
+        preserveSelection
         onClick={onCopy}
       />
       <ToolBtn
@@ -508,6 +513,7 @@ export function LogView({
   const [lineLimit, setLineLimit] = useState(() => readLogLineLimitPref());
   const [fullscreen, setFullscreen] = useState(false);
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
+  const [selectedText, setSelectedText] = useState("");
   const [copiedSeq, setCopiedSeq] = useState<number | null>(null);
   const [downloading, setDownloading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -536,6 +542,7 @@ export function LogView({
 
   useEffect(() => {
     setSelectedSeq(null);
+    setSelectedText("");
     setCopiedSeq(null);
     setTextFilter("");
   }, [source?.kind, source?.id]);
@@ -591,8 +598,43 @@ export function LogView({
     void copyLine(selectedSeq);
   }, [copyLine, selectedSeq]);
 
+  // 同步浏览器原生文本选区：手工框选多行时点亮工具栏复制按钮，并让复制走选区内容
+  useEffect(() => {
+    const el = fullscreen ? fullscreenScrollRef.current : scrollRef.current;
+    if (!el) {
+      setSelectedText("");
+      return;
+    }
+    const sync = () => {
+      const sel = window.getSelection();
+      const text = sel?.toString() ?? "";
+      const inside =
+        text.length > 0 &&
+        !!sel?.anchorNode &&
+        !!sel?.focusNode &&
+        el.contains(sel.anchorNode) &&
+        el.contains(sel.focusNode);
+      setSelectedText(inside ? text : "");
+    };
+    document.addEventListener("selectionchange", sync);
+    return () => document.removeEventListener("selectionchange", sync);
+  }, [fullscreen]);
+
+  const onToolbarCopy = useCallback(() => {
+    // 优先复制浏览器选区（手工框选多行），无选区时回退到点击选中的单行
+    if (selectedText) {
+      void (async () => {
+        const ok = await copyText(selectedText);
+        toast(ok ? t("common.copiedToClipboard") : t("common.copyFailedHint"), ok ? "ok" : "warn");
+      })();
+      return;
+    }
+    copySelected();
+  }, [copySelected, selectedText, toast, t]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (selectedText) return; // 有原生选区时不拦截，交给浏览器复制选中内容
       if (selectedSeq == null) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
         const tag = (e.target as HTMLElement | null)?.tagName;
@@ -603,7 +645,7 @@ export function LogView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [copyLine, selectedSeq]);
+  }, [copyLine, selectedSeq, selectedText]);
 
   const downloadLogs = async () => {
     if (!lines.length || downloading) return;
@@ -637,7 +679,7 @@ export function LogView({
     fullscreen,
     canDownload: lines.length > 0,
     canClear: Boolean(source),
-    canCopy: selectedSeq != null,
+    canCopy: selectedText !== "" || selectedSeq != null,
     downloading,
     textFilter,
     matchCount: streamFiltered.length,
@@ -664,7 +706,7 @@ export function LogView({
     },
     onErrorsOnlyToggle: () => setErrorsOnly((v) => !v),
     onFollowToggle: () => setFollow((v) => !v),
-    onCopy: copySelected,
+    onCopy: onToolbarCopy,
     onClear: () => source && void actions.clear(source),
     onDownload: () => void downloadLogs(),
     onFullscreenToggle: () => setFullscreen((v) => !v),

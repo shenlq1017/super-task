@@ -90,29 +90,39 @@ pub fn resolve_tool_with(
 /// 用户范围安装写入注册表 PATH 后，子进程继承的是本进程环境；
 /// 合并注册表里最新的用户/机器 PATH，让刚装好的工具立即可见。
 pub fn refresh_process_path() {
-    let user = read_reg_value(r"HKCU\Environment", "Path");
-    let machine = read_reg_value(
-        r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
-        "Path",
-    );
-    let current = std::env::var("PATH").unwrap_or_default();
-    let mut parts: Vec<String> = Vec::new();
-    for src in [user, machine, Some(current)] {
-        let Some(src) = src else { continue };
-        for p in src.split(';') {
-            let p = p.trim();
-            if !p.is_empty() && !parts.iter().any(|x| x.eq_ignore_ascii_case(p)) {
-                parts.push(p.to_string());
+    #[cfg(not(windows))]
+    return;
+
+    #[cfg(windows)]
+    {
+        let user = read_reg_value(r"HKCU\Environment", "Path");
+        let machine = read_reg_value(
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            "Path",
+        );
+        let current = std::env::var("PATH").unwrap_or_default();
+        let mut parts: Vec<String> = Vec::new();
+        // Preserve the precedence of the already-running process, then append
+        // newly published user/machine entries so an installer becomes visible
+        // without changing an explicitly prepared application PATH.
+        for src in [Some(current), user, machine] {
+            let Some(src) = src else { continue };
+            for p in src.split(';') {
+                let p = p.trim();
+                if !p.is_empty() && !parts.iter().any(|x| x.eq_ignore_ascii_case(p)) {
+                    parts.push(p.to_string());
+                }
             }
         }
+        std::env::set_var("PATH", parts.join(";"));
     }
-    std::env::set_var("PATH", parts.join(";"));
 }
 
 /// `reg query <key> /v <value>` 输出形如
 /// `    Path    REG_EXPAND_SZ    C:\Program Files\...`。
 /// 值里可能含空格，不能按空白切分：定位 `_SZ` 类型标记后取其后的整段。
-fn read_reg_value(key: &str, value: &str) -> Option<String> {
+/// discover（本机已装枚举）复用。
+pub(crate) fn read_reg_value(key: &str, value: &str) -> Option<String> {
     let out = std::process::Command::new("reg")
         .args(["query", key, "/v", value])
         .creation_flags_no_window()

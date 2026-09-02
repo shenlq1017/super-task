@@ -25,6 +25,7 @@ import {
   type TemplateSource,
   type ToolchainInstallOpts,
   type ToolchainProbeOut,
+  type ToolchainVersionsOut,
   type TaskfilePreviewOut,
   type WorkspaceOpenOut,
   type YamlSaveOut,
@@ -36,6 +37,8 @@ import {
   type DockerPsOut,
   type DockerImagesOut,
   type PortsInspectOut,
+  type EnvEffectiveOut,
+  type SpringConfigOut,
   type PortsSuggestOut,
   type PortsAssignOut,
   type SecretsStatusOut,
@@ -175,7 +178,13 @@ export const apiScriptCancel = (id: string) =>
 // Toolchain
 // ---------------------------------------------------------------------------
 
-export const apiToolchainProbe = () => invoke<ToolchainProbeOut>(cmd.TOOLCHAIN_PROBE, {});
+/** 工具链探测（后端会话内 TTL 缓存；refresh=true 强制重探，「重新探测」按钮用）。 */
+export const apiToolchainProbe = (refresh = false) =>
+  invoke<ToolchainProbeOut>(cmd.TOOLCHAIN_PROBE, { refresh });
+
+/** 每工具可选版本列表（后端白名单 ∪ mise ls-remote；/env 版本下拉数据源）。 */
+export const apiToolchainVersions = () =>
+  invoke<ToolchainVersionsOut>(cmd.TOOLCHAIN_VERSIONS, {});
 
 /** 安装缺失工具链（长操作，返回 operation_id；§13.1）。persist 需带 baseHash。 */
 export const apiToolchainInstall = (tool: string, opts: ToolchainInstallOpts = {}) =>
@@ -200,6 +209,14 @@ export const apiToolchainUpgrade = (tool: string, opts: ToolchainInstallOpts = {
 /** 1.2 §5–§10：端口 / secrets / 日志历史 / 指标 / profile / build。 */
 export const apiPortsInspect = (workspaceId: string, id: string, port?: number) =>
   invoke<PortsInspectOut>(cmd.PORTS_INSPECT, { workspaceId, id, ...(port != null ? { port } : {}) });
+
+/** env.effective：服务最近一次启动实际注入的生效环境快照。 */
+export const apiEnvEffective = (workspaceId: string, id: string) =>
+  invoke<EnvEffectiveOut>(cmd.ENV_EFFECTIVE, { workspaceId, id });
+
+/** spring.inspect：spring-boot 服务的项目自身配置静态解析（只读）。 */
+export const apiSpringInspect = (workspaceId: string, id: string) =>
+  invoke<SpringConfigOut>(cmd.SPRING_INSPECT, { workspaceId, id });
 
 export const apiPortsSuggest = (workspaceId: string, id: string) =>
   invoke<PortsSuggestOut>(cmd.PORTS_SUGGEST, { workspaceId, id });
@@ -230,6 +247,19 @@ export const apiSecretsDelete = (workspaceId: string, key: string) =>
 
 export const apiSecretsValidate = (workspaceId: string, id?: string) =>
   invoke<SecretsValidateOut>(cmd.SECRETS_VALIDATE, { workspaceId, id: id ?? null });
+
+export const apiLogsSearch = (
+  workspaceId: string,
+  query: string,
+  opts?: { source?: LogSource | null; caseSensitive?: boolean; limit?: number },
+) =>
+  invoke<OperationIdOut>(cmd.LOGS_SEARCH, {
+    workspaceId,
+    source: opts?.source ?? null,
+    query,
+    caseSensitive: opts?.caseSensitive ?? false,
+    limit: opts?.limit ?? null,
+  });
 
 export const apiLogsExport = (
   workspaceId: string,

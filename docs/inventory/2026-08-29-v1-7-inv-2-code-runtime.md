@@ -6,7 +6,7 @@
 
 ## 1. 模块一览（顶层目录实测）
 
-`crates/supertask-core/src/`：`appdata / cloud/ / discover / docker/ / engine / error / features / gateway/ / git / graph / health / ide / ipc/ (v12,v13,v15,v16) / launcher / lock / log/ (batch,file,ring,search) / merge / metrics / network / operation / pkg / ports / probe / proc/ (windows,unix) / profiles / runtime/ / sandbox / scan / secrets / spec/ (file,validate) / taskfile / template / toolchain/ (install,manifest,provider,resolver,runner)`。
+`crates/supertask-core/src/`：`appdata / cloud/ / discover / docker/ / engine / error / features / gateway/ / git / graph / health / ide / ipc/ (v12,v13,v15,v16) / launcher / lock / log/ (batch,file,ring,search) / merge / metrics / network / operation / pkg / ports / probe / proc/ (windows,unix) / profiles / runtime/ / sandbox / scan / secrets / spring / spec/ (file,validate) / taskfile / template / toolchain/ (discover,install,manifest,provider,resolver,runner,versions)`。
 
 另有独立 `crates/supertask-cloud-server/`：当前实测有 Cargo manifest、`lib.rs`、`main.rs`、`config.rs`、`auth.rs`、`entities.rs`、`state.rs`、`error.rs`、`http.rs`、`quota.rs`、`telemetry.rs`、`migrations/0001_init.sql` 和 `tests/api.rs`；已具备本地 HTTP router/API、healthz、配额/遥测和 in-process 集成测试。未知 type 仍受当前四类型校验限制；正式 HTTPS/运营和真机验收未完成。服务端事实与环境变量见 [docs/spec/cloud-server.md](../spec/cloud-server.md)。
 
@@ -16,8 +16,8 @@
 
 - `spec/file.rs:70-127` `ServiceSpec`：`pub kind: String`（`:72`）；其余 per-kind 字段全部平铺在同一个 struct（`module`、`build_tool`、`jvm_args`、`dir`、`package_manager`、`script`、`service`…），未知字段走 `#[serde(flatten)] extra: IndexMap<String, Value>`（`:126`）round-trip。
 - 含义：**新增 kind 不需要改 `ServiceSpec` 类型定义**；新 kind 的专有字段可以先进 flatten extra（或按需升 typed）。
-- `PackageManager` enum（npm/pnpm/yarn，`file.rs:133-139`）。
-- yaml.md §4.2 kind 表（规格真源）：`spring-boot`(1.0)、`node`(1.0)、`compose`(1.3) 可启动；**`python`(2.2)、`go`(2.2)、`generic`(1.x) 已预留但不可启动**；未知 kind → `KIND_UNSUPPORTED`，仍能打开文件。
+- `PackageManager` enum（npm/pnpm/yarn/bun，`file.rs`）。
+- yaml.md §4.2 kind 表（规格真源）：`spring-boot`、`node`、`compose`、`python`、`go`、`generic` 均已进入当前可启动链路；未知 kind → `KIND_UNSUPPORTED`，仍能打开文件。
 
 ### 2.2 kind 的字符串 match 散点（新增 kind 的必改处）
 
@@ -48,13 +48,14 @@ typed 字段（`ServiceSpec.service` + `DockerSpec`）→ 校验（validate.rs c
 
 ## 4. 工具链探测与安装（新语言要过的门）
 
-- `probe.rs:9-14` `ToolProbe { found, version, path }`；`probe.rs:16-29` `ToolchainProbe` **固定字段**：java/maven/gradle/node/npm/pnpm/yarn + `gateway`（1.6 扩展的先例：直接加字段 + `#[serde(default)]`）。
-- `probe.rs:36-71` 并行探测（每工具独立线程 + 4s 硬超时，坏工具报 not found 不阻塞 `app.load`）。
-- `probe.rs:74-89` `resolve_program`：PATH（Windows PATHEXT-aware）→ 平台已知目录兜底（Unix：homebrew/sdkman/nvm）→ `MissingTool` 错误（文案已指向「环境页一键安装」）。
-- `toolchain/mod.rs:21-28` `ToolKind` enum **固定六个**：Java/Maven/Node/Npm/Pnpm/Yarn（`parse` 按 name）。
+- `probe.rs:9-14` `ToolProbe { found, version, path }`；`probe.rs:16-32` `ToolchainProbe` **固定字段**：java/maven/gradle/node/npm/pnpm/yarn/bun/python/go + `gateway`（扩展字段使用 `#[serde(default)]`）。
+- `probe.rs:52-75,138-178`：`probe_bundle`/`probe_toolchain` 并行探测（每工具独立线程 + 4s 硬超时，坏工具报 not found 不阻塞 `app.load`）；Engine 侧 60 秒 TTL 缓存，显式 refresh 或安装成功后失效。
+- `probe.rs:200-224` `resolve_program_with_path`：服务专用 PATH 或进程 PATH（Windows PATHEXT-aware）→ 平台已知目录兜底（Unix：homebrew/sdkman/nvm）→ `MissingTool` 错误；Windows PATH 会从 HKCU/HKLM 的最新值刷新，覆盖“应用启动后安装 Bun”等场景。
+- `toolchain/mod.rs` `ToolKind` enum 含 Java/Maven/Node/Npm/Pnpm/Yarn/Bun/Python/Go（`parse` 按 name）。Bun 是 Node 包管理器，也可被 Maven 前端构建插件直接调用。
 - `toolchain/manifest.rs`：`mise_tool_name`（`:25`）/ `winget_id`（`:56`）**硬编码映射表**，例 `Java "21" → EclipseAdoptium.Temurin.21.JDK`；未收录版本 → `ToolchainVersionInvalid`。
 - `toolchain/install.rs`：安装链 = `mise --version` 探测 → `mise install <tool>@<ver>` 优先 → winget 兜底（内部刷新进程 PATH）→ **装完立即重新解析**（「安装成功 ≠ 工具可用」，`:70`）。测试全走 FakeRunner，不碰真机。
-- 新增 Python/Go 需要动的清单（事实层）：`ToolchainProbe` 字段、`ToolKind`、`mise_tool_name`/`winget_id` 两张映射表、probe_one 线程组、`/env` 页 UI。mise 原生支持 `python`/`go`；winget 有 `Python.Python.*` / `GoLang.Go`（外部事实，未在代码中出现）。
+- Python/Go/Bun 已进入同一探测/安装/版本列表链路；Bun 的 `package_manager` 可由 `bun.lock` / `packageManager` 扫描得到，Node 启动计划使用 `bun run`。
+- `toolchain/discover.rs` 只读枚举 Java/Node/Maven 已装版本；`launcher.rs:621-760` 将服务级 `SUPERTASK_JAVA_VERSION` 等选择置于子进程 PATH/JAVA_HOME，`.java-version` 是无 YAML pin 时的 Java 回退；Maven reactor 的 install 前置与 run 阶段共用该环境。
 
 ## 5. 扫描识别（scan.rs，1453 行）
 
@@ -63,7 +64,7 @@ typed 字段（`ServiceSpec.service` + `DockerSpec`）→ 校验（validate.rs c
   - `build.gradle` / `build.gradle.kts`（1.4，`:665-669`）；
   - `package.json`：BFS 收集（浅层优先，`:540,595-600`），`workspaces` 字段的 monorepo 管理文件自身不算服务（`:525`）→ node 服务（`:577`）；
   - `compose.yaml|yml`、`docker-compose.yaml|yml`（`:19-21`）→ compose sidecar 服务（`:840`）。
-- **没有** pyproject.toml / requirements.txt / setup.py / go.mod / go.work 的任何识别。
+- 已识别 `pyproject.toml` / `requirements.txt` / `setup.py` / `go.mod` / `go.work`；Node 扫描同时识别 `bun.lock` / `bun.lockb` 和 `packageManager: bun`。
 - 深度限制：>4 层给出人话警告（`:148`）。
 - 无 yaml 时的草稿生成、打开已有 yaml 的 merge 向导（1.1）都基于此。
 

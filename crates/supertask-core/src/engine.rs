@@ -34,6 +34,8 @@ const COMPOSE_UP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const COMPOSE_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// ps / images 类只读命令超时（§4.2）。
 const COMPOSE_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+/// /env 深化 D1：工具链探测缓存窗口。窗口外自动重探，覆盖"用户在应用外装了新工具"。
+const TOOLCHAIN_PROBE_TTL: Duration = Duration::from_secs(60);
 
 /// compose 服务的运行期上下文：由哪个 compose 文件 / 项目启动。
 /// `started_by_engine` 只在本引擎执行过 up 后为 true——退出清场只处理这些
@@ -190,6 +192,16 @@ struct Slot {
     exit_reason: Option<&'static str>,
     /// 1.3：compose 服务的容器运行时上下文（kind != compose 时为 None）
     compose: Option<ComposeInfo>,
+    /// 最近一次启动实际注入的生效环境快照（`env.effective`；未启动/ compose 为 None）。
+    /// 带采集时间并持久化到 `.supertask/env-snapshots.json`，应用重启/重开工作区后仍可回看。
+    env_snapshot: Option<EnvSnapshot>,
+}
+
+/// `env.effective` 快照的可持久化形态：采集时间 + 注入键值。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnvSnapshot {
+    pub captured_at_ms: u64,
+    pub entries: Vec<crate::ipc::EnvEffectiveEntry>,
 }
 
 struct ScriptSlot {
@@ -293,6 +305,10 @@ pub struct Engine {
     holder: crate::lock::LockHolder,
     /// 1.7 §7：app 级网络默认（代理/镜像），壳层与 CLI 在 open 前注入；缺省 None=全走 workspace 段
     app_network: Mutex<Option<crate::appdata::AppNetwork>>,
+    /// /env 深化 D1：工具链探测会话缓存（TTL；refresh 强制；install/upgrade 成功后失效）
+    toolchain_probe_cache: Mutex<Option<(Instant, crate::probe::ToolchainProbeBundle)>>,
+    /// 探测函数接缝：生产 `probe::probe_bundle`；测试注入假实现验证缓存语义。
+    toolchain_probe_fn: Mutex<Arc<dyn Fn() -> crate::probe::ToolchainProbeBundle + Send + Sync>>,
 }
 
 impl Engine {
@@ -379,12 +395,49 @@ impl Engine {
             validator: Arc::new(crate::gateway::validate::ProcessValidateRunner),
             holder: crate::lock::LockHolder::Desktop,
             app_network: Mutex::new(None),
+            toolchain_probe_cache: Mutex::new(None),
+            toolchain_probe_fn: Mutex::new(Arc::new(crate::probe::probe_bundle)),
         }
     }
 
     /// 1.7 §7：壳层 / CLI 在 open 前注入 app 级网络默认（代理 + 镜像）。
     pub fn set_app_network(&self, net: crate::appdata::AppNetwork) {
         *self.app_network.lock().expect("app_network lock") = Some(net);
+    }
+
+    /// /env 深化 D1：工具链探测会话缓存。窗口内复用结果；`refresh=true`
+    /// 强制重探（「重新探测」按钮）；install/upgrade 成功后由
+    /// [`Engine::invalidate_toolchain_probe`] 立即失效。不要求已打开工作区。
+    pub fn toolchain_probe(&self, refresh: bool) -> crate::probe::ToolchainProbeBundle {
+        crate::toolchain::resolver::refresh_process_path();
+        let mut cache = self.toolchain_probe_cache.lock().expect("toolchain probe cache");
+        let fresh = cache
+            .as_ref()
+            .is_some_and(|(at, _)| !refresh && at.elapsed() < TOOLCHAIN_PROBE_TTL);
+        if !fresh {
+            let f = Arc::clone(&self.toolchain_probe_fn.lock().expect("toolchain probe fn"));
+            *cache = Some((Instant::now(), f()));
+        }
+        cache
+            .as_ref()
+            .expect("cache filled above")
+            .1
+            .clone()
+    }
+
+    /// 工具链状态可能已变（安装/升级成功）→ 丢弃缓存，下次访问重探。
+    pub fn invalidate_toolchain_probe(&self) {
+        *self.toolchain_probe_cache.lock().expect("toolchain probe cache") = None;
+    }
+
+    /// 测试接缝：替换探测函数（同时清缓存），用于验证缓存/失效语义而不真 spawn。
+    #[cfg(test)]
+    pub fn set_toolchain_probe_fn_for_test(
+        &self,
+        f: impl Fn() -> crate::probe::ToolchainProbeBundle + Send + Sync + 'static,
+    ) {
+        *self.toolchain_probe_fn.lock().expect("toolchain probe fn") = Arc::new(f);
+        self.invalidate_toolchain_probe();
     }
 
     pub fn open(&self, path: &Path) -> Result<(Vec<ParseWarning>, RuntimeSnapshot)> {
@@ -462,9 +515,12 @@ impl Engine {
                     artifact: None,
                     exit_reason: None,
                     compose: None,
+                    env_snapshot: None,
                 },
             );
         }
+        // 恢复上次会话留存的生效环境快照（排障连续性：重启后"生效环境"仍可见）
+        load_env_snapshots(&root, &mut slots);
         // 1.3 §2.4/§4.3：compose 引用打开时校验（service 存在 / 端口一致）。
         // Docker 不可用或解析失败 → 静默跳过，启动时再给出真实错误。
         warnings.extend(self.compose_open_warnings(&file, &root));
@@ -1045,7 +1101,8 @@ impl Engine {
     }
 
     pub fn run_script(&self, id: &str) -> Result<()> {
-        let (cmds, cwd, env, timeout) = {
+        crate::toolchain::resolver::refresh_process_path();
+        let (cmds, cwd, cwd_rel, mut env, timeout, root, toolchain) = {
             let mut g = self.inner.lock().expect("engine lock");
             require_ws(&g)?;
             if g.script
@@ -1075,6 +1132,9 @@ impl Engine {
             for (k, v) in &spec.env {
                 env.insert(k.clone(), v.clone());
             }
+            let cwd_rel = spec.cwd.clone().unwrap_or_else(|| ".".into());
+            let root = g.root.clone();
+            let toolchain = g.spec.toolchain.clone();
             let rel = log_file_rel("script", id);
             let abs = g.root.join(&rel);
             let lf = LogFile::open_with_files(
@@ -1096,8 +1156,27 @@ impl Engine {
                 last_error: None,
             });
             emit_runtime(&g);
-            (cmds, cwd, env, timeout)
+            (cmds, cwd, cwd_rel, env, timeout, root, toolchain)
         };
+        // Scripts are build entry points too. Apply the same project JDK
+        // selection as services so `mvn install` does not inherit the desktop
+        // process JDK (for example JDK 25 instead of a project's JDK 17).
+        if crate::launcher::project_java_version(&root, &cwd_rel).is_some()
+            || toolchain
+                .as_ref()
+                .and_then(|tc| tc.java.as_deref())
+                .is_some()
+        {
+            let installs = self.toolchain_probe(false).tools.installs;
+            crate::launcher::apply_java_version_env(
+                toolchain.as_ref(),
+                &IndexMap::new(),
+                &root,
+                &cwd_rel,
+                &installs,
+                &mut env,
+            );
+        }
         let inner = Arc::clone(&self.inner);
         let sid = id.to_string();
         thread::Builder::new()
@@ -1178,6 +1257,7 @@ impl Engine {
         let (
             run_spec,
             build_spec,
+            reactor_prep,
             root,
             health_spec,
             health_none,
@@ -1188,6 +1268,8 @@ impl Engine {
             is_jar,
             bt,
             module,
+            cwd,
+            env_snapshot,
         ) = {
             let g = self.inner.lock().expect("engine lock");
             let slot = g
@@ -1215,7 +1297,74 @@ impl Engine {
             let is_jar = eff_svc.kind == "spring-boot" && eff_svc.launch.as_deref() == Some("jar");
             // §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入 < 网络注入(最低)
             let app_net = self.app_network.lock().expect("app_network lock").clone();
-            let env = build_service_env(&eff_spec, id, &g.root, app_net.as_ref())?;
+            let (mut env, env_sources) = build_service_env(&eff_spec, id, &g.root, app_net.as_ref())?;
+            // P2：服务 env 的版本选择优先于工作区 toolchain，命中本机已装安装后
+            // 前插子进程 PATH +（java）JAVA_HOME。仅真机 spawner 且确有钉扎时探测。
+            if matches!(self.spawner, SpawnerKind::Real) {
+                let tc = eff_spec.toolchain.as_ref();
+                let has_pin = tc
+                    .map(|t| match eff_svc.kind.as_str() {
+                        "spring-boot" => {
+                            t.java.as_deref().is_some_and(|v| !v.trim().is_empty())
+                                || t.maven.as_deref().is_some_and(|v| !v.trim().is_empty())
+                        }
+                        "node" => t.node.as_deref().is_some_and(|v| !v.trim().is_empty()),
+                        "python" => t.python.as_deref().is_some_and(|v| !v.trim().is_empty()),
+                        "go" => t.go.as_deref().is_some_and(|v| !v.trim().is_empty()),
+                        _ => false,
+                    })
+                    .unwrap_or(false)
+                    || (eff_svc.kind == "spring-boot"
+                        && crate::launcher::project_java_version(
+                            &g.root,
+                            eff_svc.cwd.as_deref().unwrap_or("."),
+                        )
+                        .is_some())
+                    || eff_svc.env.iter().any(|(key, value)| {
+                        !value.trim().is_empty()
+                            && matches!(
+                                (eff_svc.kind.as_str(), key.as_str()),
+                                ("spring-boot", crate::launcher::SERVICE_JAVA_VERSION_ENV)
+                                    | ("spring-boot", crate::launcher::SERVICE_MAVEN_VERSION_ENV)
+                                    | ("node", crate::launcher::SERVICE_NODE_VERSION_ENV)
+                                    | ("python", crate::launcher::SERVICE_PYTHON_VERSION_ENV)
+                                    | ("go", crate::launcher::SERVICE_GO_VERSION_ENV)
+                            )
+                    });
+                if has_pin {
+                    let installs = self.toolchain_probe(false).tools.installs;
+                    if eff_svc.kind == "spring-boot" {
+                        crate::launcher::apply_java_version_env(
+                            tc,
+                            &eff_svc.env,
+                            &g.root,
+                            eff_svc.cwd.as_deref().unwrap_or("."),
+                            &installs,
+                            &mut env,
+                        );
+                    } else {
+                        crate::launcher::apply_pinned_version_env(
+                            tc,
+                            &eff_svc.env,
+                            &eff_svc.kind,
+                            &installs,
+                            &mut env,
+                        );
+                    }
+                    if eff_svc.kind == "spring-boot"
+                        && (tc.and_then(|t| t.maven.as_deref()).is_some_and(|v| !v.trim().is_empty())
+                            || eff_svc.env.get(crate::launcher::SERVICE_MAVEN_VERSION_ENV).is_some_and(|v| !v.trim().is_empty()))
+                    {
+                        crate::launcher::apply_pinned_version_env(
+                            tc,
+                            &eff_svc.env,
+                            "maven",
+                            &installs,
+                            &mut env,
+                        );
+                    }
+                }
+            }
             // 1.4 §5.1：build_tool 解析（显式优先，缺省按构建文件探测）。
             // 测试 spawner 无真实 fs 上下文：只认显式字段，缺省按 maven。
             let real = matches!(self.spawner, SpawnerKind::Real);
@@ -1230,13 +1379,13 @@ impl Engine {
             } else {
                 crate::launcher::BuildTool::Maven
             };
-            let (planned, build_spec) = if is_jar {
+            let (planned, build_spec, reactor_prep) = if is_jar {
                 let build = crate::launcher::plan_jar_build_in(&eff_svc, env.clone(), plan_root)?;
                 let run = crate::launcher::plan_jar_run(&eff_svc, env);
-                (run, Some(build))
+                (run, Some(build), None)
             } else {
                 let mut planned = crate::launcher::plan_service_in(&eff_spec, id, plan_root)?;
-                planned.env = env;
+                planned.env = env.clone();
                 // 1.7 §5：显式 `toolchain.manager: mise` 时合并 mise 工具的 PATH env_delta
                 if matches!(self.spawner, SpawnerKind::Real) {
                     crate::launcher::apply_pinned_mise_env(
@@ -1246,7 +1395,21 @@ impl Engine {
                         &mut planned.env,
                     );
                 }
-                (planned, None)
+                let reactor_prep = plan_root.and_then(|r| {
+                    if eff_svc.kind == "spring-boot"
+                        && eff_svc.launch.as_deref().unwrap_or("run") == "run"
+                        && bt == crate::launcher::BuildTool::Maven
+                    {
+                        crate::launcher::plan_maven_reactor_prep_install_in(
+                            &eff_svc,
+                            env.clone(),
+                            r,
+                        )
+                    } else {
+                        None
+                    }
+                });
+                (planned, None, reactor_prep)
             };
             let health_spec = eff_svc.health.clone();
             let health_none = health_spec
@@ -1257,11 +1420,29 @@ impl Engine {
                 crate::spec::PackageManager::Npm => "npm",
                 crate::spec::PackageManager::Pnpm => "pnpm",
                 crate::spec::PackageManager::Yarn => "yarn",
+                crate::spec::PackageManager::Bun => "bun",
             });
             let module = eff_svc.module.clone().unwrap_or_else(|| ".".into());
+            let cwd = eff_svc.cwd.clone().unwrap_or_else(|| ".".into());
+            // 生效环境快照：本次启动真正注入 planned.env 的键值 + 来源层
+            // （mise PATH 增量不在 env_sources 里 → 归 toolchain）。
+            let env_snapshot: Vec<crate::ipc::EnvEffectiveEntry> = planned
+                .env
+                .iter()
+                .map(|(k, v)| crate::ipc::EnvEffectiveEntry {
+                    key: k.clone(),
+                    value: v.clone(),
+                    source: env_sources
+                        .get(k)
+                        .copied()
+                        .unwrap_or("toolchain")
+                        .to_string(),
+                })
+                .collect();
             (
                 planned,
                 build_spec,
+                reactor_prep,
                 g.root.clone(),
                 health_spec,
                 health_none,
@@ -1272,6 +1453,8 @@ impl Engine {
                 is_jar,
                 bt,
                 module,
+                cwd,
+                env_snapshot,
             )
         };
 
@@ -1298,6 +1481,37 @@ impl Engine {
                         svc_grace,
                         bt,
                         spawner,
+                        env_snapshot,
+                    );
+                    if let Err(e) = r {
+                        jar_flow_fail(&inner, &id2, e);
+                    }
+                });
+            return Ok(());
+        }
+
+        if let Some(prep_spec) = reactor_prep {
+            let inner = Arc::clone(&self.inner);
+            let id2 = id.to_string();
+            let spawner = self.spawner;
+            let _ = thread::Builder::new()
+                .name(format!("st-reactor-{id}"))
+                .spawn(move || {
+                    let r = maven_reactor_run_flow(
+                        inner.clone(),
+                        &id2,
+                        prep_spec,
+                        run_spec,
+                        root,
+                        health_spec,
+                        health_none,
+                        port,
+                        kind,
+                        pkg,
+                        svc_grace,
+                        bt,
+                        spawner,
+                        env_snapshot,
                     );
                     if let Err(e) = r {
                         jar_flow_fail(&inner, &id2, e);
@@ -1307,7 +1521,13 @@ impl Engine {
         }
 
         if matches!(self.spawner, SpawnerKind::Real) {
-            probe::require_tools_for_kind(&kind, pkg, Some(bt.as_str()), &run_spec.program)?;
+            probe::require_tools_for_kind_with_path(
+                &kind,
+                pkg,
+                Some(bt.as_str()),
+                &run_spec.program,
+                run_spec.env.get("PATH").map(String::as_str),
+            )?;
         }
         // 1.4 §5.1：gradle 服务 wrapper 优先（root/module gradlew[.bat] → PATH gradle），
         // 都无 → GRADLE_WRAPPER_MISSING；测试 spawner 跳过 fs 解析。
@@ -1315,6 +1535,7 @@ impl Engine {
         if bt == crate::launcher::BuildTool::Gradle && matches!(self.spawner, SpawnerKind::Real) {
             let (program, args, warns) = crate::launcher::resolve_gradle_launcher(
                 &root,
+                &cwd,
                 &module,
                 &run_spec.program,
                 &run_spec.args,
@@ -1347,6 +1568,7 @@ impl Engine {
             svc_grace,
             Some(bt.as_str()),
             self.spawner,
+            env_snapshot,
         )
     }
 
@@ -1584,18 +1806,66 @@ impl Engine {
 
     // ---- 运行页终端（ipc.md §10.15）：cwd + 环境链（PTY 会话由壳层托管）----
 
+    /// `env.effective`：最近一次启动实际注入的环境快照（引擎自报，非读进程内存）。
+    /// 快照持久化在 `.supertask/env-snapshots.json`，重启/重开工作区后可回看。
+    /// 从未本地启动过（或 compose 服务）→ entries 空、captured_at_ms None。
+    pub fn env_effective(&self, id: &str) -> Result<crate::ipc::EnvEffectiveOutput> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let slot = g
+            .slots
+            .get(id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+        Ok(crate::ipc::EnvEffectiveOutput {
+            id: id.to_string(),
+            captured_at_ms: slot.env_snapshot.as_ref().map(|s| s.captured_at_ms).filter(|t| *t > 0),
+            entries: slot.env_snapshot.as_ref().map(|s| s.entries.clone()).unwrap_or_default(),
+        })
+    }
+
+    /// `spring.inspect`：静态解析 spring-boot 服务的项目自身配置
+    /// （`src/main/resources/application*.{yml,yaml,properties}`）。
+    /// 搜索顺序与 launch 一致取目录链：cwd → module → 根；非 spring-boot 返回空结果。
+    pub fn spring_inspect(&self, id: &str) -> Result<crate::spring::SpringConfigOutput> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let svc = g
+            .spec
+            .services
+            .get(id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+        if svc.kind != "spring-boot" {
+            return Ok(crate::spring::SpringConfigOutput {
+                id: id.to_string(),
+                server_port: None,
+                entries: Vec::new(),
+                warnings: Vec::new(),
+            });
+        }
+        let mut dirs: Vec<String> = Vec::new();
+        for d in [svc.cwd.as_deref(), svc.module.as_deref(), Some(".")] {
+            if let Some(d) = d {
+                if !dirs.iter().any(|seen| seen == d) {
+                    dirs.push(d.to_string());
+                }
+            }
+        }
+        Ok(crate::spring::inspect(id, &g.root, &dirs))
+    }
+
     /// 终端目标目录与环境。service_id 缺省 = 工作区根 + 工作区环境链；
     /// 指定服务 = 服务 cwd（与启动一致，复用 plan cwd_rel 解析）+ 服务环境链
     /// （§6.3 环境链 + 1.7 §7 镜像/代理注入，注入最低优先级）。
     pub fn term_target(&self, service_id: Option<&str>) -> Result<crate::term::TermTarget> {
         let g = self.inner.lock().expect("engine lock");
         require_ws(&g)?;
+        crate::toolchain::resolver::refresh_process_path();
         let app_net = self.app_network.lock().expect("app_network lock").clone();
         let root = g.root.clone();
-        let env = match service_id {
+        let mut env = match service_id {
             Some(id) => {
                 let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
-                build_service_env(&eff_spec, id, &root, app_net.as_ref())?
+                build_service_env(&eff_spec, id, &root, app_net.as_ref())?.0
             }
             None => {
                 let (file_env, _warnings) =
@@ -1609,9 +1879,60 @@ impl Engine {
                 env
             }
         };
+        if let Some(id) = service_id {
+            let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
+            let svc = eff_spec
+                .services
+                .get(id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+            let installs = self.toolchain_probe(false).tools.installs;
+            if svc.kind == "spring-boot" {
+                crate::launcher::apply_java_version_env(
+                    eff_spec.toolchain.as_ref(),
+                    &svc.env,
+                    &root,
+                    svc.cwd.as_deref().unwrap_or("."),
+                    &installs,
+                    &mut env,
+                );
+                if eff_spec
+                    .toolchain
+                    .as_ref()
+                    .and_then(|tc| tc.maven.as_deref())
+                    .is_some_and(|v| !v.trim().is_empty())
+                    || svc
+                        .env
+                        .get(crate::launcher::SERVICE_MAVEN_VERSION_ENV)
+                        .is_some_and(|v| !v.trim().is_empty())
+                {
+                    crate::launcher::apply_pinned_version_env(
+                        eff_spec.toolchain.as_ref(),
+                        &svc.env,
+                        "maven",
+                        &installs,
+                        &mut env,
+                    );
+                }
+            } else {
+                crate::launcher::apply_pinned_version_env(
+                    eff_spec.toolchain.as_ref(),
+                    &svc.env,
+                    &svc.kind,
+                    &installs,
+                    &mut env,
+                );
+            }
+            crate::launcher::apply_pinned_mise_env(
+                eff_spec.toolchain.as_ref(),
+                &svc.kind,
+                &root,
+                &mut env,
+            );
+        }
         let cwd = match service_id {
             Some(id) => {
-                let run_spec = crate::launcher::plan_service_in(&g.spec, id, Some(&root))?;
+                let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
+                let run_spec = crate::launcher::plan_service_in(&eff_spec, id, Some(&root))?;
                 resolve_cwd(&root, &run_spec.cwd_rel)?
             }
             None => root.clone(),
@@ -1699,14 +2020,48 @@ impl Engine {
             }
             let bt = crate::launcher::resolve_build_tool(&g.root, &eff_svc)?;
             let app_net = self.app_network.lock().expect("app_network lock").clone();
-            let env = build_service_env(&eff_spec, id, &g.root, app_net.as_ref())?;
+            let (mut env, _) = build_service_env(&eff_spec, id, &g.root, app_net.as_ref())?;
+            let installs = self.toolchain_probe(false).tools.installs;
+            crate::launcher::apply_java_version_env(
+                eff_spec.toolchain.as_ref(),
+                &eff_svc.env,
+                &g.root,
+                eff_svc.cwd.as_deref().unwrap_or("."),
+                &installs,
+                &mut env,
+            );
+            if eff_spec
+                .toolchain
+                .as_ref()
+                .and_then(|tc| tc.maven.as_deref())
+                .is_some_and(|v| !v.trim().is_empty())
+                || eff_svc
+                    .env
+                    .get(crate::launcher::SERVICE_MAVEN_VERSION_ENV)
+                    .is_some_and(|v| !v.trim().is_empty())
+            {
+                crate::launcher::apply_pinned_version_env(
+                    eff_spec.toolchain.as_ref(),
+                    &eff_svc.env,
+                    "maven",
+                    &installs,
+                    &mut env,
+                );
+            }
             (
                 crate::launcher::plan_jar_build_in(&eff_svc, env, Some(&g.root))?,
                 g.root.clone(),
                 bt,
             )
         };
-        jar_build_phase(Arc::clone(&self.inner), id, build_spec, &root, bt)
+        jar_build_phase(
+            Arc::clone(&self.inner),
+            id,
+            build_spec,
+            &root,
+            bt,
+            BuildPhaseKind::JarArtifact,
+        )
     }
 
     // -------------------------------------------------------------------
@@ -2715,6 +3070,7 @@ fn apply_spec_slots(g: &mut Inner, file: &SuperTaskFile) -> Result<()> {
                 artifact: None,
                 exit_reason: None,
                 compose: None,
+                env_snapshot: None,
             },
         );
     }
@@ -2726,6 +3082,39 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// `env.effective` 快照持久化文件（工作区级，非机密目录之外的敏感数据与 .env 同级）。
+fn env_snapshot_file(root: &Path) -> PathBuf {
+    root.join(".supertask").join("env-snapshots.json")
+}
+
+fn persist_env_snapshots(root: &Path, slots: &HashMap<String, Slot>) {
+    let mut map: std::collections::BTreeMap<String, EnvSnapshot> = Default::default();
+    for (id, s) in slots {
+        if let Some(snap) = &s.env_snapshot {
+            map.insert(id.clone(), snap.clone());
+        }
+    }
+    let Ok(text) = serde_json::to_string(&map) else { return };
+    let f = env_snapshot_file(root);
+    let Some(dir) = f.parent() else { return };
+    if fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let _ = fs::write(&f, text);
+}
+
+fn load_env_snapshots(root: &Path, slots: &mut HashMap<String, Slot>) {
+    let Ok(text) = fs::read_to_string(env_snapshot_file(root)) else { return };
+    let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, EnvSnapshot>>(&text) else {
+        return;
+    };
+    for (id, snap) in map {
+        if let Some(slot) = slots.get_mut(&id) {
+            slot.env_snapshot = Some(snap);
+        }
+    }
 }
 
 fn build_snapshot(g: &Inner) -> RuntimeSnapshot {
@@ -2795,7 +3184,10 @@ fn spawn_real(
     planned: &CommandSpec,
     cwd: &Path,
 ) -> Result<(Child, Arc<dyn crate::proc::ProcessTree>)> {
-    let program = probe::resolve_program(&planned.program)?;
+    let program = probe::resolve_program_with_path(
+        &planned.program,
+        planned.env.get("PATH").map(std::ffi::OsStr::new),
+    )?;
     let mut cmd = Command::new(&program);
     cmd.args(&planned.args)
         .current_dir(cwd)
@@ -3112,34 +3504,51 @@ fn run_script_cmds(
 
 /// §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入。
 /// `eff_spec` 已是 overlay 后的文件（profiles::overlay_spec）。
-fn build_service_env(
+/// 同时返回每个键的最终来源层（后者覆盖前者，同键取最后写入方）：
+/// workspace | env_file | service | port | network（键不在返回 env 里时无条目）。
+    fn build_service_env(
     eff_spec: &SuperTaskFile,
     id: &str,
     root: &Path,
     app_network: Option<&crate::appdata::AppNetwork>,
-) -> Result<IndexMap<String, String>> {
+) -> Result<(
+    IndexMap<String, String>,
+    IndexMap<String, &'static str>,
+)> {
+    // Keep long-lived desktop processes in sync with PATH changes made by
+    // winget or another installer after SuperTask started.
+    crate::toolchain::resolver::refresh_process_path();
     let svc = eff_spec
         .services
         .get(id)
         .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
     let (file_env, _warnings) = crate::secrets::load_file_layers(eff_spec, root, Some(id))?;
     let mut env = eff_spec.env.clone();
+    let mut sources: IndexMap<String, &'static str> =
+        env.keys().map(|k| (k.clone(), "workspace")).collect();
     for (k, v) in &file_env {
         env.insert(k.clone(), v.clone());
+        sources.insert(k.clone(), "env_file");
     }
     for (k, v) in &svc.env {
         env.insert(k.clone(), v.clone());
+        sources.insert(k.clone(), "service");
     }
     if let Some(p) = svc.port {
         if let Some(key) = crate::ports::port_env_key(&svc.kind) {
             env.entry(key.to_string()).or_insert_with(|| p.to_string());
+            sources.insert(key.to_string(), "port");
         }
     }
     // 1.7 §7：镜像/代理注入，最低优先级（已存在的键不覆盖，显式 env 永远赢）。
     // resolve 失败（如 custom 代理缺 URL）随启动硬失败；settings.xml 写失败静默跳过注入。
     let eff_net = crate::network::resolve(eff_spec.network.as_ref(), app_network)?;
     let (_, _inject_warns) = crate::network::inject_env(&eff_net, root, &mut env);
-    Ok(env)
+    // inject_env 只补缺失键 → 差集即它实际注入的键
+    for k in env.keys() {
+        sources.entry(k.clone()).or_insert("network");
+    }
+    Ok((env, sources))
 }
 
 fn resolve_cwd(root: &Path, cwd_rel: &str) -> Result<PathBuf> {
@@ -3172,9 +3581,16 @@ fn spawn_core(
     svc_grace: u64,
     build_tool: Option<&str>,
     spawner: SpawnerKind,
+    env_snapshot: Vec<crate::ipc::EnvEffectiveEntry>,
 ) -> Result<()> {
     if matches!(spawner, SpawnerKind::Real) {
-        probe::require_tools_for_kind(&kind, pkg, build_tool, &planned.program)?;
+        probe::require_tools_for_kind_with_path(
+            &kind,
+            pkg,
+            build_tool,
+            &planned.program,
+            planned.env.get("PATH").map(String::as_str),
+        )?;
     }
     if !cwd.is_dir() {
         return Err(Error::new(
@@ -3210,12 +3626,18 @@ fn spawn_core(
         slot.started_at_ms = Some(now_ms());
         slot.last_error = None;
         slot.exit_reason = None;
+        slot.env_snapshot = Some(EnvSnapshot {
+            captured_at_ms: slot.started_at_ms.unwrap_or(0),
+            entries: env_snapshot,
+        });
         match apply(slot.state, RtEvent::Spawned { health_none }) {
             Ok(s) => slot.state = s,
             Err(e) => {
                 slot.last_error = Some(e.to_string());
             }
         }
+        // 诊断辅助数据：落盘失败不阻断启动，静默降级为仅内存态
+        persist_env_snapshots(&g.root, &g.slots);
         emit_runtime(&g);
     }
 
@@ -3256,6 +3678,61 @@ fn spawn_core(
     Ok(())
 }
 
+/// 多模块 Maven reactor：`install -pl -am`（Building）→ `spring-boot:run`（无 `-am`）。
+#[allow(clippy::too_many_arguments)]
+fn maven_reactor_run_flow(
+    inner: Arc<Mutex<Inner>>,
+    id: &str,
+    prep_spec: CommandSpec,
+    run_spec: CommandSpec,
+    root: PathBuf,
+    health_spec: Option<crate::spec::HealthSpec>,
+    health_none: bool,
+    port: Option<u16>,
+    kind: String,
+    pkg: Option<&str>,
+    grace: u64,
+    bt: crate::launcher::BuildTool,
+    spawner: SpawnerKind,
+    env_snapshot: Vec<crate::ipc::EnvEffectiveEntry>,
+) -> Result<()> {
+    reactor_prep_phase(inner.clone(), id, prep_spec, &root, bt)?;
+    let cwd = resolve_cwd(&root, &run_spec.cwd_rel)?;
+    spawn_core(
+        inner,
+        id.to_string(),
+        run_spec,
+        cwd,
+        health_spec,
+        health_none,
+        port,
+        kind,
+        pkg,
+        grace,
+        Some(bt.as_str()),
+        spawner,
+        env_snapshot,
+    )
+}
+
+/// reactor 上游模块 install（Building）；成功不落 artifact，转 Stopped 后由 run 接续。
+fn reactor_prep_phase(
+    inner: Arc<Mutex<Inner>>,
+    id: &str,
+    build_spec: CommandSpec,
+    root: &Path,
+    bt: crate::launcher::BuildTool,
+) -> Result<()> {
+    let _ = jar_build_phase(inner, id, build_spec, root, bt, BuildPhaseKind::ReactorPrep)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildPhaseKind {
+    JarArtifact,
+    ReactorPrep,
+}
+
 /// 1.2 §11 launch: jar 编排：构建（若无 artifact）→ java -jar。1.4 §5.3：gradle 走
 /// bootJar，artifact 识别在 module/build/libs。
 #[allow(clippy::too_many_arguments)]
@@ -3273,6 +3750,7 @@ fn jar_flow(
     grace: u64,
     bt: crate::launcher::BuildTool,
     spawner: SpawnerKind,
+    env_snapshot: Vec<crate::ipc::EnvEffectiveEntry>,
 ) -> Result<()> {
     let artifact = {
         let have = inner
@@ -3283,7 +3761,14 @@ fn jar_flow(
             .and_then(|s| s.artifact.clone());
         match have {
             Some(a) => a,
-            None => jar_build_phase(inner.clone(), id, build_spec, &root, bt)?,
+            None => jar_build_phase(
+                inner.clone(),
+                id,
+                build_spec,
+                &root,
+                bt,
+                BuildPhaseKind::JarArtifact,
+            )?,
         }
     };
     // args 形如 ["-jar", ...extra_args]；artifact 插在 "-jar" 之后
@@ -3304,6 +3789,7 @@ fn jar_flow(
         grace,
         Some(bt.as_str()),
         spawner,
+        env_snapshot,
     )
 }
 
@@ -3322,16 +3808,17 @@ fn jar_flow_fail(inner: &Arc<Mutex<Inner>>, id: &str, e: crate::error::Error) {
     }
 }
 
-/// package 阶段：Building 状态 + 输出进服务日志；成功解析 artifact。
-/// 1.4 §5.3：gradle 服务走 bootJar（wrapper 优先），building 阶段标注构建工具。
+/// package / reactor-prep 阶段：Building 状态 + 输出进服务日志。
+/// `ReactorPrep` 成功不落 artifact；`JarArtifact` 解析 jar 路径。
 fn jar_build_phase(
     inner: Arc<Mutex<Inner>>,
     id: &str,
     mut build_spec: CommandSpec,
     root: &Path,
     bt: crate::launcher::BuildTool,
+    phase: BuildPhaseKind,
 ) -> Result<PathBuf> {
-    let (module, cancel) = {
+    let (module, cwd, cancel) = {
         let g = inner.lock().expect("engine lock");
         let slot = g
             .slots
@@ -3343,7 +3830,13 @@ fn jar_build_phase(
             .get(id)
             .and_then(|s| s.module.clone())
             .unwrap_or_else(|| ".".to_string());
-        (module, slot.cancel.clone())
+        let cwd = g
+            .spec
+            .services
+            .get(id)
+            .and_then(|s| s.cwd.clone())
+            .unwrap_or_else(|| ".".to_string());
+        (module, cwd, slot.cancel.clone())
     };
     {
         let mut g = inner.lock().expect("engine lock");
@@ -3358,15 +3851,16 @@ fn jar_build_phase(
         id: id.to_string(),
     };
     let is_gradle = bt == crate::launcher::BuildTool::Gradle;
-    let stage_label = if is_gradle {
-        "gradle bootJar"
-    } else {
-        "mvn package"
+    let stage_label = match (phase, is_gradle) {
+        (BuildPhaseKind::ReactorPrep, _) => "mvn reactor install",
+        (BuildPhaseKind::JarArtifact, true) => "gradle bootJar",
+        (BuildPhaseKind::JarArtifact, false) => "mvn package",
     };
-    if is_gradle {
+    if is_gradle && phase == BuildPhaseKind::JarArtifact {
         // §5.1 wrapper 优先；都无 → GRADLE_WRAPPER_MISSING（building 失败收场）
         let (program, args, warns) = crate::launcher::resolve_gradle_launcher(
             root,
+            &cwd,
             &module,
             &build_spec.program,
             &build_spec.args,
@@ -3461,16 +3955,18 @@ fn jar_build_phase(
             format!("{stage_label} 退出码 {code}：已保留构建日志，服务未启动"),
         ));
     }
-    let artifact = if is_gradle {
-        select_gradle_artifact(root, &module)?
-    } else {
-        select_jar_artifact(root, &module)?
+    let artifact = match phase {
+        BuildPhaseKind::ReactorPrep => PathBuf::new(),
+        BuildPhaseKind::JarArtifact if is_gradle => select_gradle_artifact(root, &module)?,
+        BuildPhaseKind::JarArtifact => select_jar_artifact(root, &module)?,
     };
     {
         let mut g = inner.lock().expect("engine lock");
         if let Some(slot) = g.slots.get_mut(id) {
             slot.state = apply(slot.state, RtEvent::BuildFinished { ok: true })?;
-            slot.artifact = Some(artifact.clone());
+            if phase == BuildPhaseKind::JarArtifact {
+                slot.artifact = Some(artifact.clone());
+            }
             slot.pid = None;
             slot.job = None;
             emit_runtime(&g);
@@ -5133,6 +5629,33 @@ services:
     }
 
     #[test]
+    fn toolchain_probe_cache_refresh_and_invalidate() {
+        use std::sync::atomic::AtomicUsize;
+        let eng = Engine::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        eng.set_toolchain_probe_fn_for_test(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+            crate::probe::ToolchainProbeBundle {
+                tools: crate::probe::ToolchainProbe::default(),
+                managers: crate::toolchain::ManagerAvailability {
+                    mise: false,
+                    winget: true,
+                },
+            }
+        });
+        let p1 = eng.toolchain_probe(false);
+        let _ = eng.toolchain_probe(false);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "TTL 窗口内命中缓存不重探");
+        assert!(p1.managers.winget);
+        let _ = eng.toolchain_probe(true);
+        assert_eq!(count.load(Ordering::SeqCst), 2, "refresh=true 强制重探");
+        eng.invalidate_toolchain_probe();
+        let _ = eng.toolchain_probe(false);
+        assert_eq!(count.load(Ordering::SeqCst), 3, "install/upgrade 后失效重探");
+    }
+
+    #[test]
     fn docker_ps_and_images() {
         let root = compose_ws(redis_only_yaml(), "");
         let fake = Arc::new(FakeDockerRunner::new());
@@ -5208,6 +5731,73 @@ services:
         eng.stop_one("ping").unwrap();
         assert_eq!(eng.state_of("ping"), Some(RtState::Stopped));
         eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn env_effective_snapshot_sources_and_lifecycle() {
+        let root = write_ws_yaml(
+            r#"
+version: 1
+env:
+  WS_VAR: ws
+services:
+  ping:
+    kind: spring-boot
+    module: x
+    port: 18081
+    health:
+      type: none
+    grace_secs: 1
+    env:
+      SVC_VAR: svc
+      WS_VAR: svc-overrides
+"#,
+        );
+        let eng = Engine::ping_for_test();
+        eng.open(&root).unwrap();
+
+        // 未启动过 → 空快照（不报错，前端空态）
+        let empty = eng.env_effective("ping").unwrap();
+        assert!(empty.entries.is_empty() && empty.captured_at_ms.is_none());
+        assert_eq!(
+            eng.env_effective("nope").unwrap_err().code(),
+            ErrorCode::NotFound
+        );
+
+        eng.start_one("ping").unwrap();
+        assert!(
+            wait_eq(&eng, "ping", RtState::Running),
+            "{:?}",
+            eng.state_of("ping")
+        );
+        let snap = eng.env_effective("ping").unwrap();
+        assert!(snap.captured_at_ms.is_some(), "启动后应有采集时间");
+        let src = |k: &str| {
+            snap.entries
+                .iter()
+                .find(|e| e.key == k)
+                .map(|e| (e.value.as_str(), e.source.as_str()))
+        };
+        // 端口自动注入（service env 未写 SERVER_PORT）
+        assert_eq!(src("SERVER_PORT"), Some(("18081", "port")));
+        // 服务 env 覆盖工作区 env：来源取最后写入层
+        assert_eq!(src("SVC_VAR"), Some(("svc", "service")));
+        assert_eq!(src("WS_VAR"), Some(("svc-overrides", "service")));
+
+        eng.stop_one("ping").unwrap();
+        // 停止后保留最后一次快照（排障用）
+        let after = eng.env_effective("ping").unwrap();
+        assert!(!after.entries.is_empty());
+        // B：快照落盘 + 重开工作区可回看
+        assert!(root.join(".supertask").join("env-snapshots.json").is_file(), "启动后应持久化快照");
+        eng.close().unwrap();
+        let eng2 = Engine::ping_for_test();
+        eng2.open(&root).unwrap();
+        let restored = eng2.env_effective("ping").unwrap();
+        assert!(!restored.entries.is_empty(), "重开工作区后快照应恢复");
+        assert_eq!(restored.captured_at_ms, after.captured_at_ms);
+        eng2.close().unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 

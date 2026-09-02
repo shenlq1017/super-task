@@ -488,12 +488,24 @@ pub struct ToolchainProbeOut {
 }
 
 /// `toolchain.probe`：工具探测 + provider 元数据（§13.1）。
+/// /env 深化 D1：会话内 TTL 缓存（Engine 侧），`refresh=true` 强制重探。
 #[tauri::command(rename = "toolchain.probe")]
-pub fn toolchain_probe() -> ToolchainProbeOut {
+pub fn toolchain_probe(state: EngineState<'_>, refresh: Option<bool>) -> ToolchainProbeOut {
+    let b = state.toolchain_probe(refresh.unwrap_or(false));
     ToolchainProbeOut {
-        tools: supertask_core::probe::probe_toolchain(),
-        managers: supertask_core::toolchain::provider::detect_availability(
+        tools: b.tools,
+        managers: b.managers,
+    }
+}
+
+/// `toolchain.versions`：每工具可选版本列表（/env 深化 S1；winget 白名单 ∪ mise ls-remote 尾部）。
+#[tauri::command(rename = "toolchain.versions")]
+pub fn toolchain_versions(state: EngineState<'_>) -> supertask_core::ipc::ToolchainVersionsOutput {
+    let mise = state.toolchain_probe(false).managers.mise;
+    supertask_core::ipc::ToolchainVersionsOutput {
+        tools: supertask_core::toolchain::versions::all_versions(
             &supertask_core::toolchain::ProcessRunner,
+            mise,
         ),
     }
 }
@@ -599,6 +611,8 @@ fn toolchain_spawn_op(
         } else {
             toolchain::install(&toolchain::ProcessRunner, req)
         }?;
+        // D1 失效点：安装/升级成功后探测结果已过时
+        engine.invalidate_toolchain_probe();
         ctx.report(None, "安装完成，已解析工具路径");
         let mut result = serde_json::json!({
             "tool": outcome.tool.as_str(),
@@ -637,6 +651,7 @@ fn persist_toolchain_version(
         K::Npm => tc.package_manager = Some(PackageManager::Npm),
         K::Pnpm => tc.package_manager = Some(PackageManager::Pnpm),
         K::Yarn => tc.package_manager = Some(PackageManager::Yarn),
+        K::Bun => tc.package_manager = Some(PackageManager::Bun),
         // 1.7 §5：python/go 钉扎写回
         K::Python => tc.python = Some(version.to_string()),
         K::Go => tc.go = Some(version.to_string()),
@@ -1525,6 +1540,28 @@ pub fn ports_inspect(
     require_current_workspace(&state, &workspace_id)?;
     let items = state.ports_inspect(&id, port).map_err(ipc_err)?;
     Ok(supertask_core::ipc::PortsInspectOutput { items })
+}
+
+/// `env.effective`：服务最近一次启动实际注入的生效环境快照（引擎自报）。
+#[tauri::command(rename = "env.effective")]
+pub fn env_effective(
+    state: EngineState<'_>,
+    workspace_id: String,
+    id: String,
+) -> Result<supertask_core::ipc::EnvEffectiveOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.env_effective(&id).map_err(ipc_err)
+}
+
+/// `spring.inspect`：spring-boot 服务的项目自身配置静态解析（只读，不写回）。
+#[tauri::command(rename = "spring.inspect")]
+pub fn spring_inspect(
+    state: EngineState<'_>,
+    workspace_id: String,
+    id: String,
+) -> Result<supertask_core::spring::SpringConfigOutput, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.spring_inspect(&id).map_err(ipc_err)
 }
 
 /// `ports.suggest`：建议端口候选（§5.2）。

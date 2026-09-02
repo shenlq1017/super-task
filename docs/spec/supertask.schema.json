@@ -94,7 +94,7 @@
         "module": { "type": "string" },
         "jvm_args": { "type": "array", "items": { "type": "string" } },
         "dir": { "type": "string" },
-        "package_manager": { "type": "string", "enum": ["npm", "pnpm", "yarn"] },
+        "package_manager": { "type": "string", "enum": ["npm", "pnpm", "yarn", "bun"] },
         "script": { "type": "string" },
         "logging": { "$ref": "#/$defs/logging" }
       },

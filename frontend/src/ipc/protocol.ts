@@ -30,6 +30,8 @@ export const cmd = {
   TOOLCHAIN_PROBE: "toolchain.probe",
   TOOLCHAIN_INSTALL: "toolchain.install",
   TOOLCHAIN_UPGRADE: "toolchain.upgrade",
+  /** /env 深化 S1：每工具可选版本列表（后端白名单 ∪ mise ls-remote）。 */
+  TOOLCHAIN_VERSIONS: "toolchain.versions",
   PORTS_INSPECT: "ports.inspect",
   PORTS_SUGGEST: "ports.suggest",
   PORTS_ASSIGN: "ports.assign",
@@ -105,6 +107,10 @@ export const cmd = {
   TERM_WRITE: "term.write",
   TERM_RESIZE: "term.resize",
   TERM_CLOSE: "term.close",
+  // 运行页环境探测：启动时生效环境快照
+  ENV_EFFECTIVE: "env.effective",
+  // spring-boot 项目自身配置静态解析（application.yml/properties，只读）
+  SPRING_INSPECT: "spring.inspect",
   APP_IMPORT_RECENTS: "app.importRecents",
   APP_UPDATE_CHECK: "app.update.check",
   APP_UPDATE_INSTALL: "app.update.install",
@@ -153,6 +159,7 @@ export type ToolchainProbe = {
   npm: ToolProbe;
   pnpm: ToolProbe;
   yarn: ToolProbe;
+  bun: ToolProbe;
   /** 1.7 §5：python / go 探测（旧后端可能缺省）。 */
   python?: ToolProbe;
   go?: ToolProbe;
@@ -173,11 +180,29 @@ export type GatewayProbe = {
   apache: ToolProbe;
 };
 
-/** `toolchain.probe` 输出：原有六工具探测 + managers（§13.1）。 */
-export type ToolchainProbeOut = ToolchainProbe & {
-  managers: ManagerAvailability;
-  gateway?: GatewayProbe;
+/** P1：本机已装安装枚举项（java 注册表/目录扫描 + nvm 目录布局；只读探测）。 */
+export type DiscoveredInstall = {
+  tool: "java" | "node";
+  /** 裸版本号（java 来自 -version 解析；nvm 来自目录名）。 */
+  version: string;
+  /** 安装根目录（JDK home / nvm v* 目录）。 */
+  home: string;
+  source: "registry" | "directory" | "env_var" | "nvm_dir";
+  /** 当前 PATH / nvm symlink 指向的安装。 */
+  active: boolean;
 };
+
+/** `toolchain.probe` 输出：原有六工具探测 + managers（§13.1）。
+ * managers 可空：app.load 预填的初始探测只有工具项（/env 深化 D3，取代强转）。 */
+export type ToolchainProbeOut = ToolchainProbe & {
+  managers: ManagerAvailability | null;
+  gateway?: GatewayProbe;
+  /** P1：本机已装安装枚举（旧后端缺省）。 */
+  installs?: DiscoveredInstall[];
+};
+
+/** `toolchain.versions` 输出：每工具可选版本（默认版本 → 白名单 → mise 远端尾部）。 */
+export type ToolchainVersionsOut = { tools: Record<string, string[]> };
 
 /** `toolchain.install` / `toolchain.upgrade` 选项（§13.1：version/manager 缺省走后端默认）。 */
 export type ToolchainInstallOpts = {
@@ -199,7 +224,24 @@ export type PortInspection = {
 };
 
 export type PortsInspectOut = { items: PortInspection[] };
+
+/** env.effective：启动时生效环境快照（引擎自报注入的 overlay，不含继承的系统环境）。 */
+export type EnvEffectiveEntry = { key: string; value: string; source: string };
+export type EnvEffectiveOut = {
+  id: string;
+  captured_at_ms?: number | null;
+  entries: EnvEffectiveEntry[];
+};
 export type PortsSuggestOut = { candidates: number[] };
+
+/** spring.inspect：项目自身配置静态解析结果（同名键跨文件并存，各带来源文件）。 */
+export type SpringConfigEntry = { key: string; value: string; file: string; masked: boolean };
+export type SpringConfigOut = {
+  id: string;
+  server_port?: number | null;
+  entries: SpringConfigEntry[];
+  warnings: string[];
+};
 export type PortsAssignOut = {
   operation_id: string | null;
   spec: unknown;
@@ -332,7 +374,7 @@ export function isIpcError(v: unknown): v is IpcError {
 // ---------------------------------------------------------------------------
 
 export type HealthType = "none" | "tcp" | "http";
-export type PackageManager = "npm" | "pnpm" | "yarn";
+export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
 export type HealthSpec = {
   type: HealthType;
@@ -364,7 +406,8 @@ export type ServiceSpec = {
   grace_secs?: number | null;
   health?: HealthSpec | null;
   restart?: string | null;
-  extra_args: string[];
+  /** Empty arrays are omitted from the Rust IPC JSON payload. */
+  extra_args?: string[];
   cwd?: string | null;
   launch?: string | null;
   module?: string | null;
@@ -1045,5 +1088,3 @@ export type TermEventEnvelope = {
   ts_ms: number;
   payload: TermEventPayload;
 };
-
-

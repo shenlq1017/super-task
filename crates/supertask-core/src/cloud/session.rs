@@ -18,6 +18,16 @@ use super::{sha256_hex, LoginTokens};
 use crate::error::{Error, ErrorCode, Result};
 
 pub fn session_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        static TEST_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        return TEST_DIR
+            .get_or_init(|| {
+                std::env::temp_dir().join(format!("st-cloud-session-{}", std::process::id()))
+            })
+            .clone();
+    }
+    #[cfg(not(test))]
     crate::appdata::appdata_dir().join("cloud")
 }
 
@@ -91,7 +101,19 @@ fn atomic_write(path: &std::path::Path, text: &str) -> Result<()> {
     file.write_all(text.as_bytes())
         .and_then(|_| file.sync_all())
         .map_err(|e| Error::new(ErrorCode::Protocol, format!("临时文件写入失败: {e}")))?;
-    if let Err(rename_error) = replace_file(&tmp, path) {
+    // Windows cannot replace or move a file while this handle is still open.
+    // Explicitly close it before ReplaceFileW/MoveFileExW, including the
+    // overwrite path used when refreshing an existing session.
+    drop(file);
+    // A first write has no destination for ReplaceFileW to replace. Rust's
+    // rename is atomic for this same-volume move and avoids the Windows API
+    // error returned by trying ReplaceFileW/MoveFileExW on a missing target.
+    let replace_result = if path.exists() {
+        replace_file(&tmp, path)
+    } else {
+        fs::rename(&tmp, path)
+    };
+    if let Err(rename_error) = replace_result {
         let _ = fs::remove_file(&tmp);
         return Err(Error::new(
             ErrorCode::Protocol,
@@ -114,7 +136,6 @@ fn replace_file(tmp: &std::path::Path, path: &std::path::Path) -> std::io::Resul
     // exists; MoveFileExW handles the first write when it does not.
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
         fn ReplaceFileW(
             replaced: *const u16,
             replacement: *const u16,
@@ -124,7 +145,6 @@ fn replace_file(tmp: &std::path::Path, path: &std::path::Path) -> std::io::Resul
             reserved: *const std::ffi::c_void,
         ) -> i32;
     }
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     let old: Vec<u16> = tmp.as_os_str().encode_wide().chain(Some(0)).collect();
     let new: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let replaced = unsafe {
@@ -140,12 +160,7 @@ fn replace_file(tmp: &std::path::Path, path: &std::path::Path) -> std::io::Resul
     if replaced != 0 {
         return Ok(());
     }
-    let moved = unsafe { MoveFileExW(old.as_ptr(), new.as_ptr(), MOVEFILE_REPLACE_EXISTING) };
-    if moved != 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
+    Err(std::io::Error::last_os_error())
 }
 
 fn now_ms() -> u64 {

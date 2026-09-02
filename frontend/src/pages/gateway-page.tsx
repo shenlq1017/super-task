@@ -85,7 +85,7 @@ function StateChip({ state }: { state: RtState | null }) {
   const { t } = useTranslation();
   if (!state) return null;
   return (
-    <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold", GATEWAY_STATE_TINT[state])}>
+    <span className={cn("inline-flex h-5 items-center gap-1 rounded-full px-2 font-mono text-[10px] font-semibold leading-none", GATEWAY_STATE_TINT[state])}>
       <span className={cn("size-1.5 rounded-full", GATEWAY_STATE_DOT[state])} />
       {t(`pages.gateway.state_${state}`)}
     </span>

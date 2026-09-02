@@ -110,12 +110,12 @@ fn install_failure(
     )
 }
 
-/// `tool` 只接受规格 §13.1 的六个逻辑名。
+/// `tool` 只接受规格 §13.1 的逻辑名。
 pub fn parse_tool(name: &str) -> Result<ToolKind> {
     ToolKind::parse(name).ok_or_else(|| {
         Error::new(
             ErrorCode::SpecInvalid,
-            format!("tool 仅接受 java|maven|node|npm|pnpm|yarn，收到 {name:?}"),
+            format!("tool 仅接受 java|maven|node|npm|pnpm|yarn|bun|python|go，收到 {name:?}"),
         )
     })
 }

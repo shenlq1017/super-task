@@ -228,6 +228,7 @@ pub fn run_doctor(json: bool) -> Result<i32, supertask_core::Error> {
             ("npm", &toolchain.npm),
             ("pnpm", &toolchain.pnpm),
             ("yarn", &toolchain.yarn),
+            ("bun", &toolchain.bun),
             // 1.6：网关三引擎（只探测不代装）
             ("nginx", &toolchain.gateway.nginx),
             ("caddy", &toolchain.gateway.caddy),

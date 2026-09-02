@@ -1,23 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, Loader2, Pin, RefreshCw, XCircle, Wrench, ArrowUpCircle, Download } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Pin, RefreshCw, XCircle, Wrench, ArrowUpCircle, Download } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { useSession } from "../providers/session-provider";
 import { useWorkspace } from "../providers/workspace-provider";
 import { useYaml } from "@/providers/yaml-provider";
 import { useOperations } from "../providers/operation-provider";
 import { useToast } from "@/components/ui/toast";
 import { useUnsavedEntry } from "@/providers/unsaved-guard";
-import { apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade, apiYamlSaveForm } from "../ipc/api";
-import { IpcFailure, type ManagerAvailability, type NetworkSpec, type ToolProbe, type ToolchainProbeOut } from "../ipc/protocol";
+import { apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade, apiToolchainVersions, apiYamlSaveForm } from "../ipc/api";
+import { IpcFailure, type DiscoveredInstall, type ManagerAvailability, type NetworkSpec, type SuperTaskFile, type ToolProbe, type ToolchainProbeOut } from "../ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
 import { errorDisplayText } from "@/lib/error-messages";
 import { cn } from "@/lib/utils";
 
-type ToolKey = "java" | "maven" | "node" | "npm" | "pnpm" | "yarn" | "python" | "go";
+type ToolKey = "java" | "maven" | "node" | "npm" | "pnpm" | "yarn" | "bun" | "python" | "go";
 
 /** 客户端镜像后端 manifest 默认版本（§4.3 版本来源第 3 级）。 */
 const DEFAULT_VERSION: Record<ToolKey, string> = {
@@ -27,6 +26,7 @@ const DEFAULT_VERSION: Record<ToolKey, string> = {
   npm: "20",
   pnpm: "9",
   yarn: "1",
+  bun: "1",
   python: "3.12",
   go: "1.23",
 };
@@ -40,14 +40,23 @@ const CORE_TOOLS: { key: ToolKey; label: string; rec: string }[] = [
   { key: "go", label: "Go", rec: "1.23" },
 ];
 
-/** npm/pnpm/yarn 只在当前工作区有 node 服务时出现（§15.1）。 */
+/** npm/pnpm/yarn/bun 只在当前工作区有 node 服务时出现（§15.1）。 */
 const PKG_TOOLS: { key: ToolKey; label: string; recKey: string }[] = [
   { key: "npm", label: "npm", recKey: "withNode" },
   { key: "pnpm", label: "pnpm", recKey: "9" },
   { key: "yarn", label: "Yarn", recKey: "1" },
+  { key: "bun", label: "Bun", recKey: "1" },
 ];
 
 type PendingOp = { opId: string; verb: "install" | "upgrade" | "pin" };
+
+/** P1：安装来源徽标文案 key（与后端 InstallSource 序列化值一一对应）。 */
+const INSTALL_SOURCE_KEYS: Record<DiscoveredInstall["source"], string> = {
+  registry: "pages.env.srcRegistry",
+  directory: "pages.env.srcDirectory",
+  env_var: "pages.env.srcEnvVar",
+  nvm_dir: "pages.env.srcNvmDir",
+};
 
 export function EnvPage() {
   const { state: session } = useSession();
@@ -58,9 +67,11 @@ export function EnvPage() {
   const { t } = useTranslation();
 
   const [probe, setProbe] = useState<ToolchainProbeOut | null>(
-    session.app?.probe ? { ...session.app.probe, managers: null } as unknown as ToolchainProbeOut : null,
+    session.app?.probe ? { ...session.app.probe, managers: null } : null,
   );
   const [probing, setProbing] = useState(false);
+  /** S1：每工具可选版本（后端白名单 ∪ mise ls-remote）；拉取失败降级为仅默认版本。 */
+  const [versions, setVersions] = useState<Record<string, string[]> | null>(null);
   const [versionDraft, setVersionDraft] = useState<Partial<Record<ToolKey, string>>>({});
   const [managerPick, setManagerPick] = useState<"auto" | "mise" | "winget">("auto");
   const [pending, setPending] = useState<Partial<Record<ToolKey, PendingOp>>>({});
@@ -68,10 +79,11 @@ export function EnvPage() {
   pendingRef.current = pending;
   const handledOps = useRef(new Set<string>());
 
-  const refresh = async () => {
+  // D1：后端会话内 TTL 缓存——进页走缓存，手动「重新探测」才强制
+  const refresh = async (force = false) => {
     setProbing(true);
     try {
-      setProbe(await apiToolchainProbe());
+      setProbe(await apiToolchainProbe(force));
     } catch (e) {
       toast(e instanceof IpcFailure ? e.message : String(e), "err");
     } finally {
@@ -79,8 +91,17 @@ export function EnvPage() {
     }
   };
 
+  const loadVersions = async () => {
+    try {
+      setVersions((await apiToolchainVersions()).tools);
+    } catch {
+      // 锦上添花项：失败时下拉只给默认版本，不弹错误
+    }
+  };
+
   useEffect(() => {
     void refresh();
+    void loadVersions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -123,10 +144,31 @@ export function EnvPage() {
     // 1.7：python/go 钉扎（major.minor）
     if (key === "python") return wsTc.python ?? null;
     if (key === "go") return wsTc.go ?? null;
-    if (key === "npm" || key === "pnpm" || key === "yarn") {
+    if (key === "npm" || key === "pnpm" || key === "yarn" || key === "bun") {
       return wsTc.package_manager === key ? key : null;
     }
     return null;
+  };
+
+  /** P2：点击已装版本即选用——写 toolchain[node|java] 并持久化，启动时经 apply_pinned_version_env 解析。 */
+  const pinInstall = async (key: ToolKey, version: string) => {
+    const spec = ws.state.spec;
+    const hash = yaml.state.hash;
+    if (!spec || !ws.state.workspaceId || !hash) return; // canPin 前置
+    const field = key === "java" ? ("java" as const) : key === "node" ? ("node" as const) : null;
+    if (!field) return;
+    const next: SuperTaskFile = {
+      ...spec,
+      toolchain: { ...(spec.toolchain ?? {}), [field]: version },
+    };
+    try {
+      await apiYamlSaveForm(next, hash);
+      await yaml.actions.reload();
+      void refresh(); // active 标记可能随钉扎变化
+      toast(t("pages.env.pinInstalled", { version }), "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? errorDisplayText(e.code, e.message) : String(e), "err");
+    }
   };
 
   const startOp = async (key: ToolKey, verb: PendingOp["verb"]) => {
@@ -146,6 +188,13 @@ export function EnvPage() {
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel((e as IpcFailure).code) : String(e), "err");
     }
+  };
+
+  const versionOptionsFor = (key: ToolKey, required: string | null): string[] => {
+    const opts = [...(versions?.[key] ?? [])];
+    if (opts.length === 0) opts.push(DEFAULT_VERSION[key]);
+    if (required && !opts.includes(required)) opts.unshift(required);
+    return opts;
   };
 
   const tools = [...CORE_TOOLS, ...(needsPkg ? PKG_TOOLS : [])];
@@ -183,7 +232,9 @@ export function EnvPage() {
               key={tool.key}
               meta={tool}
               found={probe?.[tool.key] ?? null}
+              installs={(probe?.installs ?? []).filter((i) => i.tool === tool.key)}
               required={requiredVersion(tool.key)}
+              versionOptions={versionOptionsFor(tool.key, requiredVersion(tool.key))}
               defaultVersion={DEFAULT_VERSION[tool.key]}
               versionDraft={versionDraft[tool.key] ?? ""}
               onVersionDraft={(v) => setVersionDraft((prev) => ({ ...prev, [tool.key]: v }))}
@@ -193,6 +244,7 @@ export function EnvPage() {
               pending={pending[tool.key] ?? null}
               opState={pending[tool.key] ? ops.get(pending[tool.key]!.opId) : null}
               canPin={ws.state.workspaceId != null && yaml.state.hash !== ""}
+              onPinInstall={(v) => void pinInstall(tool.key, v)}
               onInstall={() => void startOp(tool.key, "install")}
               onUpgrade={() => void startOp(tool.key, "upgrade")}
               onPin={() => void startOp(tool.key, "pin")}
@@ -241,10 +293,13 @@ function NetworkCard() {
   const spec = ws.state.spec;
   const net = spec?.network ?? null;
   const [draft, setDraft] = useState<NetworkSpec>(() => net ?? {});
+  // no_proxy 是数组，文本态单独存草稿（逗号分隔），避免逐键输入被数组规整吃掉
+  const [noProxyText, setNoProxyText] = useState(() => (net?.proxy?.no_proxy ?? []).join(", "));
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setDraft(net ?? {});
+    setNoProxyText((net?.proxy?.no_proxy ?? []).join(", "));
   }, [ws.state.workspaceId, yaml.state.hash]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (patch: NetworkSpec) => setDraft((prev) => ({ ...prev, ...patch }));
@@ -253,7 +308,12 @@ function NetworkCard() {
     if (!spec || !ws.state.workspaceId) return false;
     setBusy(true);
     try {
-      await apiYamlSaveForm({ ...spec, network: draft }, yaml.state.hash);
+      const noProxy = noProxyText.split(",").map((s) => s.trim()).filter(Boolean);
+      const network: NetworkSpec = {
+        ...draft,
+        proxy: { ...(draft.proxy ?? {}), no_proxy: noProxy.length ? noProxy : undefined },
+      };
+      await apiYamlSaveForm({ ...spec, network }, yaml.state.hash);
       await yaml.actions.reload();
       toast(t("pages.env.networkSaved"), "ok");
       return true;
@@ -265,10 +325,12 @@ function NetworkCard() {
     }
   };
 
-  // 未保存守卫：网络草稿与 spec 有差异即视为脏
+  // 未保存守卫：网络草稿与 spec 有差异即视为脏（含 no_proxy 文本）
   useUnsavedEntry(
     "env.network",
-    () => JSON.stringify(draft) !== JSON.stringify(net ?? {}),
+    () =>
+      JSON.stringify(draft) !== JSON.stringify(net ?? {}) ||
+      noProxyText !== (net?.proxy?.no_proxy ?? []).join(", "),
     save,
   );
 
@@ -291,27 +353,38 @@ function NetworkCard() {
             value={proxy.mode ?? "off"}
             onChange={(e) => set({ proxy: { ...proxy, mode: e.target.value as "off" | "system" | "custom" } })}
           >
-            <option value="off">off</option>
-            <option value="system">system</option>
-            <option value="custom">custom</option>
+            <option value="off">{t("pages.env.proxyModeOff")}</option>
+            <option value="system">{t("pages.env.proxyModeSystem")}</option>
+            <option value="custom">{t("pages.env.proxyModeCustom")}</option>
           </select>
         </label>
-        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+        <label className={cn("text-[0.75rem] text-[var(--t3,#8a8f98)]", (proxy.mode ?? "off") === "off" && "opacity-50")}>
           HTTP
           <input
             className={inputCls}
             value={proxy.http ?? ""}
             placeholder="http://127.0.0.1:7890"
+            disabled={(proxy.mode ?? "off") === "off"}
             onChange={(e) => set({ proxy: { ...proxy, http: e.target.value || null } })}
           />
         </label>
-        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+        <label className={cn("text-[0.75rem] text-[var(--t3,#8a8f98)]", (proxy.mode ?? "off") === "off" && "opacity-50")}>
           HTTPS
           <input
             className={inputCls}
             value={proxy.https ?? ""}
             placeholder="http://127.0.0.1:7890"
+            disabled={(proxy.mode ?? "off") === "off"}
             onChange={(e) => set({ proxy: { ...proxy, https: e.target.value || null } })}
+          />
+        </label>
+        <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+          {t("pages.env.noProxy")}
+          <input
+            className={inputCls}
+            value={noProxyText}
+            placeholder="localhost, 127.0.0.1, .corp.com"
+            onChange={(e) => setNoProxyText(e.target.value)}
           />
         </label>
         <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
@@ -359,7 +432,11 @@ function NetworkCard() {
 type ToolCardProps = {
   meta: { key: ToolKey; label: string; rec?: string; recKey?: string };
   found: ToolProbe | null;
+  /** P1：本机已装安装枚举（java 多版本注册表/目录扫描 + nvm 目录布局），已按工具过滤。 */
+  installs: DiscoveredInstall[];
   required: string | null;
+  /** S1：可选版本下拉数据（钉扎版本置顶；后端白名单 ∪ mise ls-remote）。 */
+  versionOptions: string[];
   defaultVersion: string;
   versionDraft: string;
   onVersionDraft: (v: string) => void;
@@ -369,6 +446,7 @@ type ToolCardProps = {
   pending: PendingOp | null;
   opState: ReturnType<ReturnType<typeof useOperations>["get"]>;
   canPin: boolean;
+  onPinInstall: (version: string) => void;
   onInstall: () => void;
   onUpgrade: () => void;
   onPin: () => void;
@@ -378,6 +456,15 @@ function ToolCard(p: ToolCardProps) {
   const { t } = useTranslation();
   const isFound = p.found?.found === true;
   const busy = p.pending != null;
+  // P1：多安装枚举默认折叠；只装一个时无信息增量，不显示。
+  const [installsOpen, setInstallsOpen] = useState(false);
+  const showInstalls = p.installs.length > 1;
+  // P2：镜像后端 launcher::version_matches——钉扎前缀匹配已装全版本（17 ↔ 17.0.7）
+  const versionMatches = (want: string | null, have: string): boolean => {
+    if (!want) return false;
+    if (want === have) return true;
+    return have.startsWith(want + ".");
+  };
   const versionSource = p.required
     ? t("pages.env.sourceRequired", { version: p.required })
     : t("pages.env.sourceDefault", { version: p.defaultVersion });
@@ -419,6 +506,69 @@ function ToolCard(p: ToolCardProps) {
 
       <div className="text-[0.7rem] text-[var(--t3,#8a8f98)]">{t("pages.env.versionSource")} {versionSource}</div>
 
+      {/* P1：本机已装多版本枚举（只读展示；生效切换走 env_delta，随 P2 接线） */}
+      {showInstalls && (
+        <div className="rounded-[var(--r-sm,8px)] border border-[var(--line,#e6e6e6)]">
+          <button
+            type="button"
+            className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[0.72rem] text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]"
+            aria-expanded={installsOpen}
+            onClick={() => setInstallsOpen((v) => !v)}
+          >
+            {installsOpen ? (
+              <ChevronDown className="size-3.5 shrink-0" />
+            ) : (
+              <ChevronRight className="size-3.5 shrink-0" />
+            )}
+            <span>{t("pages.env.installsTitle", { count: p.installs.length })}</span>
+          </button>
+          {installsOpen && (
+            <ul className="border-t border-[var(--line,#e6e6e6)]">
+              {p.installs.map((i) => {
+                const selected = versionMatches(p.required, i.version);
+                return (
+                  <li
+                    key={`${i.version}-${i.home}`}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2 py-1",
+                      selected && "bg-[var(--st-ok-tint,#e9f7ed)]",
+                    )}
+                  >
+                    <span className="shrink-0 font-mono text-[0.72rem] font-medium text-[var(--t1,#222326)]">
+                      {i.version}
+                    </span>
+                    {i.active && <Badge variant="default">{t("pages.env.installActive")}</Badge>}
+                    {selected && (
+                      <Badge className="border-[rgb(39_166_68_/_0.3)] bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]">
+                        {t("pages.env.selectedVersion")}
+                      </Badge>
+                    )}
+                    <Badge variant="outline">{t(INSTALL_SOURCE_KEYS[i.source])}</Badge>
+                    <span
+                      className="min-w-0 flex-1 truncate text-right font-mono text-[0.64rem] text-[var(--t3,#8a8f98)]"
+                      title={i.home}
+                    >
+                      {i.home}
+                    </span>
+                    {p.canPin && (
+                      <Button
+                        variant={selected ? "ghost" : "soft"}
+                        size="sm"
+                        className="h-6 shrink-0 px-2 text-[0.68rem]"
+                        onClick={() => p.onPinInstall(i.version)}
+                        title={t("pages.env.installSelectTitle")}
+                      >
+                        {t("pages.env.installSelect")}
+                      </Button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
       {/* 操作区：安装（缺失）/ 升级 + 固定（已装）；运行中显示 operation 状态并禁用同工具按钮 */}
       {busy ? (
         <div className="flex items-center gap-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] px-2 py-1.5 text-[0.75rem] text-[var(--t2,#62666d)]">
@@ -444,13 +594,18 @@ function ToolCard(p: ToolCardProps) {
             </>
           ) : (
             <>
-              <Input
-                className="h-8 w-24 font-mono text-[0.75rem]"
-                value={p.versionDraft}
-                placeholder={p.defaultVersion}
+              <select
+                className="h-8 cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-1.5 font-mono text-[0.75rem] text-[var(--t1,#222326)]"
+                value={p.versionDraft || p.required || p.defaultVersion}
                 onChange={(e) => p.onVersionDraft(e.target.value)}
                 aria-label={t("pages.env.versionAria", { tool: p.meta.label })}
-              />
+              >
+                {p.versionOptions.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
               <select
                 className="h-8 cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-1.5 text-[0.75rem] text-[var(--t1,#222326)]"
                 value={p.managerPick}
@@ -475,6 +630,13 @@ function ToolCard(p: ToolCardProps) {
               )}
             </>
           )}
+        </div>
+      )}
+
+      {/* F9：两个管理器都缺 → 安装按钮禁用不再是终点，给出下一步指引 */}
+      {!busy && p.managers && !p.managers.mise && !p.managers.winget && (
+        <div className="rounded-[var(--r-sm,8px)] bg-[var(--st-warn-tint,#fff8e1)] px-2 py-1.5 text-[0.72rem] leading-relaxed text-[var(--st-warn,#9a6700)]">
+          {t("pages.env.noManagerHint")}
         </div>
       )}
 

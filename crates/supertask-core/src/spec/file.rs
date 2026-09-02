@@ -148,6 +148,8 @@ pub enum PackageManager {
     Npm,
     Pnpm,
     Yarn,
+    /// Bun projects may be used as a Node service or by Maven frontend modules.
+    Bun,
 }
 
 // ---------------------------------------------------------------------------

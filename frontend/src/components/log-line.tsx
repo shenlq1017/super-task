@@ -113,7 +113,7 @@ export function LogLineRow({
           onCopy(e);
         }}
         className={cn(
-          "inline-flex shrink-0 cursor-pointer items-center justify-center gap-1 rounded-md border px-2 py-0.5 text-[0.65rem] font-medium shadow-sm transition-[opacity,colors] duration-150",
+          "inline-flex shrink-0 cursor-pointer items-center justify-center gap-1 rounded-md border px-2 py-0.5 text-[0.65rem] font-medium shadow-sm transition-[opacity,colors] duration-150 select-none",
           wrap
             ? "absolute top-1/2 right-1 min-w-[4.5rem] -translate-y-1/2"
             : "sticky right-0 ml-2 min-w-[4.5rem] bg-[#16181D] shadow-[-10px_0_14px_#16181D]",

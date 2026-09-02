@@ -62,7 +62,6 @@ pub mod cmd {
     pub const SECRETS_SET: &str = "secrets.set";
     pub const SECRETS_DELETE: &str = "secrets.delete";
     pub const SECRETS_VALIDATE: &str = "secrets.validate";
-    pub const NETWORK_SAVE: &str = "network.save";
     pub const LOGS_SEARCH: &str = "logs.search";
     pub const LOGS_EXPORT: &str = "logs.export";
     pub const LOGS_RETENTION_RUN: &str = "logs.retention.run";
@@ -104,6 +103,13 @@ pub mod cmd {
     pub const TERM_WRITE: &str = "term.write";
     pub const TERM_RESIZE: &str = "term.resize";
     pub const TERM_CLOSE: &str = "term.close";
+    // ---- 运行页环境探测：启动时生效环境快照 ----
+    pub const ENV_EFFECTIVE: &str = "env.effective";
+    /// spring-boot 项目自身配置静态解析（application.yml/properties，只读）。
+    pub const SPRING_INSPECT: &str = "spring.inspect";
+    // ---- /env 深化（2026-08-31 dated 评估第一档）----
+    /// 每工具可选版本列表（winget 白名单 ∪ mise ls-remote 尾部）。
+    pub const TOOLCHAIN_VERSIONS: &str = "toolchain.versions";
 }
 
 pub mod event {
@@ -261,6 +267,26 @@ impl AiStreamPayload {
             delta: delta.into(),
         }
     }
+}
+
+/// `env.effective`：一条生效环境变量（键 + 注入值 + 来源层）。
+/// source ∈ workspace | env_file | service | port | network | toolchain | other。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvEffectiveEntry {
+    pub key: String,
+    pub value: String,
+    pub source: String,
+}
+
+/// `env.effective` 输出：某服务最近一次启动时引擎实际注入的环境快照
+/// （§6.3 环境链叠加结果，不含子进程从用户会话继承的基础环境）。
+/// 从未本地启动过（或 compose 服务）→ entries 为空、captured_at_ms 为 None。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvEffectiveOutput {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_at_ms: Option<u64>,
+    pub entries: Vec<EnvEffectiveEntry>,
 }
 
 #[cfg(test)]

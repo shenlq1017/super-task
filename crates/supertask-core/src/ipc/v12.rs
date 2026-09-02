@@ -158,17 +158,11 @@ pub struct SecretsValidateOutput {
     pub warnings: Vec<String>,
 }
 
+/// `toolchain.versions` 输出：每工具可选版本列表（/env 深化 S1）。
+/// 键为逻辑工具名，值按推荐序（默认版本 → 白名单 → mise 远端尾部）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NetworkSaveInput {
-    pub workspace_id: Option<String>,
-    pub config: serde_yaml::Value,
-    pub base_hash: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NetworkSaveOutput {
-    pub ok: bool,
-    pub hash: Option<String>,
+pub struct ToolchainVersionsOutput {
+    pub tools: IndexMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

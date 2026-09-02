@@ -10,6 +10,7 @@ pub const DEFAULT_MAVEN: &str = "3.9";
 pub const DEFAULT_NODE: &str = "20";
 pub const DEFAULT_PNPM: &str = "9";
 pub const DEFAULT_YARN: &str = "1";
+pub const DEFAULT_BUN: &str = "1";
 /// 1.7 §5：python/go 缺省钉扎口径 major.minor。
 pub const DEFAULT_PYTHON: &str = "3.12";
 pub const DEFAULT_GO: &str = "1.23";
@@ -22,6 +23,7 @@ pub fn default_version(tool: ToolKind) -> &'static str {
         ToolKind::Node | ToolKind::Npm => DEFAULT_NODE,
         ToolKind::Pnpm => DEFAULT_PNPM,
         ToolKind::Yarn => DEFAULT_YARN,
+        ToolKind::Bun => DEFAULT_BUN,
         ToolKind::Python => DEFAULT_PYTHON,
         ToolKind::Go => DEFAULT_GO,
     }
@@ -34,6 +36,7 @@ pub fn mise_tool_name(tool: ToolKind) -> &'static str {
         ToolKind::Node | ToolKind::Npm => "node",
         ToolKind::Pnpm => "pnpm",
         ToolKind::Yarn => "yarn",
+        ToolKind::Bun => "bun",
         ToolKind::Python => "python",
         ToolKind::Go => "go",
     }
@@ -58,6 +61,8 @@ const WINGET_PACKAGES: &[(ToolKind, &str, &str)] = &[
     (ToolKind::Pnpm, "lts", "pnpm.pnpm"),
     (ToolKind::Yarn, "1", "Yarn.Yarn"),
     (ToolKind::Yarn, "lts", "Yarn.Yarn"),
+    (ToolKind::Bun, "1", "Oven-sh.Bun"),
+    (ToolKind::Bun, "lts", "Oven-sh.Bun"),
     // 1.7 §5：python / go
     (ToolKind::Python, "3.13", "Python.Python.3.13"),
     (ToolKind::Python, "3.12", "Python.Python.3.12"),
@@ -67,6 +72,18 @@ const WINGET_PACKAGES: &[(ToolKind, &str, &str)] = &[
     (ToolKind::Go, "1.22", "GoLang.Go"),
     (ToolKind::Go, "lts", "GoLang.Go"),
 ];
+
+/// 白名单内该工具的全部逻辑版本（含 `lts` 别名；去重，保持 manifest 顺序）。
+/// /env 版本选择列表（S1）的离线数据源。
+pub fn winget_versions(tool: ToolKind) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for (t, v, _) in WINGET_PACKAGES {
+        if *t == tool && !out.contains(v) {
+            out.push(v);
+        }
+    }
+    out
+}
 
 pub fn winget_id(tool: ToolKind, logical_version: &str) -> Result<&'static str> {
     let key = logical_version.trim();
@@ -132,5 +149,19 @@ mod tests {
         );
         assert_eq!(default_version(ToolKind::Python), "3.12");
         assert_eq!(default_version(ToolKind::Go), "1.23");
+    }
+
+    #[test]
+    fn winget_versions_lists_whitelist_only() {
+        assert_eq!(
+            winget_versions(ToolKind::Java),
+            vec!["21", "17", "11", "lts"]
+        );
+        assert_eq!(
+            winget_versions(ToolKind::Python),
+            vec!["3.13", "3.12", "3.11", "lts"]
+        );
+        // npm 白名单跟随 Node 提供
+        assert_eq!(winget_versions(ToolKind::Npm), vec!["20", "lts"]);
     }
 }

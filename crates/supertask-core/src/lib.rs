@@ -32,6 +32,7 @@ pub mod sandbox;
 pub mod scan;
 pub mod secrets;
 pub mod spec;
+pub mod spring;
 pub mod taskfile;
 pub mod term;
 pub mod template;

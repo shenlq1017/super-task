@@ -6,28 +6,41 @@
 //! - 默认不请求管理员；provider 要求提权时快速失败 `TOOLCHAIN_PERMISSION`；
 //! - 安装命令返回 0 不代表工具可用，必须经 [`resolver`] 解析成功。
 
+pub mod discover;
 pub mod install;
 pub mod manifest;
 pub mod provider;
 pub mod resolver;
 pub mod runner;
+pub mod versions;
 
 pub use install::{install, parse_tool, upgrade, validate_version, InstallOutcome, InstallRequest};
 pub use provider::ManagerAvailability;
 pub use runner::{ProcessRunner, ToolRunner};
 
 /// 逻辑工具名（§4.1 / §13.1）。npm/pnpm/yarn 是包管理器，不是独立语言运行时。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// serde：discover 的 DiscoveredInstall 直接序列化逻辑名（§13.1 字符集）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ToolKind {
+    #[serde(rename = "java")]
     Java,
+    #[serde(rename = "maven")]
     Maven,
+    #[serde(rename = "node")]
     Node,
+    #[serde(rename = "npm")]
     Npm,
+    #[serde(rename = "pnpm")]
     Pnpm,
+    #[serde(rename = "yarn")]
     Yarn,
+    #[serde(rename = "bun")]
+    Bun,
     /// 1.7
+    #[serde(rename = "python")]
     Python,
     /// 1.7
+    #[serde(rename = "go")]
     Go,
 }
 
@@ -40,6 +53,7 @@ impl ToolKind {
             "npm" => Some(Self::Npm),
             "pnpm" => Some(Self::Pnpm),
             "yarn" => Some(Self::Yarn),
+            "bun" => Some(Self::Bun),
             "python" => Some(Self::Python),
             "go" => Some(Self::Go),
             _ => None,
@@ -54,6 +68,7 @@ impl ToolKind {
             Self::Npm => "npm",
             Self::Pnpm => "pnpm",
             Self::Yarn => "yarn",
+            Self::Bun => "bun",
             Self::Python => "python",
             Self::Go => "go",
         }
@@ -68,6 +83,7 @@ impl ToolKind {
             Self::Npm => &["npm.cmd", "npm.exe", "npm"],
             Self::Pnpm => &["pnpm.cmd", "pnpm.exe", "pnpm"],
             Self::Yarn => &["yarn.cmd", "yarn.exe", "yarn"],
+            Self::Bun => &["bun.exe", "bun"],
             Self::Python => &["python.exe", "python", "python3"],
             Self::Go => &["go.exe", "go"],
         }
@@ -96,7 +112,7 @@ mod tests {
 
     #[test]
     fn tool_names_round_trip() {
-        for name in ["java", "maven", "node", "npm", "pnpm", "yarn"] {
+        for name in ["java", "maven", "node", "npm", "pnpm", "yarn", "bun"] {
             assert_eq!(ToolKind::parse(name).unwrap().as_str(), name);
         }
         assert!(ToolKind::parse("rm").is_none());

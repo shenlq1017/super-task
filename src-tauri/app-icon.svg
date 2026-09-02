@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <rect width="1024" height="1024" rx="220" fill="#5E6AD2"/>
+  <text
+    x="512"
+    y="560"
+    text-anchor="middle"
+    dominant-baseline="middle"
+    fill="#FFFFFF"
+    font-family="Inter, Segoe UI, system-ui, sans-serif"
+    font-size="560"
+    font-weight="800"
+    letter-spacing="-0.04em"
+  >S</text>
+</svg>

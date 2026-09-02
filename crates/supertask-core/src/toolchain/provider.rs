@@ -8,7 +8,7 @@ use crate::spec::ToolchainManager;
 use indexmap::IndexMap;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct ManagerAvailability {
     pub mise: bool,
     pub winget: bool,

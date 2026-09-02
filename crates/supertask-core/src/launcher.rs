@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -75,13 +76,36 @@ fn module_dir(root: &Path, module: &str) -> Result<PathBuf> {
     crate::sandbox::confine(root, module)
 }
 
+/// 探测基目录：`root + cwd`（mvn/gradle 的实际工作目录）；cwd 缺省为 root。
+/// 旧版只看 `root + module`、忽略 cwd，导致 `cwd: server` 的工作区在
+/// `root/<module>` 找不到构建文件（MISSING_TOOL 误报）。
+fn detect_base(root: &Path, svc: &ServiceSpec) -> Result<PathBuf> {
+    module_dir(root, svc.cwd.as_deref().unwrap_or("."))
+}
+
 /// 启动期解析构建工具：显式 build_tool 跳过探测（§5.1）；缺省按文件探测。
+/// 探测目录依次为 `cwd`（reactor/gradle 根）、`cwd/module`；前者 MISSING_TOOL
+/// 才落到后者，AMBIGUOUS 仍是硬错误。
 pub fn resolve_build_tool(root: &Path, svc: &ServiceSpec) -> Result<BuildTool> {
     if let Some(bt) = explicit_build_tool(svc) {
         return Ok(bt);
     }
-    let dir = module_dir(root, svc.module.as_deref().unwrap_or("."))?;
-    detect_build_tool(&dir)
+    let base = detect_base(root, svc)?;
+    let module = svc.module.as_deref().unwrap_or(".");
+    let mut candidates = vec![base.clone()];
+    if module != "." {
+        candidates.push(module_dir(&base, module)?);
+    }
+    let mut first_err = None;
+    for dir in candidates {
+        match detect_build_tool(&dir) {
+            Ok(bt) => return Ok(bt),
+            Err(e) if e.code() == ErrorCode::BuildToolAmbiguous => return Err(e),
+            Err(e) if first_err.is_none() => first_err = Some(e),
+            Err(_) => {}
+        }
+    }
+    Err(first_err.unwrap())
 }
 
 fn gradle_wrapper_file_name() -> &'static str {
@@ -104,20 +128,22 @@ pub fn is_gradle_program(program: &str) -> bool {
 #[cfg(unix)]
 static GRADLE_SH_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// §5.1 wrapper 优先：root（或 module 目录）存在 gradlew[.bat] 则用 wrapper；
+/// §5.1 wrapper 优先：root / cwd（或 module 目录）存在 gradlew[.bat] 则用 wrapper；
 /// 否则用 PATH 解析的 `gradle`；都无 → `GRADLE_WRAPPER_MISSING`（details 建议
 /// `gradle wrapper`）。返回 (program, args, warnings)。
 pub fn resolve_gradle_launcher(
     root: &Path,
+    cwd: &str,
     module: &str,
     program: &str,
     args: &[String],
 ) -> Result<(String, Vec<String>, Vec<String>)> {
     debug_assert!(is_gradle_program(program));
     let warnings: Vec<String> = Vec::new();
-    let mut candidates: Vec<PathBuf> = vec![root.join(gradle_wrapper_file_name())];
+    let mut candidates: Vec<PathBuf> = vec![module_dir(root, cwd).unwrap_or_else(|_| root.to_path_buf()).join(gradle_wrapper_file_name())];
     if module != "." {
-        if let Ok(dir) = module_dir(root, module) {
+        let base = module_dir(root, cwd).unwrap_or_else(|_| root.to_path_buf());
+        if let Ok(dir) = module_dir(&base, module) {
             candidates.push(dir.join(gradle_wrapper_file_name()));
         }
     }
@@ -193,7 +219,7 @@ pub fn plan_service_in(file: &SuperTaskFile, id: &str, root: Option<&Path>) -> R
                 Some(r) => resolve_build_tool(r, svc)?,
                 None => explicit_build_tool(svc).unwrap_or(BuildTool::Maven),
             };
-            plan_spring(svc, env, bt)
+            plan_spring(svc, env, bt, root)
         }
         "node" => plan_node(svc, env),
         // 1.7 §4.2：python/go/generic；root=None（测试上下文）只认显式字段、跳过 fs 检查
@@ -224,10 +250,96 @@ fn merge_env(ws: &IndexMap<String, String>, svc: &ServiceSpec) -> IndexMap<Strin
     env
 }
 
+/// reactor 根 `pom.xml` 的 `<modules>` 是否列出 `module`（多模块子工程）。
+fn maven_reactor_lists_module(reactor_pom: &str, module: &str) -> bool {
+    let modules = pom_modules(reactor_pom);
+    !modules.is_empty() && modules.iter().any(|m| m == module)
+}
+
+fn pom_modules(pom: &str) -> Vec<String> {
+    let Some(start) = pom.find("<modules>") else {
+        return Vec::new();
+    };
+    let Some(rel_end) = pom[start..].find("</modules>") else {
+        return Vec::new();
+    };
+    let block = &pom[start..start + rel_end];
+    let mut out = Vec::new();
+    let mut rest = block;
+    while let Some(i) = rest.find("<module>") {
+        rest = &rest[i + "<module>".len()..];
+        if let Some(j) = rest.find("</module>") {
+            let m = rest[..j].trim().replace('\\', "/");
+            if !m.is_empty() {
+                out.push(m);
+            }
+            rest = &rest[j + "</module>".len()..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// `module != "."` 且 cwd 处 reactor POM 的 `<modules>` 含该 module。
+fn maven_in_multi_module_reactor(root: &Path, svc: &ServiceSpec) -> bool {
+    let module = svc.module.as_deref().unwrap_or(".");
+    if module == "." {
+        return false;
+    }
+    let Ok(base) = detect_base(root, svc) else {
+        return false;
+    };
+    let Ok(pom) = fs::read_to_string(base.join("pom.xml")) else {
+        return false;
+    };
+    maven_reactor_lists_module(&pom, module)
+}
+
+fn extra_skips_maven_tests(extra: &[String]) -> bool {
+    extra.iter().any(|a| a.contains("maven.test.skip"))
+}
+
+/// 多模块 reactor 启动：仅跳过测试编译。`-am` 不得与 `spring-boot:run` 同用
+/// （会在聚合父 POM 上执行 run → main class 找不到）。
+fn append_maven_run_dev_flags(args: &mut Vec<String>, extra_args: &[String]) {
+    if !extra_skips_maven_tests(extra_args) && !extra_skips_maven_tests(args) {
+        args.push("-Dmaven.test.skip=true".into());
+    }
+}
+
+/// 多模块 reactor 启动前：`install` 上游兄弟模块（`-am` 只用于 install）。
+pub fn plan_maven_reactor_prep_install_in(
+    svc: &ServiceSpec,
+    env: IndexMap<String, String>,
+    root: &Path,
+) -> Option<CommandSpec> {
+    if !maven_in_multi_module_reactor(root, svc) {
+        return None;
+    }
+    let module = svc.module.as_deref().unwrap_or(".");
+    let mut args = vec![
+        "-q".into(),
+        "-pl".into(),
+        module.into(),
+        "-am".into(),
+        "install".into(),
+        "-Dmaven.test.skip=true".into(),
+    ];
+    args.extend(svc.build_args.iter().cloned());
+    Some(CommandSpec {
+        program: "mvn.cmd".into(),
+        args,
+        cwd_rel: svc.cwd.clone().unwrap_or_else(|| ".".into()),
+        env,
+    })
+}
+
 fn plan_spring(
     svc: &ServiceSpec,
     env: IndexMap<String, String>,
     bt: BuildTool,
+    root: Option<&Path>,
 ) -> Result<CommandSpec> {
     let launch = svc.launch.as_deref().unwrap_or("run");
     if launch != "run" {
@@ -239,13 +351,20 @@ fn plan_spring(
     let module = svc.module.as_deref().unwrap();
     match bt {
         BuildTool::Maven => {
-            // `-am` runs spring-boot:run on every reactor project, including aggregator
-            // POMs that have no plugin. Also-make belongs in extra_args or bootstrap.
             let mut args = if module == "." {
                 vec!["spring-boot:run".into()]
             } else {
-                vec!["-pl".into(), module.into(), "spring-boot:run".into()]
+                vec![
+                    "-pl".into(),
+                    module.into(),
+                    "spring-boot:run".into(),
+                ]
             };
+            if let (Some(r), false) = (root, module == ".") {
+                if maven_in_multi_module_reactor(r, svc) {
+                    append_maven_run_dev_flags(&mut args, &svc.extra_args);
+                }
+            }
             args.extend(svc.extra_args.iter().cloned());
             Ok(CommandSpec {
                 program: "mvn.cmd".into(),
@@ -283,6 +402,7 @@ fn plan_node(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<Command
         PackageManager::Npm => "npm.cmd",
         PackageManager::Pnpm => "pnpm.cmd",
         PackageManager::Yarn => "yarn.cmd",
+        PackageManager::Bun => "bun.exe",
     };
     let script = svc.script.clone().unwrap_or_else(|| "dev".into());
     let mut args = vec!["run".into(), script];
@@ -495,6 +615,186 @@ pub fn apply_pinned_mise_env(
         for (k, v) in &resolved.env_delta {
             env.insert(k.clone(), v.clone());
         }
+    }
+}
+
+/// 运行详情写入服务 env 的版本选择键。服务级选择优先于旧的工作区 toolchain
+/// 钉扎，因此同一工作区的服务可以并存不同版本。
+pub const SERVICE_JAVA_VERSION_ENV: &str = "SUPERTASK_JAVA_VERSION";
+pub const SERVICE_MAVEN_VERSION_ENV: &str = "SUPERTASK_MAVEN_VERSION";
+pub const SERVICE_NODE_VERSION_ENV: &str = "SUPERTASK_NODE_VERSION";
+pub const SERVICE_PYTHON_VERSION_ENV: &str = "SUPERTASK_PYTHON_VERSION";
+pub const SERVICE_GO_VERSION_ENV: &str = "SUPERTASK_GO_VERSION";
+
+fn service_version_env_key(kind: &str) -> Option<&'static str> {
+    match kind {
+        "spring-boot" => Some(SERVICE_JAVA_VERSION_ENV),
+        "maven" => Some(SERVICE_MAVEN_VERSION_ENV),
+        "node" => Some(SERVICE_NODE_VERSION_ENV),
+        "python" => Some(SERVICE_PYTHON_VERSION_ENV),
+        "go" => Some(SERVICE_GO_VERSION_ENV),
+        _ => None,
+    }
+}
+
+/// P2：用本机已装枚举命中版本，前插其 bin 目录到**子进程** PATH +（java）双设
+/// JAVA_HOME。服务 env 的版本选择覆盖工作区 toolchain，且只影响当前启动的子进程；
+/// 绝不改全局 nvm symlink / 用户 PATH。
+/// 找不到匹配安装 → 静默不回退标记（PATH 直解，保持既有行为）。
+pub fn apply_pinned_version_env(
+    toolchain: Option<&crate::spec::ToolchainSpec>,
+    service_env: &IndexMap<String, String>,
+    kind: &str,
+    installs: &[crate::toolchain::discover::DiscoveredInstall],
+    env: &mut IndexMap<String, String>,
+) {
+    use crate::toolchain::ToolKind;
+    let service_want = service_version_env_key(kind).and_then(|key| {
+        service_env
+            .get(key)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    });
+    let workspace_want = toolchain.and_then(|tc| match kind {
+        "spring-boot" => tc.java.as_deref(),
+        "node" => tc.node.as_deref(),
+        "python" => tc.python.as_deref(),
+        "go" => tc.go.as_deref(),
+        _ => None,
+    });
+    let want = service_want.or(workspace_want);
+    let Some(want) = want.map(str::trim).filter(|v| !v.is_empty()) else {
+        return;
+    };
+    let tool = match kind {
+        "spring-boot" => ToolKind::Java,
+        "maven" => ToolKind::Maven,
+        "node" => ToolKind::Node,
+        "python" => ToolKind::Python,
+        "go" => ToolKind::Go,
+        _ => return,
+    };
+    let Some(hit) = installs
+        .iter()
+        .find(|i| i.tool == tool && version_matches(want, &i.version))
+    else {
+        return;
+    };
+    let Some(bin) = version_bin_dir(Path::new(&hit.home), tool) else {
+        return;
+    };
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let cur = env
+        .get("PATH")
+        .cloned()
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    env.insert("PATH".into(), format!("{bin}{sep}{cur}", bin = bin.display()));
+    if tool == ToolKind::Java {
+        env.insert("JAVA_HOME".into(), hit.home.clone());
+    }
+}
+
+/// Read the conventional project JDK selector used by jenv/mise/SDKMAN
+/// integrations. The workspace root is checked after the service directory so
+/// a nested project can override the repository default.
+pub fn project_java_version(root: &Path, cwd_rel: &str) -> Option<String> {
+    let cwd = module_dir(root, cwd_rel).ok()?;
+    let candidates = [cwd.join(".java-version"), root.join(".java-version")];
+    candidates.into_iter().find_map(|path| {
+        let text = std::fs::read_to_string(path).ok()?;
+        let value = text.lines().map(str::trim).find(|line| {
+            !line.is_empty() && !line.starts_with('#')
+        })?;
+        crate::spec::validate::is_valid_toolchain_version(value).then(|| value.to_string())
+    })
+}
+
+/// Apply the selected JDK to a child process. Explicit service/workspace pins
+/// win over `.java-version`; the latter is only a fallback for legacy projects
+/// whose YAML predates toolchain pinning.
+pub fn apply_java_version_env(
+    toolchain: Option<&crate::spec::ToolchainSpec>,
+    service_env: &IndexMap<String, String>,
+    root: &Path,
+    cwd_rel: &str,
+    installs: &[crate::toolchain::discover::DiscoveredInstall],
+    env: &mut IndexMap<String, String>,
+) {
+    use crate::toolchain::ToolKind;
+    let explicit = service_env
+        .get(SERVICE_JAVA_VERSION_ENV)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let pinned = toolchain
+        .and_then(|tc| tc.java.as_deref())
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let project = project_java_version(root, cwd_rel);
+    let Some(want) = explicit.or(pinned).map(str::to_string).or(project) else {
+        return;
+    };
+    let Some(hit) = installs
+        .iter()
+        .find(|i| i.tool == ToolKind::Java && version_matches(&want, &i.version))
+    else {
+        return;
+    };
+    let Some(bin) = version_bin_dir(Path::new(&hit.home), ToolKind::Java) else {
+        return;
+    };
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let cur = env
+        .get("PATH")
+        .cloned()
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    env.insert("PATH".into(), format!("{bin}{sep}{cur}", bin = bin.display()));
+    env.insert("JAVA_HOME".into(), hit.home.clone());
+}
+
+/// 钉扎版本与已装版本是否匹配：全等，或 want 是 have 的**段前缀**
+/// （`22` ↔ `22.17.1`、`1.8` ↔ `1.8.0_371`），段边界判定避免 `2` 误配 `24`。
+pub fn version_matches(want: &str, have: &str) -> bool {
+    let (want, have) = (want.trim(), have.trim());
+    want.eq_ignore_ascii_case(have)
+        || have.strip_prefix(want).is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// 前插进 PATH 的 bin 目录：java/maven 恒 `<home>/bin`；node 优先
+/// `<home>/bin`（Unix nvm / volta），否则 `<home>`（Windows nvm 布局，node.exe 在根）。
+fn version_bin_dir(
+    home: &Path,
+    tool: crate::toolchain::ToolKind,
+) -> Option<std::path::PathBuf> {
+    use crate::toolchain::ToolKind;
+    let exe = |name: &str| {
+        if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        }
+    };
+    let bin = home.join("bin");
+    match tool {
+        ToolKind::Java => bin.join(exe("java")).is_file().then_some(bin),
+        ToolKind::Maven => {
+            ["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"]
+                .iter()
+                .map(|name| bin.join(name))
+                .find(|path| path.is_file())
+                .map(|_| bin)
+        }
+        ToolKind::Node => {
+            if bin.join(exe("node")).is_file() {
+                Some(bin)
+            } else if home.join(exe("node")).is_file() {
+                Some(home.to_path_buf())
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1050,6 +1350,123 @@ services:
     }
 
     #[test]
+    fn spring_multimodule_reactor_skips_tests_on_run_not_am() {
+        let root = tmp_ws("reactor-am");
+        fs::create_dir_all(root.join("backend")).unwrap();
+        fs::write(
+            root.join("pom.xml"),
+            r#"<project><modules><module>backend</module></modules></project>"#,
+        )
+        .unwrap();
+        fs::write(root.join("backend/pom.xml"), "").unwrap();
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: spring-boot
+    module: backend
+    port: 8080
+"#,
+        )
+        .unwrap();
+        let c = plan_service_in(&f, "api", Some(&root)).unwrap();
+        assert_eq!(
+            c.args,
+            vec!["-pl", "backend", "spring-boot:run", "-Dmaven.test.skip=true"]
+        );
+        let prep = plan_maven_reactor_prep_install_in(&f.services["api"], Default::default(), &root)
+            .expect("prep install");
+        assert_eq!(
+            prep.args,
+            vec![
+                "-q",
+                "-pl",
+                "backend",
+                "-am",
+                "install",
+                "-Dmaven.test.skip=true"
+            ]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spring_multimodule_respects_existing_extra_args() {
+        let root = tmp_ws("reactor-am-extra");
+        fs::create_dir_all(root.join("backend")).unwrap();
+        fs::write(
+            root.join("pom.xml"),
+            r#"<project><modules><module>backend</module></modules></project>"#,
+        )
+        .unwrap();
+        fs::write(root.join("backend/pom.xml"), "").unwrap();
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: spring-boot
+    module: backend
+    port: 8080
+    extra_args: ["-Dmaven.test.skip=false"]
+"#,
+        )
+        .unwrap();
+        let c = plan_service_in(&f, "api", Some(&root)).unwrap();
+        assert_eq!(
+            c.args,
+            vec![
+                "-pl",
+                "backend",
+                "spring-boot:run",
+                "-Dmaven.test.skip=false"
+            ]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_tool_detection_respects_cwd() {
+        // nest-store 回归：cwd: server + module: xxx，探测应在 cwd（而非 root/module）下进行
+        let root = tmp_ws("bt-cwd");
+        fs::create_dir_all(root.join("server/app")).unwrap();
+        fs::write(root.join("server/pom.xml"), "").unwrap();
+        let (f, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: spring-boot
+    cwd: server
+    module: app
+    port: 8080
+"#,
+        )
+        .unwrap();
+        let c = plan_service_in(&f, "api", Some(&root)).unwrap();
+        assert_eq!(c.program, "mvn.cmd");
+        assert_eq!(c.args, vec!["-pl", "app", "spring-boot:run"]);
+        // cwd 无构建文件、cwd/module 有 → 回退到 cwd/module
+        let (f2, _) = parse_yaml(
+            r#"
+version: 1
+services:
+  api:
+    kind: spring-boot
+    cwd: server
+    module: app
+    port: 8080
+"#,
+        )
+        .unwrap();
+        fs::remove_file(root.join("server/pom.xml")).unwrap();
+        fs::write(root.join("server/app/pom.xml"), "").unwrap();
+        assert!(plan_service_in(&f2, "api", Some(&root)).is_ok());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn explicit_build_tool_skips_detection() {
         let root = std::env::temp_dir().join(format!("st-bt-explicit-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1077,7 +1494,8 @@ services:
         let wrapper = root.join("gradlew");
         fs::write(&wrapper, "@echo off").unwrap();
         let (prog, args, warns) =
-            resolve_gradle_launcher(&root, "mod", "gradlew.bat", &[":mod:bootRun".into()]).unwrap();
+            resolve_gradle_launcher(&root, ".", "mod", "gradlew.bat", &[":mod:bootRun".into()])
+                .unwrap();
         assert_eq!(prog, wrapper.display().to_string());
         assert_eq!(args, vec![":mod:bootRun"]);
         assert!(warns.is_empty());
@@ -1090,10 +1508,29 @@ services:
         #[cfg(not(windows))]
         fs::write(root.join("mod/gradlew"), "#!/bin/sh").unwrap();
         let (prog, _, _) =
-            resolve_gradle_launcher(&root, "mod", "gradlew.bat", &[":mod:bootRun".into()]).unwrap();
+            resolve_gradle_launcher(&root, ".", "mod", "gradlew.bat", &[":mod:bootRun".into()])
+                .unwrap();
         assert_eq!(
             prog,
             root.join("mod")
+                .join(gradle_wrapper_file_name())
+                .display()
+                .to_string()
+        );
+
+        // cwd 指向子目录时，wrapper 应在 cwd（而非 root）下找
+        fs::remove_file(root.join("mod").join(gradle_wrapper_file_name())).unwrap();
+        fs::create_dir_all(root.join("srv")).unwrap();
+        #[cfg(windows)]
+        fs::write(root.join("srv/gradlew.bat"), "@echo off").unwrap();
+        #[cfg(not(windows))]
+        fs::write(root.join("srv/gradlew"), "#!/bin/sh").unwrap();
+        let (prog, _, _) =
+            resolve_gradle_launcher(&root, "srv", "mod", "gradlew.bat", &[":mod:bootRun".into()])
+                .unwrap();
+        assert_eq!(
+            prog,
+            root.join("srv")
                 .join(gradle_wrapper_file_name())
                 .display()
                 .to_string()
@@ -1112,14 +1549,14 @@ services:
         fs::write(&wrapper, "#!/bin/sh").unwrap();
         fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o644)).unwrap();
         let (prog, args, warns) =
-            resolve_gradle_launcher(&root, ".", "gradlew", &[":m:bootRun".into()]).unwrap();
+            resolve_gradle_launcher(&root, ".", ".", "gradlew", &[":m:bootRun".into()]).unwrap();
         assert_eq!(prog, "sh");
         assert_eq!(args[0], wrapper.display().to_string());
         assert_eq!(args[1], ":m:bootRun");
         assert_eq!(warns.len(), 1);
         // 警告一次：第二次不再带警告，但仍走 sh
         let (prog2, _, warns2) =
-            resolve_gradle_launcher(&root, ".", "gradlew", &[":m:bootRun".into()]).unwrap();
+            resolve_gradle_launcher(&root, ".", ".", "gradlew", &[":m:bootRun".into()]).unwrap();
         assert_eq!(prog2, "sh");
         assert!(warns2.is_empty());
         let _ = fs::remove_dir_all(&root);
@@ -1134,10 +1571,162 @@ services:
         let root = std::env::temp_dir().join(format!("st-bt-missing-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let e = resolve_gradle_launcher(&root, ".", "gradlew.bat", &[]).unwrap_err();
+        let e = resolve_gradle_launcher(&root, ".", ".", "gradlew.bat", &[]).unwrap_err();
         assert_eq!(e.code(), ErrorCode::GradleWrapperMissing);
         // details 携带 `gradle wrapper` 建议
         assert!(e.to_string().contains("gradle wrapper"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- P2：钉扎版本 → 本机已装安装 → PATH/JAVA_HOME 生效接线 ----
+
+    fn fake_installs(home: &str, tool: crate::toolchain::ToolKind, version: &str) -> Vec<crate::toolchain::discover::DiscoveredInstall> {
+        use crate::toolchain::discover::{DiscoveredInstall, InstallSource};
+        vec![DiscoveredInstall {
+            tool,
+            version: version.into(),
+            home: home.into(),
+            source: InstallSource::Directory,
+            active: false,
+        }]
+    }
+
+    /// 造一个 `<home>/bin/<java-exe>`（java 布局），返回 home。
+    fn mk_java_home(name: &str) -> PathBuf {
+        let home = tmp_ws(name);
+        let bin = home.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let exe = if cfg!(windows) { "java.exe" } else { "java" };
+        fs::write(bin.join(exe), b"x").unwrap();
+        home
+    }
+
+    #[test]
+    fn version_matches_prefix_is_segment_bounded() {
+        assert!(version_matches("22", "22.17.1"));
+        assert!(version_matches("1.8", "1.8.0_371"));
+        assert!(version_matches("22.17.1", "22.17.1"));
+        // 段边界：`2` 不该匹配 `24.9.0`（否则切换错乱）
+        assert!(!version_matches("2", "24.9.0"));
+        assert!(!version_matches("22", "2.14"));
+        assert!(!version_matches("20", "22.17.1"));
+    }
+
+    #[test]
+    fn java_pin_prepends_bin_and_sets_java_home() {
+        let home = mk_java_home("pin-java");
+        let installs = fake_installs(&home.display().to_string(), crate::toolchain::ToolKind::Java, "17.0.7");
+        let tc = crate::spec::ToolchainSpec { java: Some("17".into()), ..Default::default() };
+        let mut env = IndexMap::new();
+        apply_pinned_version_env(Some(&tc), &IndexMap::new(), "spring-boot", &installs, &mut env);
+        let path = env.get("PATH").expect("PATH 应被前插");
+        assert!(path.starts_with(&format!("{}{}", home.join("bin").display(), if cfg!(windows) { ";" } else { ":" })), "PATH={path}");
+        // 现有 PATH 作为后缀保留（不吞掉全局工具）
+        assert!(path.contains(&std::env::var("PATH").unwrap_or_default()));
+        assert_eq!(env.get("JAVA_HOME").map(String::as_str), Some(home.display().to_string().as_str()));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn service_version_overrides_workspace_pin() {
+        let workspace_home = mk_java_home("pin-java-workspace");
+        let service_home = mk_java_home("pin-java-service");
+        let mut installs = fake_installs(
+            &workspace_home.display().to_string(),
+            crate::toolchain::ToolKind::Java,
+            "17.0.7",
+        );
+        installs.extend(fake_installs(
+            &service_home.display().to_string(),
+            crate::toolchain::ToolKind::Java,
+            "21.0.3",
+        ));
+        let tc = crate::spec::ToolchainSpec { java: Some("17".into()), ..Default::default() };
+        let mut service_env = IndexMap::new();
+        service_env.insert(SERVICE_JAVA_VERSION_ENV.into(), "21.0.3".into());
+        let mut env = IndexMap::new();
+
+        apply_pinned_version_env(Some(&tc), &service_env, "spring-boot", &installs, &mut env);
+
+        assert_eq!(env.get("JAVA_HOME"), Some(&service_home.display().to_string()));
+        let _ = fs::remove_dir_all(&workspace_home);
+        let _ = fs::remove_dir_all(&service_home);
+    }
+
+    #[test]
+    fn project_java_version_is_used_when_yaml_is_unpinned() {
+        let root = tmp_ws("project-java-version");
+        fs::write(root.join(".java-version"), "17\n").unwrap();
+        let home = mk_java_home("project-java-install");
+        let installs = fake_installs(
+            &home.display().to_string(),
+            crate::toolchain::ToolKind::Java,
+            "17.0.7",
+        );
+        let mut env = IndexMap::new();
+        apply_java_version_env(None, &IndexMap::new(), &root, ".", &installs, &mut env);
+        assert_eq!(env.get("JAVA_HOME"), Some(&home.display().to_string()));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn node_pin_uses_home_dir_on_windows_layout() {
+        let home = tmp_ws("pin-node-win");
+        let exe = if cfg!(windows) { "node.exe" } else { "node" };
+        fs::write(home.join(exe), b"x").unwrap();
+        let installs = fake_installs(&home.display().to_string(), crate::toolchain::ToolKind::Node, "24.19.0");
+        let tc = crate::spec::ToolchainSpec { node: Some("24.19.0".into()), ..Default::default() };
+        let mut env = IndexMap::new();
+        apply_pinned_version_env(Some(&tc), &IndexMap::new(), "node", &installs, &mut env);
+        let path = env.get("PATH").expect("node PATH 前插");
+        assert!(path.starts_with(&format!("{}{}", home.display(), if cfg!(windows) { ";" } else { ":" })), "PATH={path}");
+        // node 不设 JAVA_HOME
+        assert!(env.get("JAVA_HOME").is_none());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn maven_service_pin_prepends_bin() {
+        let home = tmp_ws("pin-maven");
+        let bin = home.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let exe = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
+        fs::write(bin.join(exe), b"x").unwrap();
+        let installs = fake_installs(
+            &home.display().to_string(),
+            crate::toolchain::ToolKind::Maven,
+            "3.9.9",
+        );
+        let mut service_env = IndexMap::new();
+        service_env.insert(SERVICE_MAVEN_VERSION_ENV.into(), "3.9.9".into());
+        let mut env = IndexMap::new();
+        apply_pinned_version_env(None, &service_env, "maven", &installs, &mut env);
+        let path = env.get("PATH").expect("Maven PATH 前插");
+        assert!(path.starts_with(&format!(
+            "{}{}",
+            bin.display(),
+            if cfg!(windows) { ";" } else { ":" }
+        )));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn no_pin_or_no_match_is_noop() {
+        let installs = fake_installs("C:/jre8", crate::toolchain::ToolKind::Java, "1.8.0_371");
+        // 无 toolchain → 不动 env
+        let mut env = IndexMap::new();
+        apply_pinned_version_env(None, &IndexMap::new(), "spring-boot", &installs, &mut env);
+        assert!(env.is_empty());
+        // 钉扎了但没有匹配版本 → env 不变（PATH 直解兜底）
+        let tc = crate::spec::ToolchainSpec { java: Some("99".into()), ..Default::default() };
+        let mut env = IndexMap::new();
+        apply_pinned_version_env(Some(&tc), &IndexMap::new(), "spring-boot", &installs, &mut env);
+        assert!(env.is_empty());
+        // 匹配版本但 home 下无 java 二进制（假 home）→ 静默跳过
+        let tc2 = crate::spec::ToolchainSpec { java: Some("1.8".into()), ..Default::default() };
+        let mut env = IndexMap::new();
+        apply_pinned_version_env(Some(&tc2), &IndexMap::new(), "spring-boot", &installs, &mut env);
+        assert!(env.is_empty());
     }
 }
