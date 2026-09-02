@@ -38,6 +38,9 @@ fn candidate_names(kind: crate::spec::GatewayKind) -> &'static [&'static str] {
 
 /// 平台已知位置（规格 §6.2；Windows 只认 PATH，返回空）。
 fn gateway_known_dirs() -> Vec<PathBuf> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let mut out = Vec::new();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let out = Vec::new();
     #[cfg(target_os = "macos")]
     {
