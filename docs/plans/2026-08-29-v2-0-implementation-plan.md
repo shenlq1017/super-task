@@ -16,7 +16,7 @@
 8. **自托管 server 状态**：`crates/supertask-cloud-server` 已加入 workspace；配置、Argon2 auth/token 数据层、entity 数据层、SQLite migration、HTTP router/handler、`/healthz`、配额/遥测端点和本地 in-process API 集成测试已落地。正式 HTTPS 部署、运营归属和真机验收仍未完成。server 约束单列于 [docs/spec/cloud-server.md](../spec/cloud-server.md)。
 9. **端点设置**：`CloudHandle` 已具备端点校验/重载，`cloud.endpoint.set` 已注册为 Tauri IPC；浏览器 mock 保留 `supported: false, local_only: true` 降级口径。
 10. **客户端 HTTP 认证**：已接入 401 → refresh 一次 → 原请求重放一次，并在刷新成功后先持久化新 token；刷新失败清理 session。真实端点真机验收仍待完成。
-> 执行约定：先读 `<user-home>\.agents\skills\executing-plans-0.1.0\SKILL.md`；前端任务点名 skill；CLI 构建用 `CARGO_TARGET_DIR=target-cli` 防与桌面 dev 产物撞名。
+> 执行约定：先读 `project tooling/executing-plans-0.1.0\SKILL.md`；前端任务点名 skill；CLI 构建用 `CARGO_TARGET_DIR=target-cli` 防与桌面 dev 产物撞名。
 
 ## 基线与每期回归
 
@@ -34,8 +34,8 @@
 | 0.1 | C1：签名密钥生成与安全托管；updater endpoint / pubkey 替换 `REPLACE_AT_RELEASE` 占位 | `src-tauri/tauri.conf.json`、CI secrets | 真机升级链一次（旧版→新版）验证通过；inv-4 C1 销账 |
 | 0.2 | C2：安装包（Tauri bundler NSIS + MSI）+ 三平台 release 流水线（artifact 签名） | CI workflow、bundler 配置 | 三平台产物可安装可启动；inv-4 C2 销账 |
 | 0.3 | 验收专项确认：B1–B6 已按 v1.7 Phase 8 矩阵关闭，结果回写 inv-4 | `docs/inventory/…-inv-4-debts.md` | 清单化销账 |
-| 0.4 | **拍板（阻塞后续）**：服务端运营方 / 官方端点；自动同步默认开 or 关（spec §18.1/18.3） | spec §18 回填 | 决策记入 AGENTS.md 已拍板 |
-| 0.5 | 阶段切换回改：roadmap 状态、AGENTS.md 当前阶段、inv-1 交付表开 2.0 行 | 三处文档 | 一致 |
+| 0.4 | **拍板（阻塞后续）**：服务端运营方 / 官方端点；自动同步默认开 or 关（spec §18.1/18.3） | spec §18 回填 | 决策记入 repository conventions 已拍板 |
+| 0.5 | 阶段切换回改：roadmap 状态、repository conventions 当前阶段、inv-1 交付表开 2.0 行 | 三处文档 | 一致 |
 
 ## Phase 1 · core：cloud 骨架（provider / 协议 / 会话）
 
@@ -92,7 +92,7 @@
 
 ## Phase 7 · 前端
 
-> Skills：`vercel-react-best-practices`、`vercel-composition-patterns`（provider/组合）、`ui-styling`（token/对比度）；7.5 审查用 `web-design-guidelines`。按钮语义按 AGENTS.md 约定表。
+> Skills：`vercel-react-best-practices`、`vercel-composition-patterns`（provider/组合）、`ui-styling`（token/对比度）；7.5 审查用 `web-design-guidelines`。按钮语义按 repository conventions 约定表。
 
 | # | 任务 | 触点 | 验收 |
 |---|------|------|------|
@@ -116,7 +116,7 @@
 | 9.1 | `docs/spec/cloud.md` + `docs/spec/cloud-server.md`：客户端协议与参考服务边界（PUT type/opaque id/rev/refresh/unknown type/storage/seed） | docs/spec/ | 已完成；记录正式运营/HTTPS 未验收 |
 | 9.2 | yaml.md：secrets `sync: true` 增量 | `docs/spec/yaml.md` | 仍待实现/文档同步，不能宣称完成 |
 | 9.3 | ipc.md §10.12（九命令 + 端点命令 + 错误码七枚 + 零新事件声明）；architecture.md（cloud 模块一节、本地优先原则入架构原则） | 对应文档 | IPC 已同步；architecture cloud 小节仍待补 |
-| 9.4 | AGENTS.md 当前阶段 + 规范真源更新；inv-1 交付表、inv-2 server 事实、inv-3 cloud UI、inv-4 欠账回改 | living 文档 | 已完成；盘点明确区分客户端与 server |
+| 9.4 | repository conventions 当前阶段 + 规范真源更新；inv-1 交付表、inv-2 server 事实、inv-3 cloud UI、inv-4 欠账回改 | living 文档 | 已完成；盘点明确区分客户端与 server |
 | 9.5 | 全量回归四连 + 基线核对 | — | 当前自动化基线已记录于 verification；正式端点与真机项仍开放 |
 
 ## Phase 10 · 验收

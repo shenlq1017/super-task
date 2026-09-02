@@ -175,7 +175,7 @@
 - **settings**：遥测开关（默认关，文案明示发什么）、passphrase 管理、云端点配置（高级，默认官方）。
 - 浏览器 dev 模式：前端 mock IPC 增 mock provider（含冲突旋钮，对齐 mock dirty 态的确定性规则先例）。
 - 命令面板：「立即同步」「打开云页」；无死链。
-- 按钮语义按 AGENTS.md 约定：登录/立即同步 = default，解决冲突 = outline，登出 = outline、清除云端数据（若有）= destructive。
+- 按钮语义按 repository conventions 约定：登录/立即同步 = default，解决冲突 = outline，登出 = outline、清除云端数据（若有）= destructive。
 
 ## 14. CLI
 

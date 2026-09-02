@@ -1,6 +1,6 @@
 # v2.2 功能规格：生态（自定义 kind 插件 / WSL2 / 可复现导出）
 
-> 2026-08-29。状态：**规划稿（待评审拍板；拍板后更新本行与 AGENTS.md 当前阶段）**。
+> 2026-08-29。状态：**规划稿（待评审拍板；拍板后更新本行与 repository conventions 当前阶段）**。
 > 实现计划：[2026-08-29-v2-2-implementation-plan.md](2026-08-29-v2-2-implementation-plan.md)。
 > 一句话：**「更多语言」不写死进核心——自定义 kind 是数据化插件（manifest 描述 argv / 字段 / 探测 / 扫描，零代码执行），WSL2 运行时进实验区，再送 mise.toml / devcontainer.json 导出。**
 
@@ -8,7 +8,7 @@
 
 ## 1. 背景与版本序列
 
-- Python / Go 已提前至 v1.7 落地（AGENTS.md 已拍板 14）；「更多语言」（deno / bun / .NET / Rust…）由 1.7 的 generic kind 人工兜底。本版本把「每个人手写一遍 generic」变成**可安装、可识别、可分享的插件**（roadmap 缺口表「插件 / 自定义 kind：避免核心膨胀」）。
+- Python / Go 已提前至 v1.7 落地（repository conventions 已拍板 14）；「更多语言」（deno / bun / .NET / Rust…）由 1.7 的 generic kind 人工兜底。本版本把「每个人手写一遍 generic」变成**可安装、可识别、可分享的插件**（roadmap 缺口表「插件 / 自定义 kind：避免核心膨胀」）。
 - WSL2（roadmap「Windows 上跑 Linux 工具链」）与可复现导出（roadmap 2.2 备注「需要可复现时导出 devcontainer / mise.toml」）同版收口。**仍不自研 Nix。**
 - 依赖：v1.7 的 generic kind 与 launcher 结构（argv 渲染先例）；kinds 云同步依赖 v2.0（实体模型与前向兼容规则）。
 

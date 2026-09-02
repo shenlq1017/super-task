@@ -3,7 +3,7 @@
 > 日期：2026-08-29  
 > 状态：待实现（功能规格默认决策见 §16，本计划按规格 §15 交付顺序拆任务）  
 > 功能规格真源：[2026-08-29-v1-6-feature-spec.md](2026-08-29-v1-6-feature-spec.md)  
-> 上位：[AGENTS.md](../../AGENTS.md) · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md) · [1.5 复用纪律](2026-08-29-v1-5-feature-spec.md)
+> 上位：repository conventions · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md) · [1.5 复用纪律](2026-08-29-v1-5-feature-spec.md)
 
 把规格 §15 的七步交付顺序拆成可执行任务。行为细节、错误码语义、安全边界以功能规格为准；本计划只定文件、顺序、复用选型与完成标准。配套进度文档 `[2026-08-29-v1-6-progress.md]` 随实现更新。
 
@@ -137,11 +137,11 @@
 
 ## Phase 6 — 前端网关页（依赖 5；mock 可随 5.1 类型先行）
 
-**点名 skill**（按 AGENTS.md 约定，动手前先读）：
-- 页面与组件：`c:\project\my\super-task\.agents\skills\web-design-guidelines\SKILL.md`（页面审查）+ `<user-home>\.claude\skills\ui-styling\SKILL.md`（Linear 浅色 token）
-- 新增 shadcn 组件前：`c:\project\my\super-task\.agents\skills\shadcn\SKILL.md`（先 `npx shadcn@latest docs`）
-- Provider/组合：`c:\project\my\super-task\.agents\skills\vercel-composition-patterns\SKILL.md`；性能：`c:\project\my\super-task\.agents\skills\vercel-react-best-practices\SKILL.md`
-- 图标/动效清单：`<user-home>\.claude\skills\ui-ux-pro-max\SKILL.md`；浏览器点选验证：`<user-home>\.agents\skills\webapp-testing\SKILL.md`
+**点名 skill**（按 repository conventions 约定，动手前先读）：
+- 页面与组件：`project tooling/web-design-guidelines\SKILL.md`（页面审查）+ `local tooling/ui-styling\SKILL.md`（Linear 浅色 token）
+- 新增 shadcn 组件前：`project tooling/shadcn\SKILL.md`（先 `npx shadcn@latest docs`）
+- Provider/组合：`project tooling/vercel-composition-patterns\SKILL.md`；性能：`project tooling/vercel-react-best-practices\SKILL.md`
+- 图标/动效清单：`local tooling/ui-ux-pro-max\SKILL.md`；浏览器点选验证：`project tooling/webapp-testing\SKILL.md`
 
 ### 任务 6.1 协议层与 provider
 

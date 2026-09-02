@@ -1201,8 +1201,8 @@ pub fn import_readme_preview(
 ) -> Result<ReadmePreviewOut, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
     let current = state.spec().map_err(ipc_err)?;
-    let imp =
-        importer::readme::import_readme(Path::new(&workspace_id), path.as_deref()).map_err(ipc_err)?;
+    let imp = importer::readme::import_readme(Path::new(&workspace_id), path.as_deref())
+        .map_err(ipc_err)?;
     let preview = merge::preview_with_sources(
         &current,
         &imp.draft,
@@ -1229,8 +1229,8 @@ pub fn import_readme_apply(
 ) -> Result<YamlSaveOut, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
     let current = state.spec().map_err(ipc_err)?;
-    let imp =
-        importer::readme::import_readme(Path::new(&workspace_id), path.as_deref()).map_err(ipc_err)?;
+    let imp = importer::readme::import_readme(Path::new(&workspace_id), path.as_deref())
+        .map_err(ipc_err)?;
     let merged = merge::apply(&current, &imp.draft, &choices).map_err(ipc_err)?;
     let (spec, hash, warnings) = state.save_form(&merged, &base_hash).map_err(ipc_err)?;
     Ok(YamlSaveOut {
@@ -2247,10 +2247,7 @@ pub fn ai_config_default(appdata: AppDataRef<'_>, id: String) -> Result<(), IpcE
 
 /// `ai.instructions.save`：全局自定义指令（trim；空串清除；≤8000 字符）。
 #[tauri::command(rename = "ai.instructions.save")]
-pub fn ai_instructions_save(
-    appdata: AppDataRef<'_>,
-    text: String,
-) -> Result<String, IpcError> {
+pub fn ai_instructions_save(appdata: AppDataRef<'_>, text: String) -> Result<String, IpcError> {
     crate::ai::ai_instructions_save(appdata.inner(), &text).map_err(ipc_err)
 }
 

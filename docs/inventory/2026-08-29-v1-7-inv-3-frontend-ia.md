@@ -9,7 +9,7 @@
   - soon：无（SOON_COMMANDS 清空，机制保留）。
 - **前端** `frontend/src/features/registry.ts`：只存导航元数据（labelKey + group），不存 live/soon（status 来自 session.hello）。
   - `NAV_META`（`:14-28`）：三个组——`workspace`（run/logs/config/env/workspaces/discover/templates/git/docker/gateway，共 10 项）、`extend`（cloud/ai）、`system`（settings，底部 pinned，`:31`）。
-  - 约束（AGENTS.md）：导航只 map `session.hello.features`；**禁止 AppShell 按 feature id 写长 if**；禁止大桶 re-export。
+  - 约束（repository conventions）：导航只 map `session.hello.features`；**禁止 AppShell 按 feature id 写长 if**；禁止大桶 re-export。
 - 含义：**入口增删/换组是纯注册表数据改动**，不触壳层逻辑。
 
 ## 2. 路由与页面清单（实测 `frontend/src/pages/`）
@@ -45,7 +45,7 @@
 
 - **命令面板已存在**：`components/command-palette.tsx`（AppShell 挂载；roadmap「1.0 骨架、1.2 填满」已兑现）——易用性工作可在其上叠加，不必新建。
 - workspace-switcher 组件存在（`components/workspace-switcher.tsx`）。
-- Toast、TooltipProvider（delayDuration 1000ms）、确认对话框、破坏性按钮红色规范——均有全站约定（AGENTS.md「UI 按钮约定」节）。
+- Toast、TooltipProvider（delayDuration 1000ms）、确认对话框、破坏性按钮红色规范——均有全站约定（repository conventions「UI 按钮约定」节）。
 - 未见全局快捷键中心/全局搜索（除命令面板）——盘点为「不存在」，如需属于新增。
 
 ## 5. 运行页与分组（1.2 遗留的实态）
@@ -57,7 +57,7 @@
 ## 6. i18n
 
 - locale 文件：`frontend/src/i18n/locales/{zh-CN,zh-TW,en-US,ja-JP}.ts`（实测四个文件存在）。
-- parity 845 keys（AGENTS.md）；nav 文案走 `nav.<labelKey>`（registry.ts 注释，1.4 规格 §6.2）。
+- parity 845 keys（repository conventions）；nav 文案走 `nav.<labelKey>`（registry.ts 注释，1.4 规格 §6.2）。
 - 新增页面/入口的成本项：四语 key 同步 + parity 校验。
 
 ## 7. mock/开发链路

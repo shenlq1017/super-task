@@ -5,4 +5,6 @@ members = ["crates/supertask-core", "crates/supertask-cli", "crates/supertask-cl
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "UNLICENSED"
+license = "MIT"
+repository = "https://github.com/shenlq1017/super-task"
+homepage = "https://github.com/shenlq1017/super-task"

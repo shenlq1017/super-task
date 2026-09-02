@@ -1,6 +1,6 @@
 # inv-1 · 版本交付盘点（1.0–1.6 已交付功能详单）
 
-> 2026-08-29。盘点稿，供复核。来源：各版本 feature-spec / progress 文档、AGENTS.md、docs/spec/cli.md、roadmap。
+> 2026-08-29。盘点稿，供复核。来源：各版本 feature-spec / progress 文档、repository conventions、docs/spec/cli.md、roadmap。
 > 复核方式：每条括注出处文档；与原文冲突时以原文为准并回改本文。
 
 ## 1.0 — 能跑（Windows）
@@ -17,7 +17,7 @@
 
 ## 1.1 — 能开始
 
-来源：[v1-1-feature-spec](../plans/2026-08-27-v1-1-feature-spec.md)、AGENTS.md。
+来源：[v1-1-feature-spec](../plans/2026-08-27-v1-1-feature-spec.md)、repository conventions。
 
 - 模板系统（初始两套以上；后经 2026-08-28 升级扩到 5 套，见下）。
 - git clone / pull / 分支状态显示；打开 Cursor / IDEA / VS Code / 资源管理器。
@@ -25,7 +25,7 @@
 - workspaces / discover（发现）独立页面 live（`features.rs:27-28`，since 1.1）。
 - 扫描向导升级：可 merge，不是一次性生成。
 
-**模板升级（2026-08-28，Phase 0–4 已落地）**，来源：[templates-upgrade-plan](../plans/2026-08-28-templates-upgrade-plan.md)、AGENTS.md：
+**模板升级（2026-08-28，Phase 0–4 已落地）**，来源：[templates-upgrade-plan](../plans/2026-08-28-templates-upgrade-plan.md)、repository conventions：
 - 清单数据化（`template_assets/*/template.yaml`）、来源抽象（builtin/local，local 目录 `%APPDATA%/SuperTask/templates/`）。
 - `params` 参数化（`{{key}}` + `apply_to`）、`blocks` 组合引擎、`templates.preview` 纯计算预览 + 前端组合向导。
 - 新增错误码 `TEMPLATE_ID_CONFLICT` / `TEMPLATE_PARAM_MISSING` / `TEMPLATE_PARAM_UNKNOWN` / `TEMPLATE_BLOCK_DEP` / `TEMPLATE_BLOCK_PORT`。
@@ -63,7 +63,7 @@
 - macOS / Linux 支持（含 `proc/unix.rs`、probe 平台已知目录：homebrew、sdkman、nvm——`probe.rs:92-120`）。
 - Gradle 多模块：wrapper 优先（`gradlew[.bat]`），否则 PATH gradle，都无 `GRADLE_WRAPPER_MISSING`；`launch: jar` → bootJar，artifact 在 `module/build/libs`，零候选 `ARTIFACT_MISSING`、多候选 `JAR_AMBIGUOUS`（yaml.md §4.3）。
 - 构建工具探测：pom.xml → maven，build.gradle(.kts) → gradle，并存 `BUILD_TOOL_AMBIGUOUS`（yaml.md §4.3）。
-- UI 四语 i18n：zh-CN / zh-TW / en-US / ja-JP（locale 文件实测存在），parity 845 keys（AGENTS.md）。
+- UI 四语 i18n：zh-CN / zh-TW / en-US / ja-JP（locale 文件实测存在），parity 845 keys（repository conventions）。
 - Taskfile 导入（`taskfile.rs` 模块实测存在）。
 - 剩余：打包与真机矩阵。
 
@@ -81,7 +81,7 @@
 
 ## 1.6 — 能对外（网关）
 
-来源：[v1-6-feature-spec](../plans/2026-08-29-v1-feature-spec.md)、[v1-6-progress](../plans/2026-08-29-v1-progress.md)、AGENTS.md 当前阶段。
+来源：[v1-6-feature-spec](../plans/2026-08-29-v1-feature-spec.md)、[v1-6-progress](../plans/2026-08-29-v1-progress.md)、repository conventions 当前阶段。
 
 - 顶层 `gateway:` 段转 typed：kind（nginx 一等 / caddy 本机 HTTPS internal CA / apache 简化反代）、enabled、port（1024–65535 且不撞服务端口）、bin、tls、routes（host+path 前缀 → target 服务 id 或 upstream，互斥）。
 - 路由模型 → 三家配置 render 纯函数（零新依赖，6 份 golden 测试）。
@@ -101,14 +101,14 @@
 - `crates/supertask-cloud-server` 已加入 workspace；Config、Argon2 auth/token、entity 数据层、AppState、SQLite migration、HTTP router/API、`/healthz`、配额/遥测 handler 和本地 in-process API 集成测试已落地。（**注**：管理面 `/admin/api/*` 与自带 Web 控制台由 v2.0.1 追加，见下文「v2.0.1 — 云管理控制台」。）
 - 已完成客户端 `cloud.endpoint.set` Tauri IPC 注册与统一 401 refresh/replay 一次自动化接线；仍未完成或未验收：secrets `sync:true` 与 vault 编排、welcome 云端恢复、settings 遥测 UI、正式端点运营/HTTPS 和 v2.0 真机验收。（~~未知 type 服务端放行~~ 已交付：`tests/api.rs::unknown_entity_type_is_stored_and_filtered`）
 
-## 测试基线（2026-08-29，AGENTS.md）
+## 测试基线（2026-08-29，repository conventions）
 
 - `cargo test -p supertask-core`：361 全绿（历史：1.2 时 162 → 1.3 时 232 → 现 361）。
 - CLI 测试 20 全绿；集成测试 22 通过、1 ignored（1.3 时点数据）；前端 `npm run build` 通过。
 - 四语 parity 845 keys。
 - 错误码总量：`error.rs` ErrorCode 枚举约 101 个变体（grep 计数，含 DOCKER_/COMPOSE_/TEMPLATE_/GATEWAY_ 系列）。
 
-## 当前阶段定位（AGENTS.md 原文摘要）
+## 当前阶段定位（repository conventions 原文摘要）
 
 1.6 Phase 1–7 自动化范围全部落地，剩 §14.4 真机验收；1.5 剩 §13.4 人工真机项；1.4 剩打包与真机矩阵。即：**1.x 功能面已铺满 1.0–1.6 全部计划项，横向扩展是新主题**。
 

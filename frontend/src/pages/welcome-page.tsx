@@ -99,7 +99,7 @@ export function WelcomePage() {
             <Input
               value={path}
               onChange={(e) => setPath(e.target.value)}
-              placeholder="<knife4j-root>/knife4j/knife4j-demo-openapi3"
+              placeholder="C:/path/to/your/workspace"
               onKeyDown={(e) => e.key === "Enter" && openWs(path)}
             />
             <Button variant="outline" onClick={pickDirectory} disabled={busy} className="gap-1">

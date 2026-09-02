@@ -130,7 +130,10 @@ fn dedup_java_same_version(installs: &mut Vec<DiscoveredInstall>) {
     installs.sort_by_key(|i| !has_javac(Path::new(&i.home))); // 稳定排序：JDK 靠前
     let mut seen: Vec<String> = Vec::new();
     installs.retain(|i| {
-        if seen.iter().any(|v: &String| v.eq_ignore_ascii_case(&i.version)) {
+        if seen
+            .iter()
+            .any(|v: &String| v.eq_ignore_ascii_case(&i.version))
+        {
             false
         } else {
             seen.push(i.version.clone());
@@ -166,8 +169,7 @@ fn java_registry_homes() -> Vec<(PathBuf, InstallSource)> {
             continue;
         };
         for sub in subkeys {
-            let Some(home) =
-                super::resolver::read_reg_value(&format!(r"{root}\{sub}"), "JavaHome")
+            let Some(home) = super::resolver::read_reg_value(&format!(r"{root}\{sub}"), "JavaHome")
             else {
                 continue;
             };
@@ -197,7 +199,13 @@ fn java_dir_candidates() -> Vec<(PathBuf, InstallSource)> {
     if cfg!(windows) {
         if let Some(pf) = std::env::var_os("ProgramFiles") {
             let pf = PathBuf::from(pf);
-            for name in ["Java", "Eclipse Adoptium", "Amazon Corretto", "Zulu", "BellSoft"] {
+            for name in [
+                "Java",
+                "Eclipse Adoptium",
+                "Amazon Corretto",
+                "Zulu",
+                "BellSoft",
+            ] {
                 roots.push(pf.join(name));
             }
         }
@@ -238,7 +246,9 @@ fn java_dir_candidates() -> Vec<(PathBuf, InstallSource)> {
 
 /// 验证候选 java home：`bin/java -version` 提取版本；无二进制或验证失败 → None。
 fn verify_java_home(home: &Path) -> Option<String> {
-    let exe = home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" });
+    let exe = home
+        .join("bin")
+        .join(if cfg!(windows) { "java.exe" } else { "java" });
     if !exe.is_file() {
         return None;
     }
@@ -261,9 +271,7 @@ pub fn discover_node() -> Vec<DiscoveredInstall> {
     let path_node = crate::probe::find_on_path(if cfg!(windows) { "node.exe" } else { "node" });
     if let Some(exe) = path_node {
         if let Some(home) = exe.parent().map(Path::to_path_buf) {
-            let in_nvm = installs
-                .iter()
-                .any(|i| same_dir(Path::new(&i.home), &home));
+            let in_nvm = installs.iter().any(|i| same_dir(Path::new(&i.home), &home));
             if !in_nvm {
                 if let Some(version) = verify_node_home(&home) {
                     installs.push(DiscoveredInstall {
@@ -288,8 +296,7 @@ fn scan_nvm_installs() -> Vec<DiscoveredInstall> {
     let mut out = Vec::new();
     for root in nvm_roots() {
         for (home, version) in scan_nvm_dirs(&root) {
-            let active = nvm_symlink_target()
-                .is_some_and(|t| same_dir(&home, &t));
+            let active = nvm_symlink_target().is_some_and(|t| same_dir(&home, &t));
             out.push(DiscoveredInstall {
                 tool: ToolKind::Node,
                 version,
@@ -307,7 +314,10 @@ fn scan_nvm_installs() -> Vec<DiscoveredInstall> {
 fn nvm_roots() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if cfg!(windows) {
-        if let Some(home) = std::env::var("NVM_HOME").ok().map(|v| PathBuf::from(v.trim())) {
+        if let Some(home) = std::env::var("NVM_HOME")
+            .ok()
+            .map(|v| PathBuf::from(v.trim()))
+        {
             if let Some(root) = nvm_root_from_settings(&home) {
                 out.push(root);
             } else {
@@ -329,7 +339,10 @@ fn nvm_version_from_dir_name(name: &str) -> Option<String> {
         return None;
     }
     // 其余字符限定版本字符集（数字/点/连字符），防奇异目录名混入显示
-    if !ver.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
+    if !ver
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
+    {
         return None;
     }
     Some(ver.to_string())
@@ -425,8 +438,8 @@ pub fn discover_maven() -> Vec<DiscoveredInstall> {
             }
         }
     }
-    if let Some(exe) = crate::probe::find_on_path("mvn.cmd")
-        .or_else(|| crate::probe::find_on_path("mvn"))
+    if let Some(exe) =
+        crate::probe::find_on_path("mvn.cmd").or_else(|| crate::probe::find_on_path("mvn"))
     {
         if let Some(bin) = exe.parent() {
             if let Some(home) = bin.parent() {
@@ -541,7 +554,8 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         return a == b;
     }
-    a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+    a.to_string_lossy()
+        .eq_ignore_ascii_case(&b.to_string_lossy())
 }
 
 /// `reg query <key>`（无 /v）枚举子键。输出形如：
@@ -615,7 +629,10 @@ mod tests {
             Some("14.21.3")
         );
         assert_eq!(nvm_version_from_dir_name("v24").as_deref(), Some("24"));
-        assert_eq!(nvm_version_from_dir_name("v24.19.0").as_deref(), Some("24.19.0"));
+        assert_eq!(
+            nvm_version_from_dir_name("v24.19.0").as_deref(),
+            Some("24.19.0")
+        );
     }
 
     #[test]

@@ -338,10 +338,7 @@ pub fn chat_request(
 }
 
 /// 从 SSE `data:` 行提取文本增量与可选用量（OpenAI / Anthropic）。
-pub fn parse_sse_data_line(
-    style: ApiStyle,
-    data: &str,
-) -> Option<(String, Option<TokenUsage>)> {
+pub fn parse_sse_data_line(style: ApiStyle, data: &str) -> Option<(String, Option<TokenUsage>)> {
     let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
         return None;
@@ -355,9 +352,9 @@ pub fn parse_sse_data_line(
                 .get("delta")?
                 .get("content")?
                 .as_str()?;
-            let usage = v.get("usage").and_then(|u| {
-                serde_json::from_value::<TokenUsage>(u.clone()).ok()
-            });
+            let usage = v
+                .get("usage")
+                .and_then(|u| serde_json::from_value::<TokenUsage>(u.clone()).ok());
             Some((delta.to_string(), usage))
         }
         ApiStyle::AnthropicMessages => {
@@ -391,12 +388,13 @@ fn request_stream_with_ureq(
     style: ApiStyle,
     on_delta: &mut dyn FnMut(&str),
 ) -> Result<(String, Option<TokenUsage>)> {
-    let proxy = match proxy_url.filter(|_| !is_loopback_url(url)) {
-        Some(p) => Some(ureq::Proxy::new(normalize_proxy_url(p)?).map_err(|e| {
-            Error::new(ErrorCode::AiNotConfigured, format!("代理地址无效: {e}"))
-        })?),
-        None => None,
-    };
+    let proxy =
+        match proxy_url.filter(|_| !is_loopback_url(url)) {
+            Some(p) => Some(ureq::Proxy::new(normalize_proxy_url(p)?).map_err(|e| {
+                Error::new(ErrorCode::AiNotConfigured, format!("代理地址无效: {e}"))
+            })?),
+            None => None,
+        };
     let agent = {
         let mut ab = ureq::AgentBuilder::new().timeout(Duration::from_secs(timeout_secs.max(1)));
         if let Some(p) = proxy {
@@ -422,10 +420,7 @@ fn request_stream_with_ureq(
             let snippet: String = body.chars().take(300).collect();
             return Err(Error::new(
                 ErrorCode::AiRequestFailed,
-                format!(
-                    "AI 端点返回 {code}: {}",
-                    redact_key(&snippet, api_key)
-                ),
+                format!("AI 端点返回 {code}: {}", redact_key(&snippet, api_key)),
             ));
         }
         Err(e) => return Err(map_ureq_transport_err(e)),
@@ -616,7 +611,8 @@ mod tests {
 
     #[test]
     fn request_body_openai_shape() {
-        let (suffix, body) = chat_request(ApiStyle::OpenAiCompletions, "m1", "sys", "user", 512, false);
+        let (suffix, body) =
+            chat_request(ApiStyle::OpenAiCompletions, "m1", "sys", "user", 512, false);
         assert_eq!(suffix, "/chat/completions");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["model"], "m1");
@@ -628,7 +624,8 @@ mod tests {
 
     #[test]
     fn request_body_anthropic_shape() {
-        let (suffix, body) = chat_request(ApiStyle::AnthropicMessages, "m1", "sys", "user", 512, false);
+        let (suffix, body) =
+            chat_request(ApiStyle::AnthropicMessages, "m1", "sys", "user", 512, false);
         assert_eq!(suffix, "/v1/messages");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["system"], "sys");

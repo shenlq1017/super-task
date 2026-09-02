@@ -140,7 +140,9 @@ async fn any_enabled_admin(pool: &SqlitePool) -> Result<bool, AppError> {
     Ok(count > 0)
 }
 
-async fn enabled_admin_count(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<i64, AppError> {
+async fn enabled_admin_count(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<i64, AppError> {
     let count: i64 = sqlx::query_scalar(COUNT_ENABLED_ADMINS)
         .bind(ROLE_ADMIN)
         .fetch_one(&mut **tx)
@@ -166,10 +168,7 @@ fn audit(actor: &AdminActor, action: &str, target: &str) {
     tracing::info!(actor = %actor.account_id, action, target, "cloud admin mutation");
 }
 
-pub async fn require_admin(
-    pool: &SqlitePool,
-    headers: &HeaderMap,
-) -> Result<AdminActor, AppError> {
+pub async fn require_admin(pool: &SqlitePool, headers: &HeaderMap) -> Result<AdminActor, AppError> {
     let account_id = auth::account_from_bearer(pool, bearer(headers)).await?;
     ensure_admin_role(pool, &account_id).await?;
     Ok(AdminActor { account_id })
@@ -304,7 +303,9 @@ pub async fn bootstrap_admin(
 ) -> Result<(), AppError> {
     let email = email.trim().to_ascii_lowercase();
     if !valid_email(&email) {
-        return Err(AppError::BadRequest("SUPERTASK_ADMIN_EMAIL 不是合法邮箱".into()));
+        return Err(AppError::BadRequest(
+            "SUPERTASK_ADMIN_EMAIL 不是合法邮箱".into(),
+        ));
     }
     check_password(password)?;
     let hash = auth::hash_password(password)?;
@@ -334,14 +335,16 @@ pub async fn create(pool: &SqlitePool, req: CreateAccount) -> Result<AccountRow,
         return Err(AppError::BadRequest("该邮箱已存在账号".into()));
     }
     let id = account_id_for(&email);
-    sqlx::query("INSERT INTO accounts(id,email,password_hash,created_at,disabled,role) VALUES(?,?,?,?,0,?)")
-        .bind(&id)
-        .bind(&email)
-        .bind(auth::hash_password(&req.password)?)
-        .bind(auth::now())
-        .bind(&role)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO accounts(id,email,password_hash,created_at,disabled,role) VALUES(?,?,?,?,0,?)",
+    )
+    .bind(&id)
+    .bind(&email)
+    .bind(auth::hash_password(&req.password)?)
+    .bind(auth::now())
+    .bind(&role)
+    .execute(pool)
+    .await?;
     get_one(pool, &id).await
 }
 
@@ -355,7 +358,9 @@ pub async fn set_role(
     let mut tx = pool.begin().await?;
     let (current, disabled) = target_account(&mut tx, id).await?;
     if disabled {
-        return Err(AppError::BadRequest("该账号已停用，请先启用后再修改角色".into()));
+        return Err(AppError::BadRequest(
+            "该账号已停用，请先启用后再修改角色".into(),
+        ));
     }
     if role != ROLE_ADMIN {
         if actor.account_id == id {
@@ -397,11 +402,7 @@ pub async fn set_disabled(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    audit(
-        actor,
-        if req.disabled { "disable" } else { "enable" },
-        id,
-    );
+    audit(actor, if req.disabled { "disable" } else { "enable" }, id);
     get_one(pool, id).await
 }
 
@@ -481,7 +482,10 @@ mod tests {
     fn account_id_is_stable_per_email() {
         assert_eq!(account_id_for("a@b.io"), account_id_for("a@b.io"));
         assert_ne!(account_id_for("a@b.io"), account_id_for("c@d.io"));
-        assert_eq!(account_id_for("a@b.io"), account_id_for("A@B.IO".to_lowercase().as_str()));
+        assert_eq!(
+            account_id_for("a@b.io"),
+            account_id_for("A@B.IO".to_lowercase().as_str())
+        );
         assert!(account_id_for("a@b.io").starts_with("acct-"));
         assert_eq!(account_id_for("a@b.io").len(), "acct-".len() + 24);
     }

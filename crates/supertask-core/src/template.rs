@@ -1026,10 +1026,7 @@ fn plan_blocks(
             .cloned()
             .collect::<Vec<_>>(),
     );
-    Ok(Some(BlockPlan {
-        services,
-        files,
-    }))
+    Ok(Some(BlockPlan { services, files }))
 }
 
 /// 由块片段生成 supertask.yaml 文本：注入 templates 保留段与 apply_to 的 name 覆写。

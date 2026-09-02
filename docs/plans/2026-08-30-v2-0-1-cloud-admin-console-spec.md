@@ -12,7 +12,7 @@ v2.0 交付了 `crates/supertask-cloud-server`，但它**只有面向桌面客�
 没有静态页面能力。
 
 结果是：一个自托管运营方只能靠 SQL 手工查账号、手工改 `disabled`、手工删数据，新账号只能靠启动
-时的 `SUPERTASK_DEV_SEED` 种一个。AGENTS.md 里「服务端运营方/端点未拍板」「正式 HTTPS 部署与真机
+时的 `SUPERTASK_DEV_SEED` 种一个。repository conventions 里「服务端运营方/端点未拍板」「正式 HTTPS 部署与真机
 验收未完成」两条欠账，卡点之一正是**没有管理入口**。
 
 ## 2. 目标与非目标
@@ -76,7 +76,7 @@ v2.0 交付了 `crates/supertask-cloud-server`，但它**只有面向桌面客�
   会话。与客户端云协议同一条纪律。
 - 两个页面：`login-page`（含 `ADMIN_NOT_CONFIGURED` 安装态提示与口令显隐）、`accounts-page`
   （搜索 + 表格 + 新建对话框 + 行内动作 + 改密对话框）。
-- 危险操作（删除、停用、降级）一律二次确认；变体按 AGENTS.md 表：新建 `default`、保存 `success`、
+- 危险操作（删除、停用、降级）一律二次确认；变体按 repository conventions 表：新建 `default`、保存 `success`、
   停用 `warn`、删除 `destructive`、次操作 `outline`；全部 `cursor-pointer` + hover 有底色变化。
 - 文案在 `src/lib/labels.ts`，zh-CN / en-US 双语用 `navigator.language` 选择，不引 i18n 依赖。
 

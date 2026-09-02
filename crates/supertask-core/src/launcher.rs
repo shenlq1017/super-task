@@ -140,7 +140,9 @@ pub fn resolve_gradle_launcher(
 ) -> Result<(String, Vec<String>, Vec<String>)> {
     debug_assert!(is_gradle_program(program));
     let warnings: Vec<String> = Vec::new();
-    let mut candidates: Vec<PathBuf> = vec![module_dir(root, cwd).unwrap_or_else(|_| root.to_path_buf()).join(gradle_wrapper_file_name())];
+    let mut candidates: Vec<PathBuf> = vec![module_dir(root, cwd)
+        .unwrap_or_else(|_| root.to_path_buf())
+        .join(gradle_wrapper_file_name())];
     if module != "." {
         let base = module_dir(root, cwd).unwrap_or_else(|_| root.to_path_buf());
         if let Ok(dir) = module_dir(&base, module) {
@@ -354,11 +356,7 @@ fn plan_spring(
             let mut args = if module == "." {
                 vec!["spring-boot:run".into()]
             } else {
-                vec![
-                    "-pl".into(),
-                    module.into(),
-                    "spring-boot:run".into(),
-                ]
+                vec!["-pl".into(), module.into(), "spring-boot:run".into()]
             };
             if let (Some(r), false) = (root, module == ".") {
                 if maven_in_multi_module_reactor(r, svc) {
@@ -689,7 +687,10 @@ pub fn apply_pinned_version_env(
         .get("PATH")
         .cloned()
         .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
-    env.insert("PATH".into(), format!("{bin}{sep}{cur}", bin = bin.display()));
+    env.insert(
+        "PATH".into(),
+        format!("{bin}{sep}{cur}", bin = bin.display()),
+    );
     if tool == ToolKind::Java {
         env.insert("JAVA_HOME".into(), hit.home.clone());
     }
@@ -703,9 +704,10 @@ pub fn project_java_version(root: &Path, cwd_rel: &str) -> Option<String> {
     let candidates = [cwd.join(".java-version"), root.join(".java-version")];
     candidates.into_iter().find_map(|path| {
         let text = std::fs::read_to_string(path).ok()?;
-        let value = text.lines().map(str::trim).find(|line| {
-            !line.is_empty() && !line.starts_with('#')
-        })?;
+        let value = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'))?;
         crate::spec::validate::is_valid_toolchain_version(value).then(|| value.to_string())
     })
 }
@@ -749,7 +751,10 @@ pub fn apply_java_version_env(
         .get("PATH")
         .cloned()
         .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
-    env.insert("PATH".into(), format!("{bin}{sep}{cur}", bin = bin.display()));
+    env.insert(
+        "PATH".into(),
+        format!("{bin}{sep}{cur}", bin = bin.display()),
+    );
     env.insert("JAVA_HOME".into(), hit.home.clone());
 }
 
@@ -758,15 +763,14 @@ pub fn apply_java_version_env(
 pub fn version_matches(want: &str, have: &str) -> bool {
     let (want, have) = (want.trim(), have.trim());
     want.eq_ignore_ascii_case(have)
-        || have.strip_prefix(want).is_some_and(|rest| rest.starts_with('.'))
+        || have
+            .strip_prefix(want)
+            .is_some_and(|rest| rest.starts_with('.'))
 }
 
 /// 前插进 PATH 的 bin 目录：java/maven 恒 `<home>/bin`；node 优先
 /// `<home>/bin`（Unix nvm / volta），否则 `<home>`（Windows nvm 布局，node.exe 在根）。
-fn version_bin_dir(
-    home: &Path,
-    tool: crate::toolchain::ToolKind,
-) -> Option<std::path::PathBuf> {
+fn version_bin_dir(home: &Path, tool: crate::toolchain::ToolKind) -> Option<std::path::PathBuf> {
     use crate::toolchain::ToolKind;
     let exe = |name: &str| {
         if cfg!(windows) {
@@ -778,13 +782,11 @@ fn version_bin_dir(
     let bin = home.join("bin");
     match tool {
         ToolKind::Java => bin.join(exe("java")).is_file().then_some(bin),
-        ToolKind::Maven => {
-            ["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"]
-                .iter()
-                .map(|name| bin.join(name))
-                .find(|path| path.is_file())
-                .map(|_| bin)
-        }
+        ToolKind::Maven => ["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"]
+            .iter()
+            .map(|name| bin.join(name))
+            .find(|path| path.is_file())
+            .map(|_| bin),
         ToolKind::Node => {
             if bin.join(exe("node")).is_file() {
                 Some(bin)
@@ -1373,10 +1375,16 @@ services:
         let c = plan_service_in(&f, "api", Some(&root)).unwrap();
         assert_eq!(
             c.args,
-            vec!["-pl", "backend", "spring-boot:run", "-Dmaven.test.skip=true"]
+            vec![
+                "-pl",
+                "backend",
+                "spring-boot:run",
+                "-Dmaven.test.skip=true"
+            ]
         );
-        let prep = plan_maven_reactor_prep_install_in(&f.services["api"], Default::default(), &root)
-            .expect("prep install");
+        let prep =
+            plan_maven_reactor_prep_install_in(&f.services["api"], Default::default(), &root)
+                .expect("prep install");
         assert_eq!(
             prep.args,
             vec![
@@ -1580,7 +1588,11 @@ services:
 
     // ---- P2：钉扎版本 → 本机已装安装 → PATH/JAVA_HOME 生效接线 ----
 
-    fn fake_installs(home: &str, tool: crate::toolchain::ToolKind, version: &str) -> Vec<crate::toolchain::discover::DiscoveredInstall> {
+    fn fake_installs(
+        home: &str,
+        tool: crate::toolchain::ToolKind,
+        version: &str,
+    ) -> Vec<crate::toolchain::discover::DiscoveredInstall> {
         use crate::toolchain::discover::{DiscoveredInstall, InstallSource};
         vec![DiscoveredInstall {
             tool,
@@ -1615,15 +1627,38 @@ services:
     #[test]
     fn java_pin_prepends_bin_and_sets_java_home() {
         let home = mk_java_home("pin-java");
-        let installs = fake_installs(&home.display().to_string(), crate::toolchain::ToolKind::Java, "17.0.7");
-        let tc = crate::spec::ToolchainSpec { java: Some("17".into()), ..Default::default() };
+        let installs = fake_installs(
+            &home.display().to_string(),
+            crate::toolchain::ToolKind::Java,
+            "17.0.7",
+        );
+        let tc = crate::spec::ToolchainSpec {
+            java: Some("17".into()),
+            ..Default::default()
+        };
         let mut env = IndexMap::new();
-        apply_pinned_version_env(Some(&tc), &IndexMap::new(), "spring-boot", &installs, &mut env);
+        apply_pinned_version_env(
+            Some(&tc),
+            &IndexMap::new(),
+            "spring-boot",
+            &installs,
+            &mut env,
+        );
         let path = env.get("PATH").expect("PATH 应被前插");
-        assert!(path.starts_with(&format!("{}{}", home.join("bin").display(), if cfg!(windows) { ";" } else { ":" })), "PATH={path}");
+        assert!(
+            path.starts_with(&format!(
+                "{}{}",
+                home.join("bin").display(),
+                if cfg!(windows) { ";" } else { ":" }
+            )),
+            "PATH={path}"
+        );
         // 现有 PATH 作为后缀保留（不吞掉全局工具）
         assert!(path.contains(&std::env::var("PATH").unwrap_or_default()));
-        assert_eq!(env.get("JAVA_HOME").map(String::as_str), Some(home.display().to_string().as_str()));
+        assert_eq!(
+            env.get("JAVA_HOME").map(String::as_str),
+            Some(home.display().to_string().as_str())
+        );
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -1641,14 +1676,20 @@ services:
             crate::toolchain::ToolKind::Java,
             "21.0.3",
         ));
-        let tc = crate::spec::ToolchainSpec { java: Some("17".into()), ..Default::default() };
+        let tc = crate::spec::ToolchainSpec {
+            java: Some("17".into()),
+            ..Default::default()
+        };
         let mut service_env = IndexMap::new();
         service_env.insert(SERVICE_JAVA_VERSION_ENV.into(), "21.0.3".into());
         let mut env = IndexMap::new();
 
         apply_pinned_version_env(Some(&tc), &service_env, "spring-boot", &installs, &mut env);
 
-        assert_eq!(env.get("JAVA_HOME"), Some(&service_home.display().to_string()));
+        assert_eq!(
+            env.get("JAVA_HOME"),
+            Some(&service_home.display().to_string())
+        );
         let _ = fs::remove_dir_all(&workspace_home);
         let _ = fs::remove_dir_all(&service_home);
     }
@@ -1675,12 +1716,26 @@ services:
         let home = tmp_ws("pin-node-win");
         let exe = if cfg!(windows) { "node.exe" } else { "node" };
         fs::write(home.join(exe), b"x").unwrap();
-        let installs = fake_installs(&home.display().to_string(), crate::toolchain::ToolKind::Node, "24.19.0");
-        let tc = crate::spec::ToolchainSpec { node: Some("24.19.0".into()), ..Default::default() };
+        let installs = fake_installs(
+            &home.display().to_string(),
+            crate::toolchain::ToolKind::Node,
+            "24.19.0",
+        );
+        let tc = crate::spec::ToolchainSpec {
+            node: Some("24.19.0".into()),
+            ..Default::default()
+        };
         let mut env = IndexMap::new();
         apply_pinned_version_env(Some(&tc), &IndexMap::new(), "node", &installs, &mut env);
         let path = env.get("PATH").expect("node PATH 前插");
-        assert!(path.starts_with(&format!("{}{}", home.display(), if cfg!(windows) { ";" } else { ":" })), "PATH={path}");
+        assert!(
+            path.starts_with(&format!(
+                "{}{}",
+                home.display(),
+                if cfg!(windows) { ";" } else { ":" }
+            )),
+            "PATH={path}"
+        );
         // node 不设 JAVA_HOME
         assert!(env.get("JAVA_HOME").is_none());
         let _ = fs::remove_dir_all(&home);
@@ -1719,14 +1774,32 @@ services:
         apply_pinned_version_env(None, &IndexMap::new(), "spring-boot", &installs, &mut env);
         assert!(env.is_empty());
         // 钉扎了但没有匹配版本 → env 不变（PATH 直解兜底）
-        let tc = crate::spec::ToolchainSpec { java: Some("99".into()), ..Default::default() };
+        let tc = crate::spec::ToolchainSpec {
+            java: Some("99".into()),
+            ..Default::default()
+        };
         let mut env = IndexMap::new();
-        apply_pinned_version_env(Some(&tc), &IndexMap::new(), "spring-boot", &installs, &mut env);
+        apply_pinned_version_env(
+            Some(&tc),
+            &IndexMap::new(),
+            "spring-boot",
+            &installs,
+            &mut env,
+        );
         assert!(env.is_empty());
         // 匹配版本但 home 下无 java 二进制（假 home）→ 静默跳过
-        let tc2 = crate::spec::ToolchainSpec { java: Some("1.8".into()), ..Default::default() };
+        let tc2 = crate::spec::ToolchainSpec {
+            java: Some("1.8".into()),
+            ..Default::default()
+        };
         let mut env = IndexMap::new();
-        apply_pinned_version_env(Some(&tc2), &IndexMap::new(), "spring-boot", &installs, &mut env);
+        apply_pinned_version_env(
+            Some(&tc2),
+            &IndexMap::new(),
+            "spring-boot",
+            &installs,
+            &mut env,
+        );
         assert!(env.is_empty());
     }
 }

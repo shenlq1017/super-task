@@ -3,7 +3,7 @@
 > 日期：2026-08-28  
 > 状态：phase 1–6 完成（compose 运行时/构建/扫描/前端/docker feature 已翻 live），剩 phase 7 真机验收。进度见 [2026-08-28-v1-3-progress.md](2026-08-28-v1-3-progress.md)  
 > 功能规格真源：[2026-08-28-v1-3-feature-spec.md](2026-08-28-v1-3-feature-spec.md)  
-> 上位：[AGENTS.md](../../AGENTS.md) · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md)
+> 上位：repository conventions · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md)
 
 把规格 §14 交付顺序拆成可执行任务。行为细节、错误码语义、安全边界以功能规格为准。
 
@@ -55,7 +55,7 @@
 
 - **测试命令：** `cargo test -p supertask-core`
 - **覆盖：** docker 段/`service` round-trip（含未知键）；compose 服务合法与各非法字段用例；tag 格式用例；新错误码序列化；1.2 YAML（无 docker 段）回归
-- **文档：** 前端 `protocol.ts` 同步 `docker`/`service` 类型（防 TS 结构落后）；更新进度快照与 AGENTS.md；不改功能规格正文
+- **文档：** 前端 `protocol.ts` 同步 `docker`/`service` 类型（防 TS 结构落后）；更新进度快照与 repository conventions；不改功能规格正文
 - **完成标准：** 既有测试全绿；无 CLI 调用、无启动行为、docker feature 仍 soon
 
 ## Phase 2 — Docker CLI 适配层

@@ -90,13 +90,18 @@ pub fn inspect(id: &str, root: &Path, search_dirs: &[String]) -> SpringConfigOut
                 out.server_port = value.trim().parse::<u16>().ok();
             }
             if out.entries.len() >= MAX_ENTRIES {
-                out.warnings.push(format!("配置项超过 {MAX_ENTRIES} 条，已截断"));
+                out.warnings
+                    .push(format!("配置项超过 {MAX_ENTRIES} 条，已截断"));
                 return out;
             }
             let masked = is_sensitive(&key);
             out.entries.push(SpringConfigEntry {
                 key,
-                value: if masked { "••••••".into() } else { value },
+                value: if masked {
+                    "••••••".into()
+                } else {
+                    value
+                },
                 file: rel.clone(),
                 masked,
             });
@@ -127,9 +132,18 @@ fn base_rank(name: &str) -> u8 {
 
 fn is_sensitive(key: &str) -> bool {
     let k = key.to_lowercase();
-    ["password", "secret", "token", "credential", "privatekey", "private-key", "accesskey", "access-key"]
-        .iter()
-        .any(|needle| k.contains(needle))
+    [
+        "password",
+        "secret",
+        "token",
+        "credential",
+        "privatekey",
+        "private-key",
+        "accesskey",
+        "access-key",
+    ]
+    .iter()
+    .any(|needle| k.contains(needle))
 }
 
 fn parse_properties(text: &str) -> Result<Vec<(String, String)>, String> {
@@ -200,8 +214,12 @@ fn flatten_value(prefix: &str, v: &serde_yaml::Value, out: &mut Vec<(String, Str
                 };
                 // 空 map/空 sequence 也要露一行，提示「该节点存在但无内容」
                 match val {
-                    serde_yaml::Value::Mapping(m) if m.is_empty() => push_kv(&joined, "{}".into(), out),
-                    serde_yaml::Value::Sequence(s) if s.is_empty() => push_kv(&joined, "[]".into(), out),
+                    serde_yaml::Value::Mapping(m) if m.is_empty() => {
+                        push_kv(&joined, "{}".into(), out)
+                    }
+                    serde_yaml::Value::Sequence(s) if s.is_empty() => {
+                        push_kv(&joined, "[]".into(), out)
+                    }
                     _ => flatten_value(&joined, val, out),
                 }
             }
@@ -249,7 +267,11 @@ mod tests {
         .unwrap();
 
         let out = inspect("api", &root, &["backend".into(), ".".into()]);
-        assert_eq!(out.server_port, Some(9090), "server.port 只取基础文件，profile 不覆盖");
+        assert_eq!(
+            out.server_port,
+            Some(9090),
+            "server.port 只取基础文件，profile 不覆盖"
+        );
         assert_eq!(out.warnings, Vec::<String>::new());
         let get = |k: &str| out.entries.iter().find(|e| e.key == k);
         assert_eq!(get("spring.application.name").unwrap().value, "demo");
@@ -258,14 +280,23 @@ mod tests {
         assert_eq!(get("depends-on[1]").unwrap().value, "b");
         assert_eq!(get("empty").unwrap().value, "{}");
         assert_eq!(
-            get("management.endpoints.web.exposure.include").unwrap().value,
+            get("management.endpoints.web.exposure.include")
+                .unwrap()
+                .value,
             "health,info"
         );
         // 同名键跨文件并存，各带来源；基础在前
-        let ports: Vec<_> = out.entries.iter().filter(|e| e.key == "server.port").collect();
+        let ports: Vec<_> = out
+            .entries
+            .iter()
+            .filter(|e| e.key == "server.port")
+            .collect();
         assert_eq!(ports.len(), 2);
         assert_eq!(ports[0].file, "backend/src/main/resources/application.yml");
-        assert_eq!(ports[1].file, "backend/src/main/resources/application-prod.yml");
+        assert_eq!(
+            ports[1].file,
+            "backend/src/main/resources/application-prod.yml"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -280,8 +311,14 @@ mod tests {
         let out = inspect("api", &root, &[".".into()]);
         assert_eq!(out.server_port, None);
         assert!(out.entries.iter().any(|e| e.key == "a" && e.value == "1"));
-        assert!(out.entries.iter().any(|e| e.key == "b" && e.value == "two"), "多文档第二段应并入");
-        assert!(out.warnings.iter().any(|w| w.contains("application-bad.yml")));
+        assert!(
+            out.entries.iter().any(|e| e.key == "b" && e.value == "two"),
+            "多文档第二段应并入"
+        );
+        assert!(out
+            .warnings
+            .iter()
+            .any(|w| w.contains("application-bad.yml")));
 
         // 目录不存在 → 干净空结果（非错误）
         let missing = inspect("api", &root.join("nowhere"), &[".".into()]);

@@ -46,7 +46,7 @@ import { PROTOCOL, cmd, event } from "./protocol";
 // knife4j-demo-openapi3 project the integration tests target.
 // ---------------------------------------------------------------------------
 
-const DEMO_ROOT = "<knife4j-root>/knife4j/knife4j-demo-openapi3";
+const DEMO_ROOT = "C:/path/to/your/workspace";
 
 function demoSpec(): SuperTaskFile {
   return {

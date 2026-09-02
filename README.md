@@ -4,8 +4,7 @@
 
 本地优先 · Tauri 2 + Rust(不是 Electron)· Windows 优先,macOS / Linux 可用
 
-> 推送到 GitHub 后,在标题下方补一行徽章:
-> `https://github.com/<你的用户名>/super-task/actions/workflows/ci.yml` 的 badge。
+[![CI](https://github.com/shenlq1017/super-task/actions/workflows/ci.yml/badge.svg)](https://github.com/shenlq1017/super-task/actions/workflows/ci.yml)
 
 ---
 
@@ -26,8 +25,6 @@ AI 助手为了「帮你验证」,拉起了一堆服务;
 服务和代码早就躺在你的机器上,SuperTask 只是把它们的启动方式
 记进一份 `supertask.yaml`——从此一键或一条命令拉起整个栈:
 按顺序、等健康、聚日志;收工时,一键清掉整棵进程树。
-
-*(截图待补:运行页全景)*
 
 ## 30 秒上手
 
@@ -120,12 +117,13 @@ scripts:
 
 ## 构建与开发
 
-正式安装包还在路上(发布工程是路线图的一部分)。在那之前,从源码跑起来比你想的快:
+正式安装包会随 GitHub Release 发布。在那之前,从源码跑起来比你想的快:
 
 ```bash
-git clone https://github.com/<你的用户名>/super-task && cd super-task
-npm install            # 前端依赖
-npm run tauri dev      # 桌面应用(纯前端调试用 npm run dev,走 mock IPC)
+git clone https://github.com/shenlq1017/super-task && cd super-task
+npm ci                 # 根目录 Tauri CLI
+npm --prefix frontend ci
+npm run tauri:dev      # 桌面应用(纯前端调试用 npm run dev,走 mock IPC)
 ```
 
 CLI 与测试:
@@ -145,9 +143,9 @@ CI 在 Windows、macOS、Linux 三平台跑。
 
 ## 云参考服务(自托管)
 
-仓库包含独立的参考服务端 `crates/supertask-cloud-server`,
-用于协议联调与自托管:账号、配额、管理面与自带控制台。
-正式 HTTPS 部署尚未完成,生产使用请先自行评估。
+仓库包含独立的实验性自托管参考服务端 `crates/supertask-cloud-server`,
+用于协议联调和本地自托管:账号、配额、管理面与自带控制台。
+它不是 SuperTask 官方线上服务,也不是生产级部署方案。公网部署前必须自行配置 HTTPS、反向代理、访问控制、数据库备份和密钥轮换。
 
 ```bash
 cargo run -p supertask-cloud-server        # 默认 127.0.0.1:8787
@@ -173,12 +171,12 @@ Windows 下一键拉起两端:`start-cloud.ps1`。
 - CLI 与 MCP:[docs/spec/cli.md](docs/spec/cli.md)
 - 云客户端协议:[docs/spec/cloud.md](docs/spec/cloud.md) · 云参考服务:[docs/spec/cloud-server.md](docs/spec/cloud-server.md)
 - 系统盘点(现状真源):[docs/inventory/](docs/inventory/)
-- 给 agent 的贡献指南:[AGENTS.md](AGENTS.md)
+- 贡献指南:[CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## 参与
 
 - 报错、提需求:Issue;改代码:PR。
-- 动手前建议先读 [AGENTS.md](AGENTS.md) 和 [docs/inventory/](docs/inventory/),那里记着系统的现状与欠账。
+- 动手前建议先读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [docs/inventory/](docs/inventory/),那里记着开发约定、系统现状与欠账。
 
 ## 致谢
 
@@ -187,4 +185,4 @@ Windows 下一键拉起两端:`start-cloud.ps1`。
 
 ## License
 
-⚠️ 仓库还没有 LICENSE 文件——正式发布前需要选定许可证并补上。
+SuperTask is released under the [MIT License](LICENSE).

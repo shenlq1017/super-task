@@ -10,20 +10,31 @@ use supertask_core::scan::scan_draft;
 use supertask_core::spec::{HealthSpec, HealthType};
 use supertask_core::Engine;
 
-const DEMO: &str = r"<knife4j-root>\knife4j\knife4j-demo-openapi3";
-const PARENT: &str = r"<knife4j-root>\knife4j";
+const DEMO_ENV: &str = "SUPER_TASK_KNIFE4J_DEMO";
 
-fn demo_exists() -> bool {
-    Path::new(DEMO).join("pom.xml").is_file()
+fn demo_dir() -> Option<PathBuf> {
+    std::env::var_os(DEMO_ENV).map(PathBuf::from)
+}
+
+fn parent_dir() -> Option<PathBuf> {
+    demo_dir()?.parent().map(Path::to_path_buf)
+}
+
+fn demo_exists(demo: &Path) -> bool {
+    demo.join("pom.xml").is_file()
 }
 
 #[test]
 fn scan_demo_dir_is_single_module() {
-    if !demo_exists() {
-        eprintln!("skip: knife4j demo not found at {DEMO}");
+    let Some(demo) = demo_dir() else {
+        eprintln!("skip: set {DEMO_ENV} to the knife4j demo directory");
+        return;
+    };
+    if !demo_exists(&demo) {
+        eprintln!("skip: knife4j demo not found at {}", demo.display());
         return;
     }
-    let (spec, _warnings) = scan_draft(Path::new(DEMO)).expect("demo scan");
+    let (spec, _warnings) = scan_draft(&demo).expect("demo scan");
     assert!(spec.services.contains_key("knife4j-demo-openapi3"));
     let svc = spec.services.get("knife4j-demo-openapi3").unwrap();
     // 单模块（带本地 parent）：module="." 省略 -pl，无需 reactor 根即可 spring-boot:run
@@ -34,10 +45,16 @@ fn scan_demo_dir_is_single_module() {
 
 #[test]
 fn scan_parent_finds_both_demos() {
-    if !demo_exists() {
+    let Some(demo) = demo_dir() else {
+        return;
+    };
+    let Some(parent) = parent_dir() else {
+        return;
+    };
+    if !demo_exists(&demo) {
         return;
     }
-    let (spec, _) = scan_draft(Path::new(PARENT)).expect("parent scan");
+    let (spec, _) = scan_draft(&parent).expect("parent scan");
     assert!(
         spec.services.contains_key("knife4j-demo-openapi3"),
         "keys: {:?}",
@@ -52,8 +69,15 @@ fn scan_parent_finds_both_demos() {
 #[test]
 #[ignore = "manual e2e: needs knife4j repo + JDK/Maven; may take 2+ min"]
 fn engine_start_demo_and_call_api() {
-    if !demo_exists() {
-        eprintln!("skip: demo not at {DEMO}");
+    let Some(demo) = demo_dir() else {
+        eprintln!("skip: set {DEMO_ENV} to the knife4j demo directory");
+        return;
+    };
+    let Some(parent) = parent_dir() else {
+        return;
+    };
+    if !demo_exists(&demo) {
+        eprintln!("skip: demo not at {}", demo.display());
         return;
     }
 
@@ -65,7 +89,7 @@ fn engine_start_demo_and_call_api() {
         probe.java.version, probe.maven.version
     );
 
-    let yaml_path = PathBuf::from(PARENT).join("supertask.yaml");
+    let yaml_path = parent.join("supertask.yaml");
     let yaml_backup = yaml_path
         .exists()
         .then(|| fs::read_to_string(&yaml_path).unwrap());
@@ -104,7 +128,7 @@ services:
     fs::write(&yaml_path, yaml).expect("write supertask.yaml");
 
     let eng = Engine::new();
-    let (warnings, snap) = eng.open(Path::new(PARENT)).expect("workspace.open");
+    let (warnings, snap) = eng.open(&parent).expect("workspace.open");
     eprintln!("open warnings: {:?}", warnings);
     eprintln!(
         "initial snapshot: {:?}",

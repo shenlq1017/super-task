@@ -98,18 +98,21 @@ impl PtyManager {
         for (k, v) in &opts.env {
             cmd.env(k, v);
         }
-        let mut child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| Error::new(ErrorCode::TermSpawnFailed, format!("终端进程拉起失败: {e}")))?;
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| Error::new(ErrorCode::TermSpawnFailed, format!("PTY 读取端打开失败: {e}")))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| Error::new(ErrorCode::TermSpawnFailed, format!("PTY 写入端打开失败: {e}")))?;
+        let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
+            Error::new(ErrorCode::TermSpawnFailed, format!("终端进程拉起失败: {e}"))
+        })?;
+        let reader = pair.master.try_clone_reader().map_err(|e| {
+            Error::new(
+                ErrorCode::TermSpawnFailed,
+                format!("PTY 读取端打开失败: {e}"),
+            )
+        })?;
+        let writer = pair.master.take_writer().map_err(|e| {
+            Error::new(
+                ErrorCode::TermSpawnFailed,
+                format!("PTY 写入端打开失败: {e}"),
+            )
+        })?;
         let killer = child.clone_killer();
 
         {
@@ -146,7 +149,9 @@ impl PtyManager {
                     }
                 }
             })
-            .map_err(|e| Error::new(ErrorCode::TermSpawnFailed, format!("输出线程拉起失败: {e}")))?;
+            .map_err(|e| {
+                Error::new(ErrorCode::TermSpawnFailed, format!("输出线程拉起失败: {e}"))
+            })?;
 
         // 退出等待：wait 返回即整会话结束（移除 + Exited 事件）。
         let waiter = Arc::clone(self);
@@ -159,7 +164,9 @@ impl PtyManager {
                 };
                 waiter.finalize(id, code);
             })
-            .map_err(|e| Error::new(ErrorCode::TermSpawnFailed, format!("等待线程拉起失败: {e}")))?;
+            .map_err(|e| {
+                Error::new(ErrorCode::TermSpawnFailed, format!("等待线程拉起失败: {e}"))
+            })?;
         Ok(())
     }
 
@@ -260,7 +267,12 @@ pub struct PtyOpenOptions {
 
 impl PtyOpenOptions {
     /// 用平台默认 shell 打开（PowerShell 优先，回落 cmd / $SHELL）。
-    pub fn with_default_shell(cwd: PathBuf, env: IndexMap<String, String>, cols: u16, rows: u16) -> Self {
+    pub fn with_default_shell(
+        cwd: PathBuf,
+        env: IndexMap<String, String>,
+        cols: u16,
+        rows: u16,
+    ) -> Self {
         let (program, args) = default_shell();
         Self {
             program,

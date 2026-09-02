@@ -42,7 +42,7 @@
 - 前端：`components/terminal-view.tsx`（xterm + Fit + ResizeObserver 防抖 resize + 重开态）、
   运行页「终端」Tab（locked 占位移除，`lockTerminal`/`unscheduled` locale 键删除）、mock 假 shell
   （help/echo/pwd/ls/dir/ver/date/clear/exit，事件序列与真链路同形）、四语 locale +6 键。
-- 文档：ipc.md §10.15、本计划、AGENTS.md、inventory 同步。
+- 文档：ipc.md §10.15、本计划、repository conventions、inventory 同步。
 
 ## 偏差备案
 

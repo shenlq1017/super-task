@@ -34,8 +34,8 @@ pub mod secrets;
 pub mod spec;
 pub mod spring;
 pub mod taskfile;
-pub mod term;
 pub mod template;
+pub mod term;
 pub mod toolchain;
 
 pub use engine::{

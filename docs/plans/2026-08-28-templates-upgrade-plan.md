@@ -228,7 +228,7 @@ blocks:
 2. `docs/spec/ipc.md` §10.1：补 `source`/`params`/新错误码。
 3. `docs/spec/yaml.md`：`templates:` 保留段说明补 `source: local` 取值。
 4. UI 设计文档：替换 ComingSoon 描述为实装设计（卡片网格 + 来源分段 + 创建表单 + 底部入口区）。
-5. AGENTS.md 决策摘要追加一行：模板来源抽象与「不做远程市场」的重申。
+5. repository conventions 决策摘要追加一行：模板来源抽象与「不做远程市场」的重申。
 
 ---
 

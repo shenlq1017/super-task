@@ -3,7 +3,7 @@
 > 日期：2026-08-28  
 > 状态：phase 1 完成；phase 2 core 侧完成（工具链 provider/resolver/安装 + 网络策略）。mirror/registry 运行时注入与 /env UI 未做。进度见 [2026-08-28-v1-2-progress.md](2026-08-28-v1-2-progress.md)  
 > 功能规格真源：[2026-08-27-v1-2-feature-spec.md](2026-08-27-v1-2-feature-spec.md)  
-> 上位：[AGENTS.md](../../AGENTS.md) · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md)
+> 上位：repository conventions · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md)
 
 本文把规格 **§18 交付顺序** 拆成可执行任务：点名文件、测试和完成标准。行为细节、错误码语义、安全边界以功能规格为准，不在此重复。
 
@@ -69,7 +69,7 @@
   - 代理 URL 拒绝 userinfo 与非 http(s)
   - app.json v1 升 v2 不丢未知键
   - 新 ErrorCode 序列化字符串
-- **文档：** 更新 `AGENTS.md`「当前阶段」；本计划；**不**改功能规格正文
+- **文档：** 更新 `repository conventions`「当前阶段」；本计划；**不**改功能规格正文
 - **完成标准：** 既有测试全绿；无 UI、无 provider、无安装
 
 ## Phase 2 — 工具链与网络

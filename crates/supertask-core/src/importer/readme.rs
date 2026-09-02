@@ -1208,14 +1208,23 @@ mod tests {
             svc_kind(classify(&tok("mvn -pl user-api spring-boot:run -am"))),
             "spring-boot"
         );
-        assert_eq!(svc_kind(classify(&tok("./mvnw spring-boot:run"))), "spring-boot");
+        assert_eq!(
+            svc_kind(classify(&tok("./mvnw spring-boot:run"))),
+            "spring-boot"
+        );
         assert_eq!(svc_kind(classify(&tok("gradle bootRun"))), "spring-boot");
         assert_eq!(svc_kind(classify(&tok("npm run dev"))), "node");
         assert_eq!(svc_kind(classify(&tok("yarn start"))), "node");
         assert_eq!(svc_kind(classify(&tok("pnpm run storybook"))), "node");
-        assert_eq!(svc_kind(classify(&tok("python app.py --port 8000"))), "python");
+        assert_eq!(
+            svc_kind(classify(&tok("python app.py --port 8000"))),
+            "python"
+        );
         assert_eq!(svc_kind(classify(&tok("python -m http.server"))), "python");
-        assert_eq!(svc_kind(classify(&tok("uvicorn app:app --reload"))), "python");
+        assert_eq!(
+            svc_kind(classify(&tok("uvicorn app:app --reload"))),
+            "python"
+        );
         assert_eq!(svc_kind(classify(&tok("gunicorn -w 2 main:app"))), "python");
         assert_eq!(svc_kind(classify(&tok("go run ."))), "go");
         assert_eq!(svc_kind(classify(&tok("go run ./cmd/server"))), "go");
@@ -1226,7 +1235,10 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // script 候选
-        assert_eq!(svc_kind(classify(&tok("mvn clean package"))), "script:package");
+        assert_eq!(
+            svc_kind(classify(&tok("mvn clean package"))),
+            "script:package"
+        );
         assert_eq!(svc_kind(classify(&tok("./mvnw install"))), "script:install");
         assert_eq!(svc_kind(classify(&tok("npm install"))), "script:install");
         assert_eq!(svc_kind(classify(&tok("pnpm run build"))), "script:build");
@@ -1235,17 +1247,26 @@ mod tests {
             svc_kind(classify(&tok("pip install -r requirements.txt"))),
             "script:pip-install"
         );
-        assert_eq!(svc_kind(classify(&tok("go build ./..."))), "script:go-build");
+        assert_eq!(
+            svc_kind(classify(&tok("go build ./..."))),
+            "script:go-build"
+        );
         assert_eq!(svc_kind(classify(&tok("go test ./..."))), "script:go-test");
         assert_eq!(
             svc_kind(classify(&tok("docker-compose build"))),
             "script:compose-build"
         );
-        assert_eq!(svc_kind(classify(&tok("docker compose down"))), "script:compose-down");
+        assert_eq!(
+            svc_kind(classify(&tok("docker compose down"))),
+            "script:compose-down"
+        );
         // 忽略
         assert!(classify(&tok("git clone ./repo.git")).is_none());
         assert!(classify(&tok("python -m venv .venv")).is_none());
-        assert_eq!(svc_kind(classify(&tok("python -m pytest -q"))), "script:test");
+        assert_eq!(
+            svc_kind(classify(&tok("python -m pytest -q"))),
+            "script:test"
+        );
         assert!(classify(&tok("cargo build --release")).is_none());
         assert!(classify(&tok("curl -X POST http://x")).is_none());
     }
@@ -1268,7 +1289,7 @@ mod tests {
     fn inline_code_capped_and_deduped() {
         let p = parse_readme("## 快速开始\n\n用 `pnpm run storybook` 预览。\n");
         assert_eq!(p.services[0].confidence, Confidence::Medium); // inline 上限 medium
-        // fenced + inline 相同命令 → 只留首个
+                                                                  // fenced + inline 相同命令 → 只留首个
         let p = parse_readme("## Run\n\n```sh\nnpm run dev\n```\n\n或直接 `npm run dev`。\n");
         assert_eq!(p.services.len(), 1);
     }
@@ -1277,8 +1298,9 @@ mod tests {
     fn continuation_and_console_blocks() {
         let p = parse_readme("## Run\n\n```sh\nmvn -pl user-api \\\n  spring-boot:run\n```\n");
         assert_eq!(p.services.len(), 1);
-        let p =
-            parse_readme("## Run\n\n```console\n$ docker compose up db\nPS C:\\x> npm run dev\n```\n");
+        let p = parse_readme(
+            "## Run\n\n```console\n$ docker compose up db\nPS C:\\x> npm run dev\n```\n",
+        );
         assert_eq!(p.services.len(), 2);
     }
 
@@ -1309,7 +1331,11 @@ mod tests {
     #[test]
     fn discovery_case_insensitive_markdown() {
         let root = temp_root("disc");
-        fs::write(root.join("readme.MARKDOWN"), "## Run\n\n```sh\nnpm run dev\n```\n").unwrap();
+        fs::write(
+            root.join("readme.MARKDOWN"),
+            "## Run\n\n```sh\nnpm run dev\n```\n",
+        )
+        .unwrap();
         let imp = import_readme(&root, None).unwrap();
         assert_eq!(imp.readme_path.as_deref(), Some("readme.MARKDOWN"));
         assert_eq!(imp.draft.services.len(), 1);
@@ -1321,7 +1347,10 @@ mod tests {
         let imp = import_readme(&root, None).unwrap();
         assert!(imp.readme_path.is_none());
         assert!(imp.draft.services.is_empty());
-        assert!(imp.warnings.iter().any(|w| w.contains("未在工作区根目录发现")));
+        assert!(imp
+            .warnings
+            .iter()
+            .any(|w| w.contains("未在工作区根目录发现")));
     }
 
     #[test]
@@ -1352,7 +1381,10 @@ mod tests {
         let web = imp.draft.services.get("web").expect("web");
         assert_eq!(web.script.as_deref(), Some("dev"));
         let metas = imp.service_sources.get("web").expect("web metas");
-        let script_meta = metas.iter().find(|m| m.field == "script").expect("script meta");
+        let script_meta = metas
+            .iter()
+            .find(|m| m.field == "script")
+            .expect("script meta");
         assert_eq!(script_meta.source, "scan");
         assert_eq!(script_meta.readme_value.as_deref(), Some("start"));
         // README-only 服务进入草稿

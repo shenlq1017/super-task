@@ -51,7 +51,7 @@
 用量）+ 行内动作 + `create-account-dialog` + `password-dialog` + `confirm-dialog` 二次确认 +
 自身行守卫（对自己的停用/降级/删除入口按 actor id 隐藏）。
 `labels.ts`：zh / en 双语约 90 键，`navigator.language` 选择，不引 i18next。
-变体按 AGENTS.md：新建 `default`、保存 `success`、停用 `warn`、删除 `destructive`、次操作
+变体按 repository conventions：新建 `default`、保存 `success`、停用 `warn`、删除 `destructive`、次操作
 `outline`；全部 `cursor-pointer` + hover 有底色变化。
 
 ### Phase 5 — 文档与 CI ✅
@@ -65,7 +65,7 @@
   新增 §8 管理面契约、§9 安全要求第 6 条、§10 验收清单。
 - `docs/plans/2026-08-29-v2-0-feature-spec.md` §3：「移动端 / 网页控制台」拆开，网页控制台标注
   为 2026-08-30 范围变更并指向 v2.0.1 规格。
-- 本组新文档 + `AGENTS.md` 当期阶段与文档地图 + inv-1 / inv-4 回写。
+- 本组新文档 + `repository conventions` 当期阶段与文档地图 + inv-1 / inv-4 回写。
 
 ## 执行记录
 
@@ -124,7 +124,7 @@
 - 关掉控制台窗口后：服务端 `healthz` 连接被拒，`supertask-cloud-server` / `cargo` / vite node
   进程数归零 —— 两棵进程树一起清干净。
 
-两处非显然的坑（都写进了 cloud-server.md §2.3 与 AGENTS.md）：
+两处非显然的坑（都写进了 cloud-server.md §2.3 与 repository conventions）：
 
 1. **`Start-Process cargo` 在新控制台窗口里以 code 1 退出**。`cargo.exe` 是 rustup shim，同样的
    命令经 `cmd /c` 包装后正常监听。脚本因此统一用 `cmd /c "title … & <cmd> & echo. & pause"`，

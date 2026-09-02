@@ -77,7 +77,13 @@ pub async fn list_accounts(
 ) -> Result<Json<Vec<admin::AccountRow>>, AppError> {
     admin::require_admin(&state.pool, &headers).await?;
     Ok(Json(
-        admin::list(&state.pool, query.query.as_deref(), query.limit, query.offset).await?,
+        admin::list(
+            &state.pool,
+            query.query.as_deref(),
+            query.limit,
+            query.offset,
+        )
+        .await?,
     ))
 }
 
@@ -102,7 +108,9 @@ pub async fn set_role(
     let actor = admin::require_admin(&state.pool, &headers).await?;
     check_id(&id)?;
     let Json(request) = request.map_err(|_| invalid_json())?;
-    Ok(Json(admin::set_role(&state.pool, &actor, &id, request).await?))
+    Ok(Json(
+        admin::set_role(&state.pool, &actor, &id, request).await?,
+    ))
 }
 
 pub async fn set_disabled(

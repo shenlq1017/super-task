@@ -67,10 +67,7 @@ fn admin_api(state: AppState) -> Router {
             "/admin/api/accounts",
             get(admin_http::list_accounts).post(admin_http::create_account),
         )
-        .route(
-            "/admin/api/accounts/{id}/role",
-            put(admin_http::set_role),
-        )
+        .route("/admin/api/accounts/{id}/role", put(admin_http::set_role))
         .route(
             "/admin/api/accounts/{id}/disabled",
             put(admin_http::set_disabled),
@@ -110,11 +107,7 @@ struct Redirect(&'static str);
 
 impl IntoResponse for Redirect {
     fn into_response(self) -> Response {
-        (
-            StatusCode::TEMPORARY_REDIRECT,
-            [(header::LOCATION, self.0)],
-        )
-            .into_response()
+        (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, self.0)]).into_response()
     }
 }
 
@@ -126,7 +119,11 @@ async fn serve_console_asset(
     State(state): State<AppState>,
     UrlPath(asset): UrlPath<String>,
 ) -> Response {
-    let name = if asset.is_empty() { "index.html" } else { &asset };
+    let name = if asset.is_empty() {
+        "index.html"
+    } else {
+        &asset
+    };
     serve_console_file(&state.config.console_dir, name).await
 }
 

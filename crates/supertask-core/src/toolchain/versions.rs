@@ -138,7 +138,10 @@ mod tests {
     #[test]
     fn remote_tail_is_capped() {
         let fake = FakeRunner::new();
-        let many = (0..200).map(|i| format!("1.{i}.0")).collect::<Vec<_>>().join("\n");
+        let many = (0..200)
+            .map(|i| format!("1.{i}.0"))
+            .collect::<Vec<_>>()
+            .join("\n");
         fake.push_ok(many);
         let v = versions_for(&fake, ToolKind::Node, true);
         // 200 条远端只取尾 30 条；且取的是最新段（1.199.0 在、1.0.0 不在）

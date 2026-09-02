@@ -30,7 +30,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or_else(|| std::io::Error::other("seed password missing"))?;
         auth::seed_account(&state.pool, &config.seed_email, password).await?;
     }
-    match (config.admin_email.as_deref(), config.admin_password.as_deref()) {
+    match (
+        config.admin_email.as_deref(),
+        config.admin_password.as_deref(),
+    ) {
         (Some(email), Some(password)) => {
             admin::bootstrap_admin(&state.pool, email, password).await?;
             tracing::warn!(

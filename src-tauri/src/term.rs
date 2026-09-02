@@ -102,7 +102,10 @@ pub fn term_write(
     data: String,
 ) -> Result<Accepted, IpcError> {
     term.0.write(session_id, &data).map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 #[tauri::command(rename = "term.resize")]
@@ -113,15 +116,18 @@ pub fn term_resize(
     rows: u16,
 ) -> Result<Accepted, IpcError> {
     term.0.resize(session_id, cols, rows).map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }
 
 /// 关闭会话（幂等）。ConPTY 句柄关闭会终止其上进程树，无需 Job Object。
 #[tauri::command(rename = "term.close")]
-pub fn term_close(
-    term: State<'_, TermHandle>,
-    session_id: u64,
-) -> Result<Accepted, IpcError> {
+pub fn term_close(term: State<'_, TermHandle>, session_id: u64) -> Result<Accepted, IpcError> {
     term.0.close(session_id).map_err(ipc_err)?;
-    Ok(Accepted { accepted: true, order: None })
+    Ok(Accepted {
+        accepted: true,
+        order: None,
+    })
 }

@@ -170,7 +170,11 @@ pub fn ai_config_save(appdata: &AppDataHandle, input: AiConfigSaveIn) -> Result<
         },
     )?;
     if let Some(key) = &input.api_key {
-        let result = if key.is_empty() { ai::clear_key() } else { ai::write_key(key) };
+        let result = if key.is_empty() {
+            ai::clear_key()
+        } else {
+            ai::write_key(key)
+        };
         if let Err(error) = result {
             *guard = previous;
             return Err(error);
@@ -264,7 +268,10 @@ pub fn ai_template_delete(appdata: &AppDataHandle, id: &str) -> Result<()> {
 pub fn ai_status(appdata: &AppDataHandle) -> Result<AiStatusOut> {
     let guard = appdata.lock().expect("appdata lock");
     let list = ai::configs(&guard);
-    let default_id = guard.ai_default_config.clone().or_else(|| list.first().map(|c| c.id.clone()));
+    let default_id = guard
+        .ai_default_config
+        .clone()
+        .or_else(|| list.first().map(|c| c.id.clone()));
     Ok(AiStatusOut {
         configs: list
             .iter()
@@ -293,8 +300,14 @@ pub fn ai_status(appdata: &AppDataHandle) -> Result<AiStatusOut> {
         usage_today: guard
             .ai_usage
             .clone()
-            .map(|u| ai::AiUsageOut { date: u.date.clone(), count: u.today_count() })
-            .unwrap_or_else(|| ai::AiUsageOut { date: ai::today_utc(), count: 0 }),
+            .map(|u| ai::AiUsageOut {
+                date: u.date.clone(),
+                count: u.today_count(),
+            })
+            .unwrap_or_else(|| ai::AiUsageOut {
+                date: ai::today_utc(),
+                count: 0,
+            }),
     })
 }
 

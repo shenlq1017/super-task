@@ -13,5 +13,21 @@ src-tauri/gen
 *.log
 design_outputs/
 
+# Local agent/editor and verification material
+.agents/
+.cursor/
+.claude/
+.workbuddy/
+.verify/
+.tmp/
+
+# Local runtime databases and credentials
+*.db
+*.sqlite
+*.sqlite3
+
+# Local one-off Rust debugging examples
+crates/supertask-core/examples/*dbg.rs
+
 # 云参考服务默认库（SUPERTASK_DATABASE_URL=sqlite://supertask-cloud.db）：本机跑服务端即产生，含口令 hash
 supertask-cloud.db*

@@ -56,8 +56,9 @@ pub fn probe_bundle() -> ToolchainProbeBundle {
     // P1：安装枚举（java 注册表/目录 + nvm）与 9 工具探测并行，总耗时 ≈ 最慢单项。
     let (mut tools, managers, installs) = std::thread::scope(|s| {
         let probe = s.spawn(probe_toolchain_inner);
-        let managers =
-            s.spawn(|| crate::toolchain::provider::detect_availability(&crate::toolchain::ProcessRunner));
+        let managers = s.spawn(|| {
+            crate::toolchain::provider::detect_availability(&crate::toolchain::ProcessRunner)
+        });
         let disc = s.spawn(crate::toolchain::discover::discover_installed);
         let tools = probe.join().unwrap_or_default();
         let managers = managers.join().unwrap_or_default();
@@ -127,7 +128,8 @@ fn is_dir_equivalent(a: &Path, b: &Path) -> bool {
     if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         return a == b;
     }
-    a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+    a.to_string_lossy()
+        .eq_ignore_ascii_case(&b.to_string_lossy())
 }
 
 /// Hard ceiling for a single tool probe. A healthy tool answers in <1s; a
@@ -145,33 +147,36 @@ pub fn probe_toolchain() -> ToolchainProbe {
 fn probe_toolchain_inner() -> ToolchainProbe {
     // Probe every tool on its own thread so the total time is bounded by the
     // slowest single tool, not the sum of them.
-    let (java, maven, gradle, node, npm, pnpm, yarn, bun, python, go, gw) = std::thread::scope(|s| {
-        let java = s.spawn(|| probe_one(&["java.exe", "java"], &["-version"]));
-        let maven = s.spawn(|| probe_one(&["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"], &["-v"]));
-        let gradle = s.spawn(|| probe_one(&["gradle.bat", "gradle.exe", "gradle"], &["--version"]));
-        let node = s.spawn(|| probe_one(&["node.exe", "node"], &["-v"]));
-        let npm = s.spawn(|| probe_one(&["npm.cmd", "npm.exe", "npm"], &["-v"]));
-        let pnpm = s.spawn(|| probe_one(&["pnpm.cmd", "pnpm.exe", "pnpm"], &["-v"]));
-        let yarn = s.spawn(|| probe_one(&["yarn.cmd", "yarn.exe", "yarn"], &["-v"]));
-        let bun = s.spawn(|| probe_one(&["bun.exe", "bun"], &["--version"]));
-        // 1.7 §5：Windows Store 别名 `python` 非 0 退出即 not found（probe_one 现语义覆盖）
-        let python = s.spawn(|| probe_one(&["python.exe", "python", "python3"], &["--version"]));
-        let go = s.spawn(|| probe_one(&["go.exe", "go"], &["version"]));
-        let gw = s.spawn(crate::gateway::probe::probe_gateway);
-        (
-            java.join().unwrap_or_default(),
-            maven.join().unwrap_or_default(),
-            gradle.join().unwrap_or_default(),
-            node.join().unwrap_or_default(),
-            npm.join().unwrap_or_default(),
-            pnpm.join().unwrap_or_default(),
-            yarn.join().unwrap_or_default(),
-            bun.join().unwrap_or_default(),
-            python.join().unwrap_or_default(),
-            go.join().unwrap_or_default(),
-            gw.join().unwrap_or_default(),
-        )
-    });
+    let (java, maven, gradle, node, npm, pnpm, yarn, bun, python, go, gw) =
+        std::thread::scope(|s| {
+            let java = s.spawn(|| probe_one(&["java.exe", "java"], &["-version"]));
+            let maven = s.spawn(|| probe_one(&["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"], &["-v"]));
+            let gradle =
+                s.spawn(|| probe_one(&["gradle.bat", "gradle.exe", "gradle"], &["--version"]));
+            let node = s.spawn(|| probe_one(&["node.exe", "node"], &["-v"]));
+            let npm = s.spawn(|| probe_one(&["npm.cmd", "npm.exe", "npm"], &["-v"]));
+            let pnpm = s.spawn(|| probe_one(&["pnpm.cmd", "pnpm.exe", "pnpm"], &["-v"]));
+            let yarn = s.spawn(|| probe_one(&["yarn.cmd", "yarn.exe", "yarn"], &["-v"]));
+            let bun = s.spawn(|| probe_one(&["bun.exe", "bun"], &["--version"]));
+            // 1.7 §5：Windows Store 别名 `python` 非 0 退出即 not found（probe_one 现语义覆盖）
+            let python =
+                s.spawn(|| probe_one(&["python.exe", "python", "python3"], &["--version"]));
+            let go = s.spawn(|| probe_one(&["go.exe", "go"], &["version"]));
+            let gw = s.spawn(crate::gateway::probe::probe_gateway);
+            (
+                java.join().unwrap_or_default(),
+                maven.join().unwrap_or_default(),
+                gradle.join().unwrap_or_default(),
+                node.join().unwrap_or_default(),
+                npm.join().unwrap_or_default(),
+                pnpm.join().unwrap_or_default(),
+                yarn.join().unwrap_or_default(),
+                bun.join().unwrap_or_default(),
+                python.join().unwrap_or_default(),
+                go.join().unwrap_or_default(),
+                gw.join().unwrap_or_default(),
+            )
+        });
     ToolchainProbe {
         java,
         maven,
@@ -318,11 +323,7 @@ fn probe_one(candidates: &[&str], args: &[&str]) -> ToolProbe {
     probe_one_in(candidates, args, std::env::var_os("PATH").as_deref())
 }
 
-fn probe_one_in(
-    candidates: &[&str],
-    args: &[&str],
-    path: Option<&std::ffi::OsStr>,
-) -> ToolProbe {
+fn probe_one_in(candidates: &[&str], args: &[&str], path: Option<&std::ffi::OsStr>) -> ToolProbe {
     for name in candidates {
         if let Some(exe) = path.and_then(|path| find_on_path_in(name, path)) {
             return match version_of(&exe, args) {

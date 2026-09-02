@@ -60,7 +60,9 @@ async fn headless_app() -> axum::Router {
 async fn call(app: &mut axum::Router, request: Request<Body>) -> (StatusCode, Value) {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
-    let body = to_bytes(response.into_body(), 2 * 1024 * 1024).await.unwrap();
+    let body = to_bytes(response.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
     let value = if body.is_empty() {
         Value::Null
     } else {
@@ -280,7 +282,13 @@ async fn account_lifecycle_roles_and_password() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // The new account can sign in to the client API but not to the console.
-    let member_token = bearer(&mut app, "/auth/login", "new.user@supertask.invalid", MEMBER_PASSWORD).await;
+    let member_token = bearer(
+        &mut app,
+        "/auth/login",
+        "new.user@supertask.invalid",
+        MEMBER_PASSWORD,
+    )
+    .await;
     let (status, body) = call(&mut app, get("/admin/api/accounts", Some(&member_token))).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], "ADMIN_FORBIDDEN");
@@ -288,18 +296,32 @@ async fn account_lifecycle_roles_and_password() {
     // Promote → console login works → demote → it stops working.
     let (status, body) = call(
         &mut app,
-        put_json(&format!("/admin/api/accounts/{new_id}/role"), &token, json!({"role":"admin"})),
+        put_json(
+            &format!("/admin/api/accounts/{new_id}/role"),
+            &token,
+            json!({"role":"admin"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["role"], "admin");
     assert!(!admin_token(&mut app).await.is_empty());
-    let promoted = bearer(&mut app, "/admin/api/login", "new.user@supertask.invalid", MEMBER_PASSWORD).await;
+    let promoted = bearer(
+        &mut app,
+        "/admin/api/login",
+        "new.user@supertask.invalid",
+        MEMBER_PASSWORD,
+    )
+    .await;
     assert!(!promoted.is_empty());
 
     let (status, body) = call(
         &mut app,
-        put_json(&format!("/admin/api/accounts/{new_id}/role"), &token, json!({"role":"user"})),
+        put_json(
+            &format!("/admin/api/accounts/{new_id}/role"),
+            &token,
+            json!({"role":"user"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -308,7 +330,11 @@ async fn account_lifecycle_roles_and_password() {
     // Admin-set password replaces the credential; refresh rotation still requires admin.
     let (status, _) = call(
         &mut app,
-        put_json(&format!("/admin/api/accounts/{new_id}/password"), &token, json!({"password":"rotated-password-9"})),
+        put_json(
+            &format!("/admin/api/accounts/{new_id}/password"),
+            &token,
+            json!({"password":"rotated-password-9"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -317,19 +343,30 @@ async fn account_lifecycle_roles_and_password() {
         Request::post("/auth/login")
             .header("content-type", "application/json")
             .body(Body::from(
-                json!({"email":"new.user@supertask.invalid","password":MEMBER_PASSWORD}).to_string(),
+                json!({"email":"new.user@supertask.invalid","password":MEMBER_PASSWORD})
+                    .to_string(),
             ))
             .unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let rotated = bearer(&mut app, "/auth/login", "new.user@supertask.invalid", "rotated-password-9").await;
+    let rotated = bearer(
+        &mut app,
+        "/auth/login",
+        "new.user@supertask.invalid",
+        "rotated-password-9",
+    )
+    .await;
     assert!(!rotated.is_empty());
 
     // Disable blocks sign-in immediately; enable restores it.
     let (status, body) = call(
         &mut app,
-        put_json(&format!("/admin/api/accounts/{new_id}/disabled"), &token, json!({"disabled":true})),
+        put_json(
+            &format!("/admin/api/accounts/{new_id}/disabled"),
+            &token,
+            json!({"disabled":true}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -339,7 +376,8 @@ async fn account_lifecycle_roles_and_password() {
         Request::post("/auth/login")
             .header("content-type", "application/json")
             .body(Body::from(
-                json!({"email":"new.user@supertask.invalid","password":"rotated-password-9"}).to_string(),
+                json!({"email":"new.user@supertask.invalid","password":"rotated-password-9"})
+                    .to_string(),
             ))
             .unwrap(),
     )
@@ -353,10 +391,18 @@ async fn account_lifecycle_roles_and_password() {
     .await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
 
-    let (status, body) = call(&mut app, get("/admin/api/accounts?query=new.user", Some(&token))).await;
+    let (status, body) = call(
+        &mut app,
+        get("/admin/api/accounts?query=new.user", Some(&token)),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 1);
-    let (status, body) = call(&mut app, get("/admin/api/accounts?query=nothing", Some(&token))).await;
+    let (status, body) = call(
+        &mut app,
+        get("/admin/api/accounts?query=nothing", Some(&token)),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.as_array().unwrap().is_empty());
 }
@@ -370,8 +416,14 @@ async fn self_service_guards_protect_the_operator() {
     let own_id = me["account_id"].as_str().unwrap().to_string();
 
     for (path, payload) in [
-        (format!("/admin/api/accounts/{own_id}/disabled"), json!({"disabled":true})),
-        (format!("/admin/api/accounts/{own_id}/role"), json!({"role":"user"})),
+        (
+            format!("/admin/api/accounts/{own_id}/disabled"),
+            json!({"disabled":true}),
+        ),
+        (
+            format!("/admin/api/accounts/{own_id}/role"),
+            json!({"role":"user"}),
+        ),
     ] {
         let (status, body) = call(&mut app, put_json(&path, &token, payload)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
@@ -409,7 +461,11 @@ async fn self_service_guards_protect_the_operator() {
         .expect("second admin created");
     let (status, _) = call(
         &mut app,
-        put_json(&format!("/admin/api/accounts/{second}/role"), &token, json!({"role":"user"})),
+        put_json(
+            &format!("/admin/api/accounts/{second}/role"),
+            &token,
+            json!({"role":"user"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -417,7 +473,11 @@ async fn self_service_guards_protect_the_operator() {
     // Unknown account ids are 404; malformed ids — including encoded traversal — are 400.
     let (status, body) = call(
         &mut app,
-        put_json("/admin/api/accounts/acct-missing/role", &token, json!({"role":"admin"})),
+        put_json(
+            "/admin/api/accounts/acct-missing/role",
+            &token,
+            json!({"role":"admin"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -426,11 +486,7 @@ async fn self_service_guards_protect_the_operator() {
         "/admin/api/accounts/%2e%2e%2f%2e%2e%2fetc/role",
         "/admin/api/accounts/bad!id/role",
     ] {
-        let (status, body) = call(
-            &mut app,
-            put_json(path, &token, json!({"role":"admin"})),
-        )
-        .await;
+        let (status, body) = call(&mut app, put_json(path, &token, json!({"role":"admin"}))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
         assert_eq!(body["code"], "BAD_REQUEST", "{path}");
     }
@@ -496,7 +552,13 @@ async fn deleting_an_account_cascades_every_child_row() {
     let doomed_id = body["id"].as_str().unwrap().to_string();
 
     // Give the account real child rows through the public client API.
-    let doomed = bearer(&mut app, "/auth/login", "doomed@supertask.invalid", MEMBER_PASSWORD).await;
+    let doomed = bearer(
+        &mut app,
+        "/auth/login",
+        "doomed@supertask.invalid",
+        MEMBER_PASSWORD,
+    )
+    .await;
     let (status, _) = call(
         &mut app,
         put_json(
@@ -512,7 +574,9 @@ async fn deleting_an_account_cascades_every_child_row() {
         Request::post("/telemetry/batch")
             .header("authorization", format!("Bearer {doomed}"))
             .header("content-type", "application/json")
-            .body(Body::from(json!({"events":[{"event":"app_start"}]}).to_string()))
+            .body(Body::from(
+                json!({"events":[{"event":"app_start"}]}).to_string(),
+            ))
             .unwrap(),
     )
     .await;
@@ -540,11 +604,7 @@ async fn deleting_an_account_cascades_every_child_row() {
     let (status, _) = call(&mut app, get("/quota", Some(&doomed))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    let (status, body) = call(
-        &mut app,
-        get("/admin/api/accounts", Some(&token)),
-    )
-    .await;
+    let (status, body) = call(&mut app, get("/admin/api/accounts", Some(&token))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body.as_array()
@@ -637,7 +697,10 @@ async fn unbuilt_console_falls_back_to_setup_notice() {
     let app = admin_app().await;
     let response = app.clone().oneshot(get("/admin/", None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()["content-type"], "text/html; charset=utf-8");
+    assert_eq!(
+        response.headers()["content-type"],
+        "text/html; charset=utf-8"
+    );
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("build:console"));
 }

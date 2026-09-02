@@ -410,7 +410,10 @@ impl Engine {
     /// [`Engine::invalidate_toolchain_probe`] 立即失效。不要求已打开工作区。
     pub fn toolchain_probe(&self, refresh: bool) -> crate::probe::ToolchainProbeBundle {
         crate::toolchain::resolver::refresh_process_path();
-        let mut cache = self.toolchain_probe_cache.lock().expect("toolchain probe cache");
+        let mut cache = self
+            .toolchain_probe_cache
+            .lock()
+            .expect("toolchain probe cache");
         let fresh = cache
             .as_ref()
             .is_some_and(|(at, _)| !refresh && at.elapsed() < TOOLCHAIN_PROBE_TTL);
@@ -418,16 +421,15 @@ impl Engine {
             let f = Arc::clone(&self.toolchain_probe_fn.lock().expect("toolchain probe fn"));
             *cache = Some((Instant::now(), f()));
         }
-        cache
-            .as_ref()
-            .expect("cache filled above")
-            .1
-            .clone()
+        cache.as_ref().expect("cache filled above").1.clone()
     }
 
     /// 工具链状态可能已变（安装/升级成功）→ 丢弃缓存，下次访问重探。
     pub fn invalidate_toolchain_probe(&self) {
-        *self.toolchain_probe_cache.lock().expect("toolchain probe cache") = None;
+        *self
+            .toolchain_probe_cache
+            .lock()
+            .expect("toolchain probe cache") = None;
     }
 
     /// 测试接缝：替换探测函数（同时清缓存），用于验证缓存/失效语义而不真 spawn。
@@ -1297,7 +1299,8 @@ impl Engine {
             let is_jar = eff_svc.kind == "spring-boot" && eff_svc.launch.as_deref() == Some("jar");
             // §6.3 环境链：ws+profile < secrets/env_file < 服务+profile env < 端口注入 < 网络注入(最低)
             let app_net = self.app_network.lock().expect("app_network lock").clone();
-            let (mut env, env_sources) = build_service_env(&eff_spec, id, &g.root, app_net.as_ref())?;
+            let (mut env, env_sources) =
+                build_service_env(&eff_spec, id, &g.root, app_net.as_ref())?;
             // P2：服务 env 的版本选择优先于工作区 toolchain，命中本机已装安装后
             // 前插子进程 PATH +（java）JAVA_HOME。仅真机 spawner 且确有钉扎时探测。
             if matches!(self.spawner, SpawnerKind::Real) {
@@ -1352,8 +1355,13 @@ impl Engine {
                         );
                     }
                     if eff_svc.kind == "spring-boot"
-                        && (tc.and_then(|t| t.maven.as_deref()).is_some_and(|v| !v.trim().is_empty())
-                            || eff_svc.env.get(crate::launcher::SERVICE_MAVEN_VERSION_ENV).is_some_and(|v| !v.trim().is_empty()))
+                        && (tc
+                            .and_then(|t| t.maven.as_deref())
+                            .is_some_and(|v| !v.trim().is_empty())
+                            || eff_svc
+                                .env
+                                .get(crate::launcher::SERVICE_MAVEN_VERSION_ENV)
+                                .is_some_and(|v| !v.trim().is_empty()))
                     {
                         crate::launcher::apply_pinned_version_env(
                             tc,
@@ -1818,8 +1826,16 @@ impl Engine {
             .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
         Ok(crate::ipc::EnvEffectiveOutput {
             id: id.to_string(),
-            captured_at_ms: slot.env_snapshot.as_ref().map(|s| s.captured_at_ms).filter(|t| *t > 0),
-            entries: slot.env_snapshot.as_ref().map(|s| s.entries.clone()).unwrap_or_default(),
+            captured_at_ms: slot
+                .env_snapshot
+                .as_ref()
+                .map(|s| s.captured_at_ms)
+                .filter(|t| *t > 0),
+            entries: slot
+                .env_snapshot
+                .as_ref()
+                .map(|s| s.entries.clone())
+                .unwrap_or_default(),
         })
     }
 
@@ -1868,8 +1884,7 @@ impl Engine {
                 build_service_env(&eff_spec, id, &root, app_net.as_ref())?.0
             }
             None => {
-                let (file_env, _warnings) =
-                    crate::secrets::load_file_layers(&g.spec, &root, None)?;
+                let (file_env, _warnings) = crate::secrets::load_file_layers(&g.spec, &root, None)?;
                 let mut env = g.spec.env.clone();
                 for (k, v) in file_env {
                     env.insert(k, v);
@@ -3096,7 +3111,9 @@ fn persist_env_snapshots(root: &Path, slots: &HashMap<String, Slot>) {
             map.insert(id.clone(), snap.clone());
         }
     }
-    let Ok(text) = serde_json::to_string(&map) else { return };
+    let Ok(text) = serde_json::to_string(&map) else {
+        return;
+    };
     let f = env_snapshot_file(root);
     let Some(dir) = f.parent() else { return };
     if fs::create_dir_all(dir).is_err() {
@@ -3106,8 +3123,11 @@ fn persist_env_snapshots(root: &Path, slots: &HashMap<String, Slot>) {
 }
 
 fn load_env_snapshots(root: &Path, slots: &mut HashMap<String, Slot>) {
-    let Ok(text) = fs::read_to_string(env_snapshot_file(root)) else { return };
-    let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, EnvSnapshot>>(&text) else {
+    let Ok(text) = fs::read_to_string(env_snapshot_file(root)) else {
+        return;
+    };
+    let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, EnvSnapshot>>(&text)
+    else {
         return;
     };
     for (id, snap) in map {
@@ -3506,15 +3526,12 @@ fn run_script_cmds(
 /// `eff_spec` 已是 overlay 后的文件（profiles::overlay_spec）。
 /// 同时返回每个键的最终来源层（后者覆盖前者，同键取最后写入方）：
 /// workspace | env_file | service | port | network（键不在返回 env 里时无条目）。
-    fn build_service_env(
+fn build_service_env(
     eff_spec: &SuperTaskFile,
     id: &str,
     root: &Path,
     app_network: Option<&crate::appdata::AppNetwork>,
-) -> Result<(
-    IndexMap<String, String>,
-    IndexMap<String, &'static str>,
-)> {
+) -> Result<(IndexMap<String, String>, IndexMap<String, &'static str>)> {
     // Keep long-lived desktop processes in sync with PATH changes made by
     // winget or another installer after SuperTask started.
     crate::toolchain::resolver::refresh_process_path();
@@ -5652,7 +5669,11 @@ services:
         assert_eq!(count.load(Ordering::SeqCst), 2, "refresh=true 强制重探");
         eng.invalidate_toolchain_probe();
         let _ = eng.toolchain_probe(false);
-        assert_eq!(count.load(Ordering::SeqCst), 3, "install/upgrade 后失效重探");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            3,
+            "install/upgrade 后失效重探"
+        );
     }
 
     #[test]
@@ -5790,7 +5811,10 @@ services:
         let after = eng.env_effective("ping").unwrap();
         assert!(!after.entries.is_empty());
         // B：快照落盘 + 重开工作区可回看
-        assert!(root.join(".supertask").join("env-snapshots.json").is_file(), "启动后应持久化快照");
+        assert!(
+            root.join(".supertask").join("env-snapshots.json").is_file(),
+            "启动后应持久化快照"
+        );
         eng.close().unwrap();
         let eng2 = Engine::ping_for_test();
         eng2.open(&root).unwrap();

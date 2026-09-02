@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    path::PathBuf,
-};
+use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -37,7 +34,9 @@ impl Config {
         let admin_email = non_empty_env("SUPERTASK_ADMIN_EMAIL").map(|v| v.to_ascii_lowercase());
         let admin_password = non_empty_env("SUPERTASK_ADMIN_PASSWORD");
         if admin_email.is_some() != admin_password.is_some() {
-            return Err("管理控制台需要同时设置 SUPERTASK_ADMIN_EMAIL 与 SUPERTASK_ADMIN_PASSWORD".into());
+            return Err(
+                "管理控制台需要同时设置 SUPERTASK_ADMIN_EMAIL 与 SUPERTASK_ADMIN_PASSWORD".into(),
+            );
         }
         Ok(Self {
             bind,

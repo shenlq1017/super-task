@@ -2,8 +2,8 @@
 
 > 日期：2026-08-26  
 > 状态：骨架已落地；本文件是**后续前端实现真源**（任务级）。  
-> 上位：`AGENTS.md` · [IPC](../spec/ipc.md) · [UI 占位](2026-08-25-ui-extensibility.md) · [界面设计](2026-08-26-ui-design-1.0-2.1.md) · [1.0 功能规格](2026-08-25-v1-0-feature-spec.md)  
-> 执行：新会话打开本文件后，**先读并遵循** `<user-home>\.agents\skills\executing-plans-0.1.0\SKILL.md`（分批 3 个任务、验证、停下来等人）。
+> 上位：`repository conventions` · [IPC](../spec/ipc.md) · [UI 占位](2026-08-25-ui-extensibility.md) · [界面设计](2026-08-26-ui-design-1.0-2.1.md) · [1.0 功能规格](2026-08-25-v1-0-feature-spec.md)
+> 执行：新会话打开本文件后，**先读并遵循** `project tooling/executing-plans-0.1.0\SKILL.md`（分批 3 个任务、验证、停下来等人）。
 
 ---
 
@@ -49,18 +49,18 @@ cargo test -p supertask-core
 
 | 简称 | 路径 | 何时 |
 |------|------|------|
-| **executing-plans** | `<user-home>\.agents\skills\executing-plans-0.1.0\SKILL.md` | 执行本计划的每一个会话 |
-| **shadcn** | `c:\project\my\super-task\.agents\skills\shadcn\SKILL.md` | 任何组件增删、表单、Sidebar、Command、Toast、Field |
-| **shadcn/styling** | `c:\project\my\super-task\.agents\skills\shadcn\rules\styling.md` | className、gap、语义色、`cn()` |
-| **shadcn/forms** | `c:\project\my\super-task\.agents\skills\shadcn\rules\forms.md` | 配置页、扫描向导、env 表 |
-| **shadcn/composition** | `c:\project\my\super-task\.agents\skills\shadcn\rules\composition.md` | Card/Dialog/Tabs/Empty/Alert |
-| **shadcn/icons** | `c:\project\my\super-task\.agents\skills\shadcn\rules\icons.md` | Lucide、`data-icon`、禁止 emoji |
-| **react-perf** | `c:\project\my\super-task\.agents\skills\vercel-react-best-practices\SKILL.md` | 写/改 React 时先看分类再打开具体 rule |
-| **composition** | `c:\project\my\super-task\.agents\skills\vercel-composition-patterns\SKILL.md` | Provider、禁止 boolean 模式爆炸 |
-| **web-guidelines** | `c:\project\my\super-task\.agents\skills\web-design-guidelines\SKILL.md` | 每个页面做完做一次 UI 审查 |
-| **ui-styling** | `<user-home>\.claude\skills\ui-styling\SKILL.md` | token、亮色主题、shadcn+Tailwind 合层 |
-| **ui-ux-pro-max** | `<user-home>\.claude\skills\ui-ux-pro-max\SKILL.md` | 对照设计文档的图标/动效/对比度清单 |
-| **webapp-testing** | `<user-home>\.agents\skills\webapp-testing\SKILL.md` | `tauri dev` / `vite` 下点选验证 |
+| **executing-plans** | `project tooling/executing-plans-0.1.0\SKILL.md` | 执行本计划的每一个会话 |
+| **shadcn** | `project tooling/shadcn\SKILL.md` | 任何组件增删、表单、Sidebar、Command、Toast、Field |
+| **shadcn/styling** | `project tooling/shadcn\rules\styling.md` | className、gap、语义色、`cn()` |
+| **shadcn/forms** | `project tooling/shadcn\rules\forms.md` | 配置页、扫描向导、env 表 |
+| **shadcn/composition** | `project tooling/shadcn\rules\composition.md` | Card/Dialog/Tabs/Empty/Alert |
+| **shadcn/icons** | `project tooling/shadcn\rules\icons.md` | Lucide、`data-icon`、禁止 emoji |
+| **react-perf** | `project tooling/vercel-react-best-practices\SKILL.md` | 写/改 React 时先看分类再打开具体 rule |
+| **composition** | `project tooling/vercel-composition-patterns\SKILL.md` | Provider、禁止 boolean 模式爆炸 |
+| **web-guidelines** | `project tooling/web-design-guidelines\SKILL.md` | 每个页面做完做一次 UI 审查 |
+| **ui-styling** | `local tooling/ui-styling\SKILL.md` | token、亮色主题、shadcn+Tailwind 合层 |
+| **ui-ux-pro-max** | `local tooling/ui-ux-pro-max\SKILL.md` | 对照设计文档的图标/动效/对比度清单 |
+| **webapp-testing** | `project tooling/webapp-testing\SKILL.md` | `tauri dev` / `vite` 下点选验证 |
 
 react-perf 要打开的 **具体 rule 文件**（均在 `.agents/skills/vercel-react-best-practices/rules/`）：
 

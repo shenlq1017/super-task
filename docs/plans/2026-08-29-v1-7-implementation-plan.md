@@ -3,7 +3,7 @@
 > 2026-08-29。依据：[2026-08-29-v1-7-feature-spec.md](2026-08-29-v1-7-feature-spec.md)（含盘点评估与拍板表）。
 > 状态：**Phase 0–7 自动化范围已完成（2026-08-29）；剩 Phase 8 真机验收矩阵 + Playwright 起步。**
 > 基线达成：core 348 lib（全目标 374）/ cli 20 全绿；前端 `npm run build` 通过；四语 parity 875 keys（基线 845）。
-> 执行约定：先读 `<user-home>\.agents\skills\executing-plans-0.1.0\SKILL.md`（注：该路径 2026-08-29 实测不存在，按计划直接执行）；前端任务点名 skill；CLI 构建用 `CARGO_TARGET_DIR=target-cli` 防与桌面 dev 产物撞名。
+> 执行约定：先读 `project tooling/executing-plans-0.1.0\SKILL.md`（注：该路径 2026-08-29 实测不存在，按计划直接执行）；前端任务点名 skill；CLI 构建用 `CARGO_TARGET_DIR=target-cli` 防与桌面 dev 产物撞名。
 
 ## 实现期偏差与决策备案（2026-08-29）
 
@@ -30,7 +30,7 @@
 
 - [x] 功能规格 + 本实现计划
 - [x] roadmap 版本地图插 1.7、§2.2 移除 Python/Go
-- [x] AGENTS.md：当前阶段 / 规范真源 / 已拍板 14–16
+- [x] repository conventions：当前阶段 / 规范真源 / 已拍板 14–16
 - [x] 盘点回改（living 约定）：inv-2 散点 6→7 处；inv-4 A1 现状修正 + A1–A4 排期标注；inv-5 决策记录
 
 ## Phase 1 · core：python / go / generic 三 kind
@@ -75,7 +75,7 @@
 
 ## Phase 5 · 前端：运行时支持 + 易用性
 
-> Skills：`vercel-react-best-practices`（组件性能）、`vercel-composition-patterns`（provider/组合）、`ui-styling`（token/对比度）；5.7 审查用 `web-design-guidelines`。按钮语义色按 AGENTS.md 约定表。
+> Skills：`vercel-react-best-practices`（组件性能）、`vercel-composition-patterns`（provider/组合）、`ui-styling`（token/对比度）；5.7 审查用 `web-design-guidelines`。按钮语义色按 repository conventions 约定表。
 
 | # | 任务 | 触点 | 验收 |
 |---|------|------|------|
@@ -107,7 +107,7 @@
 | 7.2 | yaml.md：§4.2 kind 表（python/go/generic 转可启动，去掉 2.2 标注）、§4 新字段与矩阵、`group` 转 live、network python/go 段、grace/PORT 规则 | `docs/spec/yaml.md` + `supertask.schema.json` | 与实现一致 |
 | 7.3 | ipc.md §10.11（1.7 增量：probe 扩展、注入键表、分组语义、错误码两枚、零新命令声明） | `docs/spec/ipc.md` | 契约同步 |
 | 7.4 | architecture.md（三 kind 备注、启动注入链一节）、cli.md（doctor 覆盖 python/go 一句） | 对应文档 | 同步 |
-| 7.5 | 全量回归四连 + AGENTS.md 当前阶段更新 + inv 文档按 living 约定回改（inv-1 交付表、inv-4 欠账划账） | 全部 | 基线达标 |
+| 7.5 | 全量回归四连 + repository conventions 当前阶段更新 + inv 文档按 living 约定回改（inv-1 交付表、inv-4 欠账划账） | 全部 | 基线达标 |
 
 ## Phase 8 · 验收（真机矩阵 + Playwright 起步）
 

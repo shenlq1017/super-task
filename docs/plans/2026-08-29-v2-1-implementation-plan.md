@@ -2,7 +2,7 @@
 
 > 2026-08-29。依据：[2026-08-29-v2-1-feature-spec.md](2026-08-29-v2-1-feature-spec.md)（规划稿，随拍板同步修订）。
 > 前置：v2.0 收尾基线（若 2.1 先行，ureq 由本期引入，Phase 2 任务不变）。
-> 执行约定：先读 `<user-home>\.agents\skills\executing-plans-0.1.0\SKILL.md`；前端任务点名 skill。
+> 执行约定：先读 `project tooling/executing-plans-0.1.0\SKILL.md`；前端任务点名 skill。
 
 ## 基线与每期回归
 
@@ -59,7 +59,7 @@
 |---|------|------|------|
 | 5.1 | ipc.md §10.13（四命令 + 错误码五枚）；architecture.md（importer / ai 模块一节：确定性导入 + sanitize 原则） | docs/spec/ | 契约同步 |
 | 5.2 | yaml.md **零增量**（README 导入只产出既有字段；AI 配置在 appdata 不在 yaml）——核对后在本文记档 | — | 核对结论回填 |
-| 5.3 | AGENTS.md 当前阶段 + 规范真源；inv-1 交付表回改 | living 文档 | 盘点=当前事实 |
+| 5.3 | repository conventions 当前阶段 + 规范真源；inv-1 交付表回改 | living 文档 | 盘点=当前事实 |
 | 5.4 | 全量回归四连 + 基线核对 | — | core ≈ 570+ / parity ≈ 985 |
 
 ## Phase 6 · 验收
@@ -110,7 +110,7 @@
   config RawTab「AI 建议」卡（建议 yaml 围栏提取 + 整段填入编辑器不保存）、mock 确定性
   回文 AI、四语 parity 1035 keys。
 - **Phase 5 文档**：ipc.md §10.13（九命令 + 约束）、architecture.md §8（AI 模块）、
-  AGENTS.md 当前阶段、inventory inv-1/inv-3 回改。
+  repository conventions 当前阶段、inventory inv-1/inv-3 回改。
 - 测试基线：core 408 单测全绿（AI 新增 ~38）；`cargo check -p supertask` 通过；
   `npm run build` 通过；parity 1035×4 全齐。CLI 无新命令（本期无）。
 
@@ -159,7 +159,7 @@
   基线 core 453（+45）/ cli 20 全绿；`cargo check -p supertask`、`npm run build`、
   parity 1057×4 通过。
 - **文档**：ipc.md §10.14（README 导入两命令 + 确定性约束）+ §10.13 错误码行更新；
-  architecture.md §9（导入器模块）；AGENTS.md 当前阶段；inventory inv-1/inv-3 回改。
+  architecture.md §9（导入器模块）；repository conventions 当前阶段；inventory inv-1/inv-3 回改。
 
 **偏差备案（续）**：
 

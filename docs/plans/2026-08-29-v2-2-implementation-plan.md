@@ -2,7 +2,7 @@
 
 > 2026-08-29。依据：[2026-08-29-v2-2-feature-spec.md](2026-08-29-v2-2-feature-spec.md)（规划稿，随拍板同步修订）。
 > 前置：v2.1 收尾基线；kinds 云同步（Phase 6）硬依赖 v2.0 已交付。
-> 执行约定：先读 `<user-home>\.agents\skills\executing-plans-0.1.0\SKILL.md`；前端任务点名 skill；CLI 构建用 `CARGO_TARGET_DIR=target-cli`。
+> 执行约定：先读 `project tooling/executing-plans-0.1.0\SKILL.md`；前端任务点名 skill；CLI 构建用 `CARGO_TARGET_DIR=target-cli`。
 
 ## 基线与每期回归
 
@@ -78,7 +78,7 @@
 |---|------|------|------|
 | 7.1 | yaml.md：`runtime` / `wsl_distro` 字段、自定义 kind 一节（manifest 全 schema + 安全边界说明） | `docs/spec/yaml.md` + `supertask.schema.json` | 与实现一致 |
 | 7.2 | cloud.md：kind 实体；ipc.md §10.14（五命令 + 错误码六枚）；cli.md（export --format）；architecture.md（KindRegistry 一节、WSL 实验边界） | 对应文档 | 契约同步 |
-| 7.3 | AGENTS.md 当前阶段 + 规范真源；inv-1 交付表、inv-4 D 类排期表回改（插件/WSL2/导出销账） | living 文档 | 盘点=当前事实 |
+| 7.3 | repository conventions 当前阶段 + 规范真源；inv-1 交付表、inv-4 D 类排期表回改（插件/WSL2/导出销账） | living 文档 | 盘点=当前事实 |
 | 7.4 | 全量回归四连 + 基线核对 | — | core ≈ 640+ / cli ≈ 34 / parity ≈ 1030 |
 
 ## Phase 8 · 验收

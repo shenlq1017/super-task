@@ -29,8 +29,7 @@ pub use client::{
 };
 pub use prompt::{
     build_config_suggest, build_enrich_draft, build_explain_logs, build_test_connection,
-    ConfigSuggestInput,
-    ExplainLogsInput, ServiceContext,
+    ConfigSuggestInput, ExplainLogsInput, ServiceContext,
 };
 pub use sanitize::{sanitize_text, tail_truncate, REDACTED};
 
@@ -963,44 +962,44 @@ pub fn complete<F: FnMut(&str)>(
                 }
             }
         } else {
-        match http.post(
-            &url,
-            &key,
-            cfg.auth_method,
-            proxy.as_deref(),
-            &body,
-            cfg.timeout_secs,
-        ) {
-            Ok(resp) => {
-                if (200..300).contains(&resp.status) {
-                    let (text, tokens) = parse_chat_response(style, &resp.body)?;
-                    return Ok(finish(app, text, tokens, cfg.model.clone()));
+            match http.post(
+                &url,
+                &key,
+                cfg.auth_method,
+                proxy.as_deref(),
+                &body,
+                cfg.timeout_secs,
+            ) {
+                Ok(resp) => {
+                    if (200..300).contains(&resp.status) {
+                        let (text, tokens) = parse_chat_response(style, &resp.body)?;
+                        return Ok(finish(app, text, tokens, cfg.model.clone()));
+                    }
+                    // 临时错误重试；其余立即失败
+                    let transient = matches!(resp.status, 429 | 500 | 502 | 503 | 504);
+                    let snippet: String = resp.body.chars().take(300).collect();
+                    let err = Error::new(
+                        ErrorCode::AiRequestFailed,
+                        format!(
+                            "AI 端点返回 {}: {}",
+                            resp.status,
+                            redact_key(&snippet, &key)
+                        ),
+                    );
+                    if !transient {
+                        return Err(err);
+                    }
+                    last_err = Some(err);
                 }
-                // 临时错误重试；其余立即失败
-                let transient = matches!(resp.status, 429 | 500 | 502 | 503 | 504);
-                let snippet: String = resp.body.chars().take(300).collect();
-                let err = Error::new(
-                    ErrorCode::AiRequestFailed,
-                    format!(
-                        "AI 端点返回 {}: {}",
-                        resp.status,
-                        redact_key(&snippet, &key)
-                    ),
-                );
-                if !transient {
-                    return Err(err);
+                Err(e) => {
+                    // 超时 = 模型/链路仍在生成，重试只会重复打满额请求；仅网络瞬时失败可重试
+                    let transient = matches!(e.code(), ErrorCode::AiRequestFailed);
+                    if !transient {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
                 }
-                last_err = Some(err);
             }
-            Err(e) => {
-                // 超时 = 模型/链路仍在生成，重试只会重复打满额请求；仅网络瞬时失败可重试
-                let transient = matches!(e.code(), ErrorCode::AiRequestFailed);
-                if !transient {
-                    return Err(e);
-                }
-                last_err = Some(e);
-            }
-        }
         }
     }
     Err(last_err.expect("retry loop ran at least once"))

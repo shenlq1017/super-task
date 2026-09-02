@@ -3,7 +3,7 @@
 > 日期：2026-08-29  
 > 状态：待实现（功能规格已给出默认决策 §15，本计划按 §14 交付顺序拆任务）  
 > 功能规格真源：[2026-08-29-v1-5-feature-spec.md](2026-08-29-v1-5-feature-spec.md)  
-> 上位：[AGENTS.md](../../AGENTS.md) · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md) · [1.4 复用纪律](2026-08-28-v1-4-feature-spec.md)
+> 上位：repository conventions · [YAML 规范](../spec/yaml.md) · [IPC 契约](../spec/ipc.md) · [1.4 复用纪律](2026-08-28-v1-4-feature-spec.md)
 
 把规格 §14 的五步交付顺序拆成可执行任务。行为细节、错误码语义、安全边界以功能规格为准；本计划只定文件、顺序、复用选型与完成标准。
 
@@ -140,4 +140,4 @@
 
 - `docs/spec/ipc.md` §10.9（Phase 3 任务 3.3）。
 - CLI 用户文档（新 `docs/spec/cli.md` 或 README 章节）：命令表、退出码、`SUPERTASK_WORKSPACE`、`.supertask/` gitignore 建议、Cursor 配置示例（Phase 2/4 落地时补）。
-- AGENTS.md 规范真源表补本计划链接；进度文档 `2026-08-29-v1-5-progress.md` 随 Phase 1 建。
+- repository conventions 规范真源表补本计划链接；进度文档 `2026-08-29-v1-5-progress.md` 随 Phase 1 建。

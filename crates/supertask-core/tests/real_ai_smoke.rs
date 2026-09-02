@@ -11,10 +11,8 @@
 
 use std::path::PathBuf;
 
+use supertask_core::ai::{complete, read_key, AiTask, CompleteRequest, UreqAiHttp};
 use supertask_core::appdata;
-use supertask_core::ai::{
-    complete, read_key, AiTask, CompleteRequest, UreqAiHttp,
-};
 
 fn load_real_appdata() -> Option<(appdata::AppData, PathBuf)> {
     let base = std::env::var("APPDATA").ok()?;
@@ -70,7 +68,10 @@ fn real_endpoint_smoke_explain_and_suggest() {
         None::<fn(&str)>,
     )
     .expect("explain_logs 真实请求失败");
-    println!("[ok] explain_logs model={} usage={:?}\n{}\n", out1.model, out1.usage.count, out1.text);
+    println!(
+        "[ok] explain_logs model={} usage={:?}\n{}\n",
+        out1.model, out1.usage.count, out1.text
+    );
     assert!(!out1.text.trim().is_empty(), "explain_logs 返回空文本");
 
     // 场景 2：配置建议（最小 yaml；断言返回包含建议内容）
@@ -94,7 +95,10 @@ fn real_endpoint_smoke_explain_and_suggest() {
     assert!(!out2.text.trim().is_empty(), "config_suggest 返回空文本");
 
     // 用量：两次业务调用 → 当日计数 ≥2（重试成功也只计 1 次/调用）
-    assert!(app.ai_usage.as_ref().map(|u| u.count).unwrap_or(0) >= 2, "按日用量未累计");
+    assert!(
+        app.ai_usage.as_ref().map(|u| u.count).unwrap_or(0) >= 2,
+        "按日用量未累计"
+    );
 
     // 不写回 appdata：冒烟不落盘（用量计数只留在内存）
     let _ = path;
