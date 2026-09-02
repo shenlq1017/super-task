@@ -332,6 +332,21 @@ pub fn pull(
         .details(serde_yaml::Value::String(sanitize_output(combined.trim()))));
     }
     if out.code != 0 {
+        // 不同 git 版本/配置下冲突措辞可能不含 CONFLICT 关键词；
+        // 以仓库实际状态兜底：存在未合并条目即视为合并冲突。
+        if let Ok(st) = run_git(runner, root, &["status", "--porcelain"]) {
+            let unmerged = st
+                .stdout
+                .lines()
+                .any(|l| l.starts_with("UU") || l.starts_with("AA") || l.starts_with("DD"));
+            if unmerged {
+                return Err(Error::new(
+                    ErrorCode::GitConflict,
+                    "拉取产生合并冲突：请解决冲突后提交。SuperTask 不会自动 reset / stash / checkout",
+                )
+                .details(serde_yaml::Value::String(sanitize_output(combined.trim()))));
+            }
+        }
         let code = classify_failure(&out.stderr, &out.stdout);
         return Err(git_failure("pull", code, &out.stderr, &out.stdout));
     }

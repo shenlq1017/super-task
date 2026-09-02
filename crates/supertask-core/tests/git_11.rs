@@ -14,7 +14,11 @@ fn git_available() -> bool {
 }
 
 fn unique_root(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("st-git11-{}-{}", tag, std::process::id()));
+    // Windows CI 的 temp_dir 可能是 8.3 短路径（如 C:\Users\RUNNER~1\...），
+    // 而 git::clone 返回 canonicalize 后的长路径；先规整 base 保证比较一致。
+    let base = std::env::temp_dir();
+    let base = supertask_core::sandbox::strip_verbatim(fs::canonicalize(&base).unwrap_or(base));
+    let dir = base.join(format!("st-git11-{}-{}", tag, std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -218,7 +222,7 @@ fn divergent_pull_conflict_keeps_worktree() {
     commit_all(&work, "local change");
 
     let err = git::pull(&runner(), &work, None, None, false).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::GitConflict);
+    assert_eq!(err.code(), ErrorCode::GitConflict, "pull error: {err}");
 
     // 冲突现场保留：文件仍在且带冲突标记
     let body = fs::read_to_string(work.join("file.txt")).unwrap();
