@@ -5132,7 +5132,8 @@ mod tests {
     fn write_ws_yaml(yaml: &str) -> PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("st-eng-{}-{n}", std::process::id()));
+        let root =
+            crate::sandbox::test_temp_dir().join(format!("st-eng-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("supertask.yaml"), yaml).unwrap();
@@ -5193,7 +5194,11 @@ services:
     fn compose_ws(services_yaml: &str, docker_yaml: &str) -> PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("st-eng-comp{}-{}", std::process::id(), n));
+        let root = crate::sandbox::test_temp_dir().join(format!(
+            "st-eng-comp{}-{}",
+            std::process::id(),
+            n
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(
@@ -5441,7 +5446,8 @@ services:
         eng.close().unwrap();
 
         // c) compose 文件缺失 → COMPOSE_FILE_MISSING（不 spawn config）
-        let root2 = std::env::temp_dir().join(format!("st-eng-compmiss-{}", std::process::id()));
+        let root2 =
+            crate::sandbox::test_temp_dir().join(format!("st-eng-compmiss-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root2);
         fs::create_dir_all(&root2).unwrap();
         fs::write(
@@ -5882,7 +5888,8 @@ services:
     fn open_failed_workspace_releases_lock() {
         let root = write_ws_yaml("version: 1\nservices: {}\n");
         // services 为空等校验失败场景可能合法，改用不存在的 yaml 根目录
-        let empty = std::env::temp_dir().join(format!("st-eng-lock-empty-{}", std::process::id()));
+        let empty = crate::sandbox::test_temp_dir()
+            .join(format!("st-eng-lock-empty-{}", std::process::id()));
         let _ = fs::remove_dir_all(&empty);
         fs::create_dir_all(&empty).unwrap();
         let eng = Engine::new();
@@ -6032,7 +6039,8 @@ services:
     /// 唯一直接用，零 ARTIFACT_MISSING，多 JAR_AMBIGUOUS，路径逃逸 PATH_ESCAPE。
     #[test]
     fn select_gradle_artifact_rules() {
-        let root = std::env::temp_dir().join(format!("st-eng-gradlejar-{}", std::process::id()));
+        let root = crate::sandbox::test_temp_dir()
+            .join(format!("st-eng-gradlejar-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let libs = root.join("mod/build/libs");
         fs::create_dir_all(&libs).unwrap();
@@ -6213,7 +6221,8 @@ services:
     #[test]
     fn gateway_preview_renders_in_memory() {
         let (gw, svc) = next_gateway_ports();
-        let root = std::env::temp_dir().join(format!("st-gw-prev-{}-{gw}", std::process::id()));
+        let root =
+            crate::sandbox::test_temp_dir().join(format!("st-gw-prev-{}-{gw}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(
@@ -6250,7 +6259,8 @@ services:
     #[test]
     fn gateway_start_error_mapping() {
         let (gw, svc) = next_gateway_ports();
-        let dir = std::env::temp_dir().join(format!("st-gw-err-{}-{gw}", std::process::id()));
+        let dir =
+            crate::sandbox::test_temp_dir().join(format!("st-gw-err-{}-{gw}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         // a) 校验失败 → GATEWAY_CONFIG_INVALID
@@ -6289,7 +6299,8 @@ services:
     #[test]
     fn gateway_full_lifecycle_with_stub() {
         let (gw, svc) = next_gateway_ports();
-        let dir = std::env::temp_dir().join(format!("st-gw-life-{}-{gw}", std::process::id()));
+        let dir =
+            crate::sandbox::test_temp_dir().join(format!("st-gw-life-{}-{gw}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let stub = write_gateway_stub(&dir, gw);
@@ -6354,7 +6365,8 @@ services:
     #[test]
     fn gateway_apply_conflict_and_restart() {
         let (gw, svc) = next_gateway_ports();
-        let dir = std::env::temp_dir().join(format!("st-gw-apply-{}-{gw}", std::process::id()));
+        let dir = crate::sandbox::test_temp_dir()
+            .join(format!("st-gw-apply-{}-{gw}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let stub = write_gateway_stub(&dir, gw);

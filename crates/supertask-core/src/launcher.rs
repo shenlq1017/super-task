@@ -876,7 +876,8 @@ mod tests {
     // ---- 1.7：python / go / generic ----
 
     fn tmp_ws(name: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("st-launcher-{name}-{}", std::process::id()));
+        let base = crate::sandbox::test_temp_dir()
+            .join(format!("st-launcher-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         base
@@ -1301,7 +1302,7 @@ services:
 
     #[test]
     fn detect_build_tool_rules() {
-        let root = std::env::temp_dir().join(format!("st-bt-{}", std::process::id()));
+        let root = crate::sandbox::test_temp_dir().join(format!("st-bt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("g")).unwrap();
         fs::create_dir_all(root.join("m")).unwrap();
@@ -1334,7 +1335,8 @@ services:
 
     #[test]
     fn ambiguous_and_missing_are_hard_errors_at_plan_time() {
-        let root = std::env::temp_dir().join(format!("st-bt-plan-{}", std::process::id()));
+        let root =
+            crate::sandbox::test_temp_dir().join(format!("st-bt-plan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("mod")).unwrap();
         fs::write(root.join("mod/pom.xml"), "").unwrap();
@@ -1476,7 +1478,8 @@ services:
 
     #[test]
     fn explicit_build_tool_skips_detection() {
-        let root = std::env::temp_dir().join(format!("st-bt-explicit-{}", std::process::id()));
+        let root =
+            crate::sandbox::test_temp_dir().join(format!("st-bt-explicit-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("pom.xml"), "").unwrap();
@@ -1493,7 +1496,8 @@ services:
 
     #[test]
     fn wrapper_preferred_then_path_gradle() {
-        let root = std::env::temp_dir().join(format!("st-bt-wrapper-{}", std::process::id()));
+        let root =
+            crate::sandbox::test_temp_dir().join(format!("st-bt-wrapper-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         #[cfg(windows)]
@@ -1550,7 +1554,7 @@ services:
     #[test]
     fn wrapper_without_exec_bit_runs_via_sh_once() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("st-bt-sh-{}", std::process::id()));
+        let root = crate::sandbox::test_temp_dir().join(format!("st-bt-sh-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let wrapper = root.join("gradlew");
@@ -1576,7 +1580,8 @@ services:
             eprintln!("skip: PATH 中存在 gradle，无法模拟双缺失");
             return;
         }
-        let root = std::env::temp_dir().join(format!("st-bt-missing-{}", std::process::id()));
+        let root =
+            crate::sandbox::test_temp_dir().join(format!("st-bt-missing-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let e = resolve_gradle_launcher(&root, ".", ".", "gradlew.bat", &[]).unwrap_err();

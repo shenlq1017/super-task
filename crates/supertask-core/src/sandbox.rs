@@ -55,6 +55,15 @@ fn dunce_canon(p: &Path) -> std::io::Result<PathBuf> {
     Ok(strip_verbatim(c))
 }
 
+/// 测试专用：规整后的临时目录。Windows CI 的 `std::env::temp_dir` 可能返回
+/// 8.3 短路径（如 `C:\Users\RUNNER~1\...`），而被测代码内部会 canonicalize 成
+/// 长路径；测试做路径相等比较前必须先统一到同一形式。
+#[cfg(test)]
+pub(crate) fn test_temp_dir() -> PathBuf {
+    let base = std::env::temp_dir();
+    strip_verbatim(std::fs::canonicalize(&base).unwrap_or(base))
+}
+
 /// Remove the Windows verbatim prefix (`\\?\C:\…` → `C:\…`) that
 /// `std::fs::canonicalize` emits. The prefix is semantically identical for
 /// drive paths, but leaking it into UI strings (workspace_id 等) looks wrong.
