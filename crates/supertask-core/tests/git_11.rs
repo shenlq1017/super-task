@@ -215,6 +215,9 @@ fn divergent_pull_conflict_keeps_worktree() {
     let (root, seed, origin) = setup_remote("pull-conflict");
     let work = root.join("work");
     git::clone(&runner(), &origin.to_string_lossy(), &work, None).unwrap();
+    // CI 环境可能没有全局 git 身份；pull 触发真合并（分叉历史）时需要 committer
+    git(&work, &["config", "user.name", "t"]);
+    git(&work, &["config", "user.email", "t@t"]);
 
     // 双方各提交一行互相冲突的修改
     push_seed_file(&seed, "file.txt", "upstream\n");
