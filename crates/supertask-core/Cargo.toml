@@ -53,7 +53,7 @@ procfs = { version = "0.18", default-features = false }
 # 系统监听端口枚举（GetExtendedTcpTable 封装，IPv4/IPv6；替代手解 TCP 表）。
 # 仅 Windows 路径使用；Linux 走 /proc/net/tcp 自实现（netstat2 的 linux 分支与新版 libc 源码不兼容）
 netstat2 = "0.9"
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_NetworkManagement_IpHelper",
   "Win32_Networking_WinSock",
