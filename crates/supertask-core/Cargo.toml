@@ -47,7 +47,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # 1.4 §6.3 复用清单：/proc/net/tcp 与 /proc/<pid>/stat 的成熟解析器
-procfs = { version = "0.17", default-features = false }
+procfs = { version = "0.18", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 # 系统监听端口枚举（GetExtendedTcpTable 封装，IPv4/IPv6；替代手解 TCP 表）。
