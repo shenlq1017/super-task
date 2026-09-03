@@ -24,6 +24,7 @@ import { LogView } from "@/components/log-view";
 import { SpringConfigPanel } from "@/components/spring-config-panel";
 import { AiExplainButton } from "@/components/ai-explain";
 import { TerminalView } from "@/components/terminal-view";
+import { SectionTitle, SectionMeta } from "@/components/section-title";
 import {
   STATE_META,
   StatusDot,
@@ -98,6 +99,17 @@ import {
 import type { ShellCtx } from "../app/AppShell";
 
 /* ---------------- helpers ---------------- */
+
+/**
+ * 端口冲突态：后端三维归属判定（端口 + 工作目录 + 程序类型）认定占位进程归属外部时，
+ * 服务置 Stopped/Exited + last_error 带统一前缀（见 engine::conflict_message）。
+ * 前端靠此前缀识别：禁用启动 + 指引去「端口」Tab 更换端口。
+ */
+function isPortConflict(svc: Pick<ServiceRuntimeView, "state" | "last_error">): boolean {
+  if (svc.state !== "stopped" && svc.state !== "exited") return false;
+  const msg = svc.last_error ?? "";
+  return /端口\s*\S*\s*(被.*占用|已被占用)/.test(msg);
+}
 
 function serviceCmd(id: string, s: ServiceSpec): string {
   // Empty arrays are omitted by the Rust IPC serializer; keep command previews
@@ -369,6 +381,7 @@ function ServiceCard({
   const isRunning = svc.state === "running";
   const isBusy = svc.state === "starting" || svc.state === "stopping" || svc.state === "building";
   const external = isRunning && svc.managed === false;
+  const portConflict = isPortConflict(svc);
   // 停止是杀整棵进程树的破坏性操作，二次确认；中断 starting 不弹
   const [confirmStop, setConfirmStop] = useState(false);
 
@@ -428,6 +441,14 @@ function ServiceCard({
             {t("pages.run.externalShort")}
           </span>
         ) : null}
+        {portConflict ? (
+          <span
+            className="inline-flex h-5 items-center shrink-0 rounded-full border border-red-200 bg-[var(--st-danger-tint,#fdecec)] px-1.5 text-[10px] font-semibold leading-none text-[#DC2626] @max-[300px]:hidden"
+            title={svc.last_error ?? t("pages.run.portConflictHint")}
+          >
+            {t("pages.run.portConflict")}
+          </span>
+        ) : null}
         <div className="ml-auto flex gap-1 opacity-50 transition-opacity group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
           <span className="inline-flex @max-[300px]:hidden">
             <IdeOpenMenu variant="icon" />
@@ -452,8 +473,8 @@ function ServiceCard({
                 ? "border-transparent text-[var(--st-danger,#dc2626)] hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)]"
                 : "border-transparent text-[var(--t3,#8a8f98)] hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)]",
             )}
-            title={isRunning ? t("common.stop") : t("common.start")}
-            disabled={isBusy}
+            title={isRunning ? t("common.stop") : portConflict ? (svc.last_error ?? t("pages.run.portConflictHint")) : t("common.start")}
+            disabled={isBusy || portConflict}
             onClick={() =>
               isRunning || svc.state === "starting"
                 ? isRunning
@@ -523,7 +544,9 @@ function PortsPanel({ id, compact }: { id: string; compact: boolean }) {
   const { t } = useTranslation();
   const spec = ws.state.spec;
   const svc = spec?.services[id];
-  const isRunning = runtime.state.services[id]?.state === "running";
+  const rtSvc = runtime.state.services[id];
+  const portConflict = rtSvc ? isPortConflict(rtSvc) : false;
+  const isRunning = rtSvc?.state === "running";
   const [portDraft, setPortDraft] = useState<string>(String(svc?.port ?? ""));
   const [portBusy, setPortBusy] = useState(false);
   const [portCheck, setPortCheck] = useState<PortCheck | null>(null);
@@ -632,10 +655,20 @@ function PortsPanel({ id, compact }: { id: string; compact: boolean }) {
   return (
     <div className={cn("flex flex-col gap-5 p-4", compact && "gap-4 p-3")}>
       <section className="flex flex-col gap-2">
-        <div className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-          <Settings2 className="size-3.5" /> {t("pages.run.portSection")}
-          {svc.port != null ? <span className="font-mono text-[10px] font-normal normal-case text-[var(--t2,#62666d)]">{t("pages.run.currentPort", { port: svc.port })}</span> : null}
-        </div>
+        <SectionTitle
+          icon={<Settings2 />}
+          title={t("pages.run.portSection")}
+          meta={
+            svc.port != null ? (
+              <SectionMeta>{t("pages.run.currentPort", { port: svc.port })}</SectionMeta>
+            ) : undefined
+          }
+        />
+        {portConflict && rtSvc?.last_error ? (
+          <p className="rounded-[var(--r-sm,8px)] border border-red-200 bg-[var(--st-danger-tint,#fdecec)] px-2 py-1.5 text-[0.72rem] font-medium text-[#DC2626]">
+            ⚠ {rtSvc.last_error}：{t("pages.run.portConflictHint")}
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-2">
           <Input
             type="number"
@@ -764,14 +797,15 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
       <Separator />
 
       <section className="flex flex-col gap-2">
-        <div className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-          <Braces className="size-3.5" /> {t("pages.run.effectiveEnv")}
-          {effEnv?.captured_at_ms ? (
-            <span className="font-mono text-[10px] font-normal normal-case text-[var(--t2,#62666d)]">
-              {t("pages.run.effectiveEnvAt", { time: fmtTime(effEnv.captured_at_ms) })}
-            </span>
-          ) : null}
-        </div>
+        <SectionTitle
+          icon={<Braces />}
+          title={t("pages.run.effectiveEnv")}
+          meta={
+            effEnv?.captured_at_ms ? (
+              <SectionMeta>{t("pages.run.effectiveEnvAt", { time: fmtTime(effEnv.captured_at_ms) })}</SectionMeta>
+            ) : undefined
+          }
+        />
         {effEnv && effEnv.entries.length > 0 ? (
           <div className="flex flex-col gap-1">
             {effEnv.entries.map((e) => (
@@ -1172,7 +1206,7 @@ function HealthPanel({ svc, spec }: { svc: ServiceRuntimeView; spec: ServiceSpec
         <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] p-3">
           <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
             {t("pages.run.recentResult")}
-            <span className="ml-auto flex items-center gap-2 text-[10px] font-normal normal-case">
+            <span className="ml-auto flex items-center gap-2 text-[10px] font-normal normal-case leading-none tracking-normal">
               <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-ok,#27a644)]" />{t("pages.run.legendOk")}</span>
               <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-warn,#9a6700)]" />{t("pages.run.legendSlow")}</span>
               <span><span className="mr-1 inline-block size-2 rounded-sm bg-[var(--st-danger,#dc2626)]" />{t("pages.run.legendFail")}</span>
@@ -1262,6 +1296,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   const isRunning = svc.state === "running";
   const isBusy = svc.state === "starting" || svc.state === "stopping" || svc.state === "building";
   const external = isRunning && svc.managed === false;
+  const portConflict = isPortConflict(svc);
   const isCompose = svc.kind === "compose";
   const source: LogSource = { kind: "service", id };
   const dockerTop = ws.state.spec?.docker ?? null;
@@ -1329,6 +1364,14 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               {t("pages.run.externalMonitor")}
             </span>
           ) : null}
+          {portConflict ? (
+            <span
+              className="inline-flex h-5 items-center shrink-0 rounded-full border border-red-200 bg-[var(--st-danger-tint,#fdecec)] px-2 text-[11px] font-medium leading-none text-[#DC2626]"
+              title={svc.last_error ?? t("pages.run.portConflictHint")}
+            >
+              {t("pages.run.portConflict")}
+            </span>
+          ) : null}
           <span
             className={cn(
               "inline-flex h-5 items-center shrink-0 rounded-full px-2 text-[11px] font-medium leading-none",
@@ -1379,7 +1422,14 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               <Square className="size-3.5" /> {t("common.stop")}
             </Button>
           ) : (
-            <Button size="sm" variant="default" className="gap-1" disabled={isBusy} onClick={() => runtime.actions.startOne(id)}>
+            <Button
+              size="sm"
+              variant="default"
+              className="gap-1"
+              disabled={isBusy || portConflict}
+              title={portConflict ? (svc.last_error ?? t("pages.run.portConflictHint")) : undefined}
+              onClick={() => runtime.actions.startOne(id)}
+            >
               <Play className="size-3.5" /> {svc.state === "exited" || svc.last_error ? t("pages.run.retryStart") : t("common.start")}
             </Button>
           )}

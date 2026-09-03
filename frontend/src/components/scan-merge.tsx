@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SectionTitle, SectionCount } from "@/components/section-title";
 import { cn } from "@/lib/utils";
 import type {
   FieldMeta,
@@ -318,8 +319,7 @@ export function ScanPreviewPanel({
           {scriptItems && scriptItems.length > 0 ? (
             <div>
               <div className="mb-1.5 flex items-center gap-2 px-0.5">
-                <span className="text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("scanMerge.scriptGroup")}</span>
-                <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{scriptItems.length}</span>
+                <SectionTitle title={t("scanMerge.scriptGroup")} meta={<SectionCount>{scriptItems.length}</SectionCount>} />
               </div>
               <div className="flex flex-col gap-1.5">
                 {scriptItems.map((it) => (
@@ -339,8 +339,7 @@ export function ScanPreviewPanel({
             return (
               <div key={status}>
                 <div className="mb-1.5 flex items-center gap-2 px-0.5">
-                  <span className="text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t(groupKey)}</span>
-                  <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">{items.length}</span>
+                  <SectionTitle title={t(groupKey)} meta={<SectionCount>{items.length}</SectionCount>} />
                 </div>
                 <div className="flex flex-col gap-1.5">
                   {items.map((it) => (

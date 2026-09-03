@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { parseEnvImport, type EnvImportFormat } from "@/lib/env-import";
 import { useToast } from "@/components/ui/toast";
+import { SectionTitle, SectionCount } from "@/components/section-title";
 import { cn } from "@/lib/utils";
 
 export type EnvRow = { id: string; key: string; value: string };
@@ -151,10 +152,11 @@ export function EnvVariablesEditor({
     <div className={cn("flex flex-col gap-3 outline-none", className)} tabIndex={-1} onPaste={onRootPaste}>
       <div className="flex flex-wrap items-center gap-2">
         {!hideTitle ? (
-          <div className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-            <Settings2 className="size-3.5" /> {t("env.title")}
-            <span className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[10px] normal-case">{rows.length}</span>
-          </div>
+          <SectionTitle
+            icon={<Settings2 />}
+            title={t("env.title")}
+            meta={<SectionCount className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 normal-case">{rows.length}</SectionCount>}
+          />
         ) : null}
         <Button
           size="sm"

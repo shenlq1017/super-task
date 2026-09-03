@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { SectionTitle, SectionMeta } from "@/components/section-title";
 import { copyText } from "@/lib/copy-text";
 import { useToast } from "@/components/ui/toast";
 import { apiSpringInspect } from "../ipc/api";
@@ -263,26 +264,30 @@ export function SpringConfigPanel({ workspaceId, serviceId, specPort, svcEnv, ef
   return (
     <section className="flex flex-col gap-2">
       {/* 标题行（解析口径收进悬停提示，不再平铺说明文字） */}
-      <div
-        className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]"
-        title={t("pages.run.springHint")}
-      >
-        <FileText className="size-3.5" /> {t("pages.run.springSection")}
-        {activeProfiles.length > 0 ? (
-          <span className="inline-flex h-5 items-center rounded-full bg-[var(--st-ok-tint,#e9f7ed)] px-1.5 font-mono text-[10px] font-semibold normal-case leading-none text-[var(--st-ok-deep,#1e7e35)]">
-            {t("pages.run.springActiveChip", { profiles: activeProfiles.join(", ") })}
-          </span>
-        ) : null}
-        <button
-          type="button"
-          onClick={() => setNonce((n) => n + 1)}
-          title={t("pages.run.springRefresh")}
-          aria-label={t("pages.run.springRefresh")}
-          className="ml-auto inline-flex size-5 cursor-pointer items-center justify-center rounded text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--t1,#222326)]"
-        >
-          {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-        </button>
-      </div>
+      <SectionTitle
+        icon={<FileText />}
+        title={t("pages.run.springSection")}
+        htmlTitle={t("pages.run.springHint")}
+        className="w-full"
+        meta={
+          activeProfiles.length > 0 ? (
+            <span className="inline-flex h-5 items-center rounded-full bg-[var(--st-ok-tint,#e9f7ed)] px-1.5 text-[10px] font-semibold normal-case leading-none tracking-normal tabular-nums text-[var(--st-ok-deep,#1e7e35)]">
+              {t("pages.run.springActiveChip", { profiles: activeProfiles.join(", ") })}
+            </span>
+          ) : undefined
+        }
+        actions={
+          <button
+            type="button"
+            onClick={() => setNonce((n) => n + 1)}
+            title={t("pages.run.springRefresh")}
+            aria-label={t("pages.run.springRefresh")}
+            className="inline-flex size-5 cursor-pointer items-center justify-center rounded text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--t1,#222326)]"
+          >
+            {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+          </button>
+        }
+      />
 
       {/* hint 已收进标题行 tooltip */}
       {cfg && cfg.warnings.length > 0 ? (
@@ -339,9 +344,7 @@ export function SpringConfigPanel({ workspaceId, serviceId, specPort, svcEnv, ef
           aria-label={t("pages.run.springSearchAria")}
           className="h-7 flex-1 border-[var(--line-strong,#d0d6e0)] text-xs"
         />
-        <span className="font-mono text-[10px] text-[var(--t3,#8a8f98)]">
-          {t("pages.run.springEntriesCount", { count: lens === LENS_ALL ? filteredEntries.length : visibleRows.length })}
-        </span>
+        <SectionMeta>{t("pages.run.springEntriesCount", { count: lens === LENS_ALL ? filteredEntries.length : visibleRows.length })}</SectionMeta>
         <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={copyAll}>
           <Copy className="size-3" /> {t("pages.run.springCopyAll")}
         </Button>
@@ -380,9 +383,9 @@ export function SpringConfigPanel({ workspaceId, serviceId, specPort, svcEnv, ef
                     </span>
                   ) : null}
                 </button>
-                <span className="ml-auto font-mono text-[10px] text-[var(--t3,#8a8f98)]">
+                <SectionMeta className="ml-auto">
                   {t("pages.run.springEntriesCount", { count: g.entries.length })}
-                </span>
+                </SectionMeta>
               </div>
               {g.profile === null || !collapsed[g.profile] ? (
                 <div className="flex flex-col gap-1 p-2">
