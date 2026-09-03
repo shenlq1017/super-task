@@ -373,6 +373,7 @@ const enUS = {
       auth: "Authentication",
       nameRequired: "Configuration name is required",
       modelsFetched: "Fetched {{n}} models (pick from the input dropdown)",
+      noMatchingModels: "No matching models; you can keep typing a custom name",
       noConfigs: "No configurations yet. Click \"Add configuration\" to start.",
       defaultBadge: "Default",
       setDefault: "Set default",

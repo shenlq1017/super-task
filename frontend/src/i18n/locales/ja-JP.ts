@@ -373,6 +373,7 @@ const jaJP = {
       auth: "認証方式",
       nameRequired: "設定名を入力してください",
       modelsFetched: "{{n}} 個のモデルを取得しました（入力欄のドロップダウンから選択）",
+      noMatchingModels: "一致するモデルがありません。モデル名を直接入力できます",
       noConfigs: "設定がありません。「設定を追加」から始めてください。",
       defaultBadge: "デフォルト",
       setDefault: "デフォルトに設定",

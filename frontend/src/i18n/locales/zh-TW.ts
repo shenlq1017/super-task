@@ -159,6 +159,7 @@ const zhTW = {
       "auth": "認證方式",
       "nameRequired": "請填寫配置名稱",
       "modelsFetched": "已拉取 {{n}} 個模型（輸入框可下拉選擇）",
+      "noMatchingModels": "沒有符合的模型，可繼續手動輸入",
       "noConfigs": "暫無配置，點「新增配置」開始。",
       "defaultBadge": "預設",
       "setDefault": "設為預設",

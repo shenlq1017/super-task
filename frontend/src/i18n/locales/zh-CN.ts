@@ -161,6 +161,7 @@ const zhCN = {
       auth: "认证方式",
       nameRequired: "请填写配置名称",
       modelsFetched: "已拉取 {{n}} 个模型（输入框可下拉选择）",
+      noMatchingModels: "没有匹配的模型，可继续手动输入",
       noConfigs: "暂无配置，点「新增配置」开始。",
       defaultBadge: "默认",
       setDefault: "设为默认",

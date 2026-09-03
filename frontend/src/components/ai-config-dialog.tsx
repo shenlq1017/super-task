@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, ChevronDown, Loader2, Terminal, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,12 +18,12 @@ import {
   SelectGroup,
   SelectItem,
   SelectLabel,
-  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { AiProviderLogo } from "@/components/ai-provider-logo";
+import { ModelCombobox } from "@/components/model-combobox";
 import {
   AI_PROVIDER_PRESETS,
   API_PROVIDERS,
@@ -166,11 +166,6 @@ export function AiConfigDialog(props: {
     setProbe(null);
   }, [provider, form?.cliPath]);
 
-  const modelList = useMemo(
-    () => (props.models.length ? props.models : cli ? preset.cliArgs && [] : []) || [],
-    [props.models, cli, preset],
-  );
-
   const runProbe = async () => {
     if (!form) return;
     setProbing(true);
@@ -240,7 +235,6 @@ export function AiConfigDialog(props: {
                               </SelectItem>
                             ))}
                           </SelectGroup>
-                          <SelectSeparator />
                           <SelectGroup>
                             <SelectLabel>{t("pages.ai.providerGroupCli")}</SelectLabel>
                             {CLI_PROVIDERS.map((key) => (
@@ -250,7 +244,6 @@ export function AiConfigDialog(props: {
                               </SelectItem>
                             ))}
                           </SelectGroup>
-                          <SelectSeparator />
                           <SelectItem value="custom" className="cursor-pointer">
                             <AiProviderLogo provider="custom" />
                             {AI_PROVIDER_PRESETS.custom.label}
@@ -401,30 +394,26 @@ export function AiConfigDialog(props: {
                     htmlFor="ai-model"
                     hint={cli ? t("pages.ai.cliModelHint") : undefined}
                   >
-                    <div className="flex gap-1">
-                      <Input
-                        id="ai-model"
-                        className="flex-1 font-mono"
+                    <div className="flex items-start gap-1">
+                      <ModelCombobox
                         value={form.model}
-                        onChange={(e) => props.onPatch({ model: e.target.value })}
-                        list="ai-models-datalist"
-                        spellCheck={false}
+                        options={props.models}
+                        onChange={(model) => props.onPatch({ model })}
+                        ariaLabel={t("pages.ai.model")}
+                        emptyText={t("pages.ai.noMatchingModels")}
+                        disabled={props.busy}
                       />
                       <Button
                         variant="soft"
                         size="sm"
                         type="button"
+                        className="shrink-0"
                         onClick={props.onFetchModels}
                         disabled={props.busy}
                       >
                         {t("pages.ai.fetchModels")}
                       </Button>
                     </div>
-                    <datalist id="ai-models-datalist">
-                      {modelList.map((m) => (
-                        <option key={m} value={m} />
-                      ))}
-                    </datalist>
                   </Field>
                 </Section>
 
