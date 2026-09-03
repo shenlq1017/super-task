@@ -28,6 +28,7 @@ import { SectionTitle, SectionMeta } from "@/components/section-title";
 import {
   STATE_META,
   StatusDot,
+  StatusChip,
   GATEWAY_STATE_TINT,
   GATEWAY_STATE_DOT,
   fmtDuration,
@@ -383,7 +384,6 @@ function ServiceCard({
 }) {
   const runtime = useRuntime();
   const { t } = useTranslation();
-  const meta = STATE_META[svc.state];
   const isRunning = svc.state === "running";
   const isBusy = svc.state === "starting" || svc.state === "stopping" || svc.state === "building";
   const external = isRunning && svc.managed === false;
@@ -395,89 +395,89 @@ function ServiceCard({
     ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") })
     : t("pages.run.noDeps");
   const foot = svc.last_error
-    ? <span className="block truncate text-[11px] text-[var(--st-danger,#dc2626)]" title={svc.last_error}>⚠ {svc.last_error}</span>
-    : <span className="flex min-w-0 items-center gap-1 text-[11px] text-[var(--t3,#8a8f98)]">
-        {/* 依赖多时按卡片宽度单行截断出省略号，悬浮看完整列表 */}
+    ? <span className="block truncate text-[11px] text-[var(--st-danger)]" title={svc.last_error}>⚠ {svc.last_error}</span>
+    : <span className="flex min-w-0 items-center gap-1 text-[11px] text-[var(--t3)]">
         <span
-          className="block h-5 max-w-full truncate rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[10px] leading-5 text-[var(--t3,#8a8f98)]"
+          className="block h-5 max-w-full truncate rounded-full bg-[var(--surface-2)] px-1.5 font-mono text-[10px] leading-5 text-[var(--t3)]"
           title={depsText}
         >
           {depsText}
         </span>
       </span>;
 
+  // Rail color follows runtime status (not selection). Selection is elevation/border only.
+  const railColor =
+    svc.state === "running" || svc.state === "unhealthy"
+      ? STATE_META[svc.state].color
+      : svc.state === "exited"
+        ? "var(--st-danger)"
+        : isBusy
+          ? "var(--st-warn-dot)"
+          : "var(--line-strong)";
+
   return (
     <div
       onClick={onOpen}
       className={cn(
-        // group/svc 让指示条用 group-hover/svc 触发；transition-all 覆盖颜色/边框/阴影
-        // @container：以卡片自身宽度做分级舍弃（窄卡先隐藏徽章/IDE，再隐藏重启，启停恒留）
-        // shrink-0：列表是 flex-col 滚动容器，服务多时禁止 flex 压缩卡片（否则 overflow-hidden 裁掉底行且滚动条失效）
-        "group/svc relative flex h-[5.7rem] shrink-0 @container cursor-pointer flex-col overflow-hidden rounded-[var(--r-md,12px)] border bg-[var(--surface,#fff)] p-2.5 transition-all duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))]",
+        "group/svc relative flex min-h-[6.1rem] shrink-0 @container cursor-pointer flex-col overflow-hidden rounded-[var(--r-md)] border bg-[var(--surface)] px-3 py-2.5 transition-all duration-150 ease-[var(--st-ease)]",
         selected
-          // 原型：选中 = 极淡紫底 + 紫色淡外环（0 0 0 3px rgb(94 106 210 / .1)）
-          ? "border-[rgb(94_106_210_/_0.45)] bg-[rgb(94_106_210_/_0.045)] shadow-[0_0_0_3px_rgb(94_106_210_/_0.1)]"
-          : "border-[var(--line,#e6e6e6)] hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)]",
+          ? "border-[var(--line-strong)] shadow-[var(--shadow-1),var(--st-select-ring)]"
+          : "border-[var(--line)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]",
       )}
     >
-      {/* 原型：左侧 3px 紫/绿条；hover 滑出；running 持续显示绿；selected 持续显示紫（压过 running） */}
       <span
         aria-hidden
         className={cn(
-          "absolute left-0 top-0 h-full w-[3px] origin-left transition-transform duration-200 ease-[cubic-bezier(.22,1,.36,1)]",
-          selected || isRunning ? "scale-x-100" : "scale-x-0 group-hover/svc:scale-x-100",
+          "absolute left-0 top-0 h-full w-[3px] origin-left transition-transform duration-200 ease-[var(--st-ease)]",
+          selected || isRunning || isBusy || svc.state === "exited" || svc.state === "unhealthy"
+            ? "scale-x-100"
+            : "scale-x-0 group-hover/svc:scale-x-100",
         )}
-        style={{
-          background: selected
-            ? "var(--st-accent,#5e6ad2)"
-            : isRunning
-              ? "var(--st-ok,#27a644)"
-              : "var(--st-accent,#5e6ad2)",
-        }}
+        style={{ background: railColor }}
       />
       <div className="flex items-center gap-2">
         <StatusDot state={svc.state} size={8} />
-        <span className="truncate text-[0.88rem] font-semibold text-[var(--t1,#222326)]" title={id}>{id}</span>
-        {/* 窄卡（<300px）先舍弃信息类徽章，把宽度还给服务名 */}
+        <span className="min-w-0 truncate text-[0.92rem] font-semibold tracking-tight text-[var(--t1)]" title={id}>
+          {id}
+        </span>
         <span className="inline-flex shrink-0 items-center gap-2 @max-[300px]:hidden">
           <KindBadge kind={svc.kind} buildTool={spec?.build_tool} />
         </span>
         {external ? (
-          <span className="inline-flex h-5 items-center shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[10px] font-semibold uppercase leading-none text-[var(--t2,#62666d)] @max-[300px]:hidden" title={t("pages.run.externalTitle")}>
+          <span className="inline-flex h-5 items-center shrink-0 rounded-full bg-[var(--surface-2)] px-1.5 font-mono text-[10px] font-semibold uppercase leading-none text-[var(--t2)] @max-[300px]:hidden" title={t("pages.run.externalTitle")}>
             {t("pages.run.externalShort")}
           </span>
         ) : null}
         {portConflict ? (
           <span
-            className="inline-flex h-5 items-center shrink-0 rounded-full border border-red-200 bg-[var(--st-danger-tint,#fdecec)] px-1.5 text-[10px] font-semibold leading-none text-[#DC2626] @max-[300px]:hidden"
+            className="inline-flex h-5 items-center shrink-0 rounded-full border border-[var(--st-danger-ring)] bg-[var(--st-danger-tint)] px-1.5 text-[10px] font-semibold leading-none text-[var(--st-danger)] @max-[300px]:hidden"
             title={svc.last_error ?? t("pages.run.portConflictHint")}
           >
             {t("pages.run.portConflict")}
           </span>
         ) : null}
-        <div className="ml-auto flex gap-1 opacity-50 transition-opacity group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
+        <div className="ml-auto flex gap-1 opacity-60 transition-opacity group-hover/svc:opacity-100" onClick={(e) => e.stopPropagation()}>
           <span className="inline-flex @max-[300px]:hidden">
             <IdeOpenMenu variant="icon" />
           </span>
           {isRunning ? (
             <button
               type="button"
-              // 极窄卡（<250px）再舍弃次级操作：重启；启停恒留
-              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--st-warn-line,#f0dcb0)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)] transition-colors duration-150 hover:border-[#E0C080] hover:bg-[rgb(234_179_8_/_0.2)] disabled:cursor-not-allowed disabled:opacity-50 @max-[250px]:hidden"
+              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm)] border border-[var(--st-warn-line)] bg-[var(--st-warn-tint)] text-[var(--st-warn)] transition-colors duration-150 hover:border-[var(--st-warn)]/50 disabled:cursor-not-allowed disabled:opacity-50 @max-[250px]:hidden"
               title={external ? t("pages.run.restartExternalTitle") : t("common.restart")}
               disabled={isBusy}
               onClick={() => runtime.actions.restartOne(id)}
             >
-              <RotateCw className="size-3.5" />
+              {isBusy ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />}
             </button>
           ) : null}
           <button
             type="button"
             className={cn(
-              "grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50",
-              isRunning
-                ? "border-transparent text-[var(--st-danger,#dc2626)] hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)]"
-                : "border-transparent text-[var(--t3,#8a8f98)] hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)]",
+              "grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm)] border transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50",
+              isRunning || svc.state === "starting"
+                ? "border-transparent text-[var(--st-danger)] hover:border-[var(--st-danger-ring)] hover:bg-[var(--st-danger-tint)]"
+                : "border-transparent text-[var(--t3)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)] hover:text-[var(--st-ok-deep)]",
             )}
             title={isRunning ? t("common.stop") : portConflict ? (svc.last_error ?? t("pages.run.portConflictHint")) : t("common.start")}
             disabled={isBusy || portConflict}
@@ -489,7 +489,13 @@ function ServiceCard({
                 : runtime.actions.startOne(id)
             }
           >
-            {isRunning || svc.state === "starting" ? <Square className="size-3.5" /> : <Play className="size-3.5" />}
+            {isBusy ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : isRunning || svc.state === "starting" ? (
+              <Square className="size-3.5" />
+            ) : (
+              <Play className="size-3.5" />
+            )}
           </button>
         </div>
       </div>
@@ -512,24 +518,25 @@ function ServiceCard({
         onCancel={() => setConfirmStop(false)}
       />
 
-      <div className="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--t2,#62666d)]">
-        <span className="font-medium" style={{ color: meta.color }}>{stateLabel(svc.state)}</span>
-        {svc.port ? <PortLink port={svc.port} disabled={!isRunning} className="text-[var(--t1,#222326)]" /> : null}
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--t2)]">
+        <StatusChip
+          state={svc.state}
+          extra={isRunning && svc.started_at_ms ? fmtDuration(svc.started_at_ms) : undefined}
+        />
+        {svc.port ? <PortLink port={svc.port} disabled={!isRunning} className="font-mono text-[var(--t1)]" /> : null}
         {svc.pid ? (
-          <span className="font-mono @max-[250px]:hidden">pid {svc.pid}</span>
+          <span className="font-mono text-[var(--t3)] @max-[250px]:hidden">pid {svc.pid}</span>
         ) : svc.kind === "compose" ? (
-          // 1.3 §5.3：compose 服务无宿主进程，pid 恒为 null
           <span
-            className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 py-0.5 font-mono text-[10px]"
+            className="rounded-full bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--t3)]"
             title={t("pages.run.containerManagedTitle")}
           >
             {t("pages.run.containerManaged")}
           </span>
         ) : null}
-        {isRunning && svc.started_at_ms ? <span className="text-[var(--t3,#8a8f98)]"> · <span className="font-mono text-[var(--st-accent,#5e6ad2)]">{fmtDuration(svc.started_at_ms)}</span></span> : null}
       </div>
 
-      <div className="mt-1.5 min-h-[1.05rem] overflow-hidden">{foot}</div>
+      <div className="mt-2 min-h-[1.05rem] overflow-hidden">{foot}</div>
     </div>
   );
 }
@@ -1357,14 +1364,14 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* head */}
-      <div className={cn("flex items-center gap-2 border-b border-[var(--line,#e6e6e6)] px-4 py-3", compact && "px-3 py-2")}>
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-clip">
+      <div className={cn("flex items-center gap-3 border-b border-[var(--line)] px-4 py-3.5", compact && "px-3 py-2.5")}>
+        <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-x-clip">
           <StatusDot state={svc.state} size={10} />
-          <h1 className="min-w-0 truncate text-[1.08rem] font-bold tracking-tight text-[var(--t1,#222326)]">{id}</h1>
+          <h1 className="min-w-0 truncate text-[1.15rem] font-bold tracking-tight text-[var(--t1)]">{id}</h1>
           <KindBadge kind={svc.kind} buildTool={spec?.build_tool} />
           {external ? (
             <span
-              className="inline-flex h-5 items-center shrink-0 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 text-[11px] font-medium leading-none text-[var(--t2,#62666d)]"
+              className="inline-flex h-5 items-center shrink-0 rounded-full bg-[var(--surface-2)] px-2 text-[11px] font-medium leading-none text-[var(--t2)]"
               title={t("pages.run.externalMonitorTitle")}
             >
               {t("pages.run.externalMonitor")}
@@ -1372,24 +1379,19 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
           ) : null}
           {portConflict ? (
             <span
-              className="inline-flex h-5 items-center shrink-0 rounded-full border border-red-200 bg-[var(--st-danger-tint,#fdecec)] px-2 text-[11px] font-medium leading-none text-[#DC2626]"
+              className="inline-flex h-5 items-center shrink-0 rounded-full border border-[var(--st-danger-ring)] bg-[var(--st-danger-tint)] px-2 text-[11px] font-medium leading-none text-[var(--st-danger)]"
               title={svc.last_error ?? t("pages.run.portConflictHint")}
             >
               {t("pages.run.portConflict")}
             </span>
           ) : null}
-          <span
-            className={cn(
-              "inline-flex h-5 items-center shrink-0 rounded-full px-2 text-[11px] font-medium leading-none",
-              isRunning ? "bg-[var(--ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]" : "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]",
-            )}
-          >
-            {stateLabel(svc.state)}
-            {isRunning && svc.started_at_ms ? ` · ${fmtDuration(svc.started_at_ms)}` : ""}
-          </span>
+          <StatusChip
+            state={svc.state}
+            extra={isRunning && svc.started_at_ms ? fmtDuration(svc.started_at_ms) : undefined}
+          />
           {isRunning && rt.state.metrics[id]?.memory_bytes != null ? (
             <span
-              className="inline-flex h-5 items-center shrink-0 gap-1 rounded-full bg-[var(--surface-2,#f3f4f5)] px-2 text-[11px] font-medium leading-none text-[var(--t2,#62666d)]"
+              className="inline-flex h-5 items-center shrink-0 gap-1 rounded-full bg-[var(--surface-2)] px-2 text-[11px] font-medium leading-none text-[var(--t2)]"
               title={t("pages.run.metaMemory")}
             >
               <MemoryStick className="size-3" aria-hidden />
@@ -1414,7 +1416,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               title={external ? t("pages.run.restartExternalTitle") : undefined}
               onClick={() => runtime.actions.restartOne(id)}
             >
-              <RotateCw className="size-3.5" /> {t("common.restart")}
+              {isBusy ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />} {t("common.restart")}
             </Button>
           ) : null}
           {isRunning || svc.state === "starting" ? (
@@ -1425,7 +1427,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               disabled={isBusy}
               onClick={() => (isRunning ? setConfirmStop(true) : runtime.actions.stopOne(id))}
             >
-              <Square className="size-3.5" /> {t("common.stop")}
+              {isBusy ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />} {t("common.stop")}
             </Button>
           ) : (
             <Button
@@ -1436,7 +1438,8 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               title={portConflict ? (svc.last_error ?? t("pages.run.portConflictHint")) : undefined}
               onClick={() => runtime.actions.startOne(id)}
             >
-              <Play className="size-3.5" /> {svc.state === "exited" || svc.last_error ? t("pages.run.retryStart") : t("common.start")}
+              {isBusy ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}{" "}
+              {svc.state === "exited" || svc.last_error ? t("pages.run.retryStart") : t("common.start")}
             </Button>
           )}
         </div>
@@ -1461,19 +1464,19 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
       />
 
       {/* command line：深色终端风，与浅色 meta 条形成层次 */}
-      <div className="mx-4 mt-3 flex items-center gap-2.5 rounded-[var(--r-md,12px)] border border-[#2B2E36] bg-[#191B20] py-2 pl-3.5 pr-1.5 font-mono shadow-[0_1px_2px_rgb(16_24_40_/_0.08)]">
-        <span className="shrink-0 font-bold text-[#7B84EA]" aria-hidden>
+      <div className="mx-4 mt-3.5 flex items-center gap-2.5 rounded-[var(--r-md)] border border-[var(--st-cmd-border)] bg-[var(--st-cmd-bg)] py-2 pl-3.5 pr-1.5 font-mono shadow-[var(--shadow-1)]">
+        <span className="shrink-0 font-bold text-[var(--st-cmd-prompt)]" aria-hidden>
           $
         </span>
-        <span className="min-w-0 flex-1 truncate text-[0.76rem] leading-5 text-[#E7E9EC]" title={cmd}>
+        <span className="min-w-0 flex-1 truncate text-[0.78rem] leading-5 text-[var(--st-cmd-fg)]" title={cmd}>
           {cmd}
         </span>
         <button
           className={cn(
-            "flex shrink-0 items-center gap-1 rounded-[var(--r-sm,8px)] px-1.5 py-1 text-[0.68rem] transition-all duration-150",
+            "flex shrink-0 items-center gap-1 rounded-[var(--r-sm)] px-1.5 py-1 text-[0.68rem] transition-all duration-150",
             copied
-              ? "text-[#4ADE80]"
-              : "text-[#9AA0AB] hover:bg-white/10 hover:text-[#E7E9EC]",
+              ? "text-[var(--st-ok)]"
+              : "text-[var(--st-cmd-muted)] hover:bg-white/10 hover:text-[var(--st-cmd-fg)]",
           )}
           title={copied ? t("common.copied") : t("pages.run.copyCmd")}
           onClick={() => {
@@ -1492,11 +1495,11 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
       </div>
 
       {/* meta strip：单行不换行；拓扑字段 flex-1 占剩余宽度截断（见 Meta truncate），其余字段 shrink-0 不被挤压 */}
-      <div className="mx-4 mt-2 flex flex-nowrap items-center gap-x-[1.1rem] overflow-hidden rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-3.5 py-2">
+      <div className="mx-4 mt-2.5 flex flex-nowrap items-center gap-x-[1.1rem] overflow-hidden rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-2)] px-3.5 py-2.5">
         {svc.port != null ? (
-          <Meta k={t("pages.run.metaPort")} v={<PortLink port={svc.port} disabled={!isRunning} className="font-semibold text-[var(--st-accent,#5e6ad2)]" />} />
+          <Meta k={t("pages.run.metaPort")} v={<PortLink port={svc.port} disabled={!isRunning} className="font-semibold text-[var(--st-info)]" />} />
         ) : (
-          <Meta k={t("pages.run.metaPort")} v="—" accent />
+          <Meta k={t("pages.run.metaPort")} v="—" />
         )}
         <Meta k={t("pages.run.metaStack")} v={stack} />
         <Meta k={t("pages.run.metaTopo")} v={topo} muted truncate title={topo} />
@@ -1509,20 +1512,20 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
       </div>
 
       {/* segbar */}
-      <div className="flex items-center gap-2 overflow-x-auto border-b border-[var(--line,#e6e6e6)] px-3 py-2">
-        <div className="inline-flex items-center gap-0.5 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-0.5">
-          {tabs.map((t) => (
+      <div className="flex items-center gap-2 overflow-x-auto border-b border-[var(--line)] px-3 py-2.5">
+        <div className="inline-flex items-center gap-0.5 rounded-[var(--r-sm)] bg-[var(--surface-2)] p-0.5">
+          {tabs.map((tabItem) => (
             <button
-              key={t.k}
-              onClick={() => setTab(t.k)}
+              key={tabItem.k}
+              onClick={() => setTab(tabItem.k)}
               className={cn(
-                "flex items-center gap-1 rounded-[6px] px-3 py-1 text-[0.75rem] font-semibold transition-all duration-150",
-                tab === t.k
-                  ? "bg-[var(--surface,#fff)] text-[var(--t1,#222326)] shadow-[var(--shadow-1,0_1px_2px_rgb(16_24_40_/_0.05)),inset_0_0_0_1px_var(--line,#e6e6e6)]"
-                  : "text-[var(--t2,#62666d)] hover:bg-[rgb(0_0_0_/_0.045)] hover:text-[var(--t1,#222326)]",
+                "flex items-center gap-1 rounded-[6px] px-3 py-1.5 text-[0.76rem] font-semibold transition-all duration-150",
+                tab === tabItem.k
+                  ? "bg-[var(--surface)] text-[var(--t1)] shadow-[var(--shadow-1),inset_0_0_0_1px_var(--line)]"
+                  : "text-[var(--t2)] hover:bg-[var(--surface-3)] hover:text-[var(--t1)]",
               )}
             >
-              <t.icon className="size-3.5" /> {t.label}
+              <tabItem.icon className="size-3.5" /> {tabItem.label}
             </button>
           ))}
         </div>
@@ -1795,10 +1798,10 @@ function Meta({
         className={cn(
           "text-[0.74rem] font-medium leading-none",
           (mono || accent || ok) && "font-mono",
-          accent && "font-semibold text-[var(--st-accent,#5e6ad2)]",
-          ok && "font-semibold text-[var(--st-ok-deep,#1e7e35)]",
-          muted && !accent && !ok && "font-normal text-[var(--t2,#62666d)]",
-          !accent && !ok && !muted && "text-[var(--t1,#222326)]",
+          accent && "font-semibold text-[var(--st-info)]",
+          ok && "font-semibold text-[var(--st-ok-deep)]",
+          muted && !accent && !ok && "font-normal text-[var(--t2)]",
+          !accent && !ok && !muted && "text-[var(--t1)]",
           truncate && "truncate",
         )}
       >
@@ -1848,37 +1851,34 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
   const { t } = useTranslation();
   const [confirmStop, setConfirmStop] = useState(false);
 
-  const foot = isRunning ? (
-    <span className="flex items-center gap-1 text-[11px] text-[var(--st-ok-deep,#1e7e35)]">
-      {t("states.script_running")}{view?.pid ? <span className="font-mono"> · pid {view.pid}</span> : null}
-    </span>
-  ) : view?.last_error ? (
-    <span className="block truncate text-[11px] text-[var(--st-danger,#dc2626)]" title={view.last_error}>⚠ {view.last_error}</span>
-  ) : view?.last_exit ? (
-    <span className={cn("text-[11px]", view.last_exit.code === 0 ? "text-[var(--st-ok-deep,#1e7e35)]" : "text-[var(--st-danger,#dc2626)]")}>
-      {scriptStateLabel(view)}
-    </span>
+  const scriptState = scriptDotState(view ?? { state: "idle", last_exit: null, last_error: null });
+  const foot = view?.last_error ? (
+    <span className="block truncate text-[11px] text-[var(--st-danger)]" title={view.last_error}>⚠ {view.last_error}</span>
+  ) : isRunning && view?.pid ? (
+    <span className="font-mono text-[11px] text-[var(--t3)]">pid {view.pid}</span>
   ) : (
-    <span className="text-[11px] text-[var(--t3,#8a8f98)]">{t("pages.run.scriptTask", { n: spec.cmds.length })}</span>
+    <span className="text-[11px] text-[var(--t3)]">{t("pages.run.scriptTask", { n: spec.cmds.length })}</span>
   );
 
   return (
     <div
       onClick={onOpen}
       className={cn(
-        "group/scr relative flex h-[5.7rem] shrink-0 cursor-pointer flex-col overflow-hidden rounded-[var(--r-md,12px)] border bg-[var(--surface,#fff)] p-2.5 transition-all duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))]",
-        selected ? "border-[var(--st-accent,#5e6ad2)] bg-[color-mix(in_oklch,var(--st-accent,#5e6ad2)_6%,white)] ring-1 ring-[var(--st-accent,#5e6ad2)]/30" : "border-[var(--line,#e6e6e6)] hover:border-[var(--line-strong,#d0d6e0)]",
+        "group/scr relative flex min-h-[6.1rem] shrink-0 cursor-pointer flex-col overflow-hidden rounded-[var(--r-md)] border bg-[var(--surface)] px-3 py-2.5 transition-all duration-150 ease-[var(--st-ease)]",
+        selected
+          ? "border-[var(--line-strong)] shadow-[var(--shadow-1),var(--st-select-ring)]"
+          : "border-[var(--line)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]",
       )}
     >
       <div className="flex items-center gap-2">
-        <StatusDot state={scriptDotState(view ?? { state: "idle", last_exit: null, last_error: null })} size={8} />
-        <span className="truncate text-[0.88rem] font-semibold text-[var(--t1,#222326)]" title={id}>{id}</span>
+        <StatusDot state={scriptState} size={8} />
+        <span className="min-w-0 truncate text-[0.92rem] font-semibold tracking-tight text-[var(--t1)]" title={id}>{id}</span>
         <KindBadge kind="task" />
-        <div className="ml-auto flex gap-1 opacity-50 transition-opacity group-hover/scr:opacity-100" onClick={(e) => e.stopPropagation()}>
+        <div className="ml-auto flex gap-1 opacity-60 transition-opacity group-hover/scr:opacity-100" onClick={(e) => e.stopPropagation()}>
           {isRunning ? (
             <button
               type="button"
-              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--st-danger,#dc2626)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm)] border border-transparent text-[var(--st-danger)] transition-colors duration-150 hover:border-[var(--st-danger-ring)] hover:bg-[var(--st-danger-tint)] disabled:cursor-not-allowed disabled:opacity-50"
               title={t("pages.run.stopScriptTitle")}
               onClick={() => setConfirmStop(true)}
             >
@@ -1887,7 +1887,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
           ) : (
             <button
               type="button"
-              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm)] border border-transparent text-[var(--t3)] transition-colors duration-150 hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)] hover:text-[var(--st-ok-deep)] disabled:cursor-not-allowed disabled:opacity-50"
               title={anyRunning ? t("pages.run.scriptBusy") : t("pages.run.runScriptTitle")}
               disabled={anyRunning}
               onClick={() => void run()}
@@ -1897,8 +1897,11 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
           )}
         </div>
       </div>
-      <div className="mt-1.5 truncate text-[11px] text-[var(--t2,#62666d)]">{spec.desc ?? spec.cmds.join(" ; ")}</div>
-      <div className="mt-auto min-h-[1.05rem] overflow-hidden">{foot}</div>
+      <div className="mt-2 truncate text-[11px] leading-snug text-[var(--t2)]">{spec.desc ?? spec.cmds.join(" ; ")}</div>
+      <div className="mt-auto flex min-h-[1.05rem] items-center gap-2 overflow-hidden pt-1">
+        <StatusChip state={scriptState} label={view ? scriptStateLabel(view) : stateLabel(scriptState)} />
+        <span className="min-w-0 truncate">{foot}</span>
+      </div>
 
       <ConfirmDialog
         open={confirmStop}
@@ -2054,11 +2057,7 @@ function ScriptDetail({ id }: { id: string }) {
   if (!spec) return null;
 
   const source: LogSource = { kind: "script", id };
-  const chipCls = isRunning
-    ? "bg-[var(--ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]"
-    : view?.last_error || (view?.last_exit?.code ?? 0) > 0
-      ? "bg-[var(--st-danger-tint,#fdecec)] text-[var(--st-danger,#dc2626)]"
-      : "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]";
+  const scriptState = scriptDotState(view ?? { state: "idle", last_exit: null, last_error: null });
 
   const copyCmds = () => {
     void copyText(spec.cmds.join("\n")).then((ok) => {
@@ -2074,14 +2073,15 @@ function ScriptDetail({ id }: { id: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* head */}
-      <div className="flex items-center gap-2 border-b border-[var(--line,#e6e6e6)] px-4 py-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-clip">
-          <StatusDot state={scriptDotState(view ?? { state: "idle", last_exit: null, last_error: null })} size={10} />
-          <h1 className="min-w-0 truncate text-[1.08rem] font-bold tracking-tight text-[var(--t1,#222326)]">{id}</h1>
+      <div className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-3.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-x-clip">
+          <StatusDot state={scriptState} size={10} />
+          <h1 className="min-w-0 truncate text-[1.15rem] font-bold tracking-tight text-[var(--t1)]">{id}</h1>
           <KindBadge kind="task" />
-          <span className={cn("inline-flex h-5 items-center shrink-0 rounded-full px-2 text-[11px] font-medium leading-none", chipCls)}>
-            {scriptStateLabel(view ?? { state: "idle", last_exit: null, last_error: null })}
-          </span>
+          <StatusChip
+            state={scriptState}
+            label={scriptStateLabel(view ?? { state: "idle", last_exit: null, last_error: null })}
+          />
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {isRunning ? (
@@ -2118,15 +2118,15 @@ function ScriptDetail({ id }: { id: string }) {
       />
 
       {/* command block：cmds 顺序执行，深色终端风 */}
-      <div className="mx-4 mt-3 rounded-[var(--r-md,12px)] border border-[#2B2E36] bg-[#191B20] py-2 pl-3.5 pr-1.5 font-mono shadow-[0_1px_2px_rgb(16_24_40_/_0.08)]">
+      <div className="mx-4 mt-3.5 rounded-[var(--r-md)] border border-[var(--st-cmd-border)] bg-[var(--st-cmd-bg)] py-2 pl-3.5 pr-1.5 font-mono shadow-[var(--shadow-1)]">
         <div className="flex items-start gap-2.5">
           <div className="min-w-0 flex-1">
             {spec.cmds.map((c, i) => (
               <div key={i} className="flex min-w-0 items-baseline gap-2 py-0.5">
-                <span className="shrink-0 font-bold text-[#7B84EA]" aria-hidden>
+                <span className="shrink-0 font-bold text-[var(--st-cmd-prompt)]" aria-hidden>
                   $
                 </span>
-                <span className="min-w-0 flex-1 break-all text-[0.76rem] leading-5 text-[#E7E9EC]" title={c}>
+                <span className="min-w-0 flex-1 break-all text-[0.78rem] leading-5 text-[var(--st-cmd-fg)]" title={c}>
                   {c}
                 </span>
               </div>
@@ -2134,8 +2134,8 @@ function ScriptDetail({ id }: { id: string }) {
           </div>
           <button
             className={cn(
-              "flex shrink-0 items-center gap-1 rounded-[var(--r-sm,8px)] px-1.5 py-1 text-[0.68rem] transition-all duration-150",
-              copied ? "text-[#4ADE80]" : "text-[#9AA0AB] hover:bg-white/10 hover:text-[#E7E9EC]",
+              "flex shrink-0 items-center gap-1 rounded-[var(--r-sm)] px-1.5 py-1 text-[0.68rem] transition-all duration-150",
+              copied ? "text-[var(--st-ok)]" : "text-[var(--st-cmd-muted)] hover:bg-white/10 hover:text-[var(--st-cmd-fg)]",
             )}
             title={copied ? t("common.copied") : t("pages.run.copyCmd")}
             onClick={copyCmds}
@@ -2146,7 +2146,7 @@ function ScriptDetail({ id }: { id: string }) {
       </div>
 
       {/* meta strip */}
-      <div className="mx-4 mt-2 flex flex-wrap items-center gap-x-[1.1rem] gap-y-1.5 rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] px-3.5 py-2">
+      <div className="mx-4 mt-2.5 flex flex-wrap items-center gap-x-[1.1rem] gap-y-1.5 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-2)] px-3.5 py-2.5">
         <Meta k={t("pages.run.metaCmds")} v={t("pages.run.cmdCount", { n: spec.cmds.length })} />
         <Meta k={t("pages.run.metaCwd")} v={spec.cwd ?? t("pages.run.wsRoot")} muted />
         <Meta k={t("pages.run.metaTimeout")} v={`${spec.timeout_secs ?? 1800}s`} />
@@ -2372,23 +2372,20 @@ export function RunPage() {
           : null;
 
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
+    <div className="flex min-h-0 flex-1 overflow-hidden bg-[var(--bg)]">
       {/* card column：仅卡片列表自身滚动；宽度可拖拽（min/max 见 workspace-storage） */}
       <section
         className={cn(
-          "flex shrink-0 flex-col border-r border-[var(--line,#e6e6e6)] p-3",
+          "flex shrink-0 flex-col border-r border-[var(--line)] bg-[var(--bg)] p-3",
           compact && "p-2",
         )}
-        style={{
-          width: cardWidth,
-          background: "linear-gradient(180deg, color-mix(in_oklch, var(--st-accent,#5e6ad2) 2.5%, transparent) 0%, transparent 22%)",
-        }}
+        style={{ width: cardWidth }}
       >
-        <div className="flex items-center gap-2 px-1 pb-2 pt-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">{t("pages.run.servicesHeader")}</span>
+        <div className="flex items-center gap-2 px-1 pb-2.5 pt-1">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--t3)]">{t("pages.run.servicesHeader")}</span>
               <RunningCounts total={serviceIds.length} running={running} className="text-[11px]" />
             </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+            <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto">
               {serviceIds.length === 0 ? (
                 <div className="shrink-0 rounded-lg border border-dashed border-[var(--line,#e6e6e6)] p-6 text-center text-sm text-[var(--t3,#8a8f98)]">
                   {t("pages.run.noServices")}
@@ -2494,35 +2491,31 @@ export function RunPage() {
         onPointerDown={onResizeHandlePointerDown}
         className="group relative -ml-px z-10 w-1.5 shrink-0 cursor-col-resize"
       >
-        <div className="absolute inset-y-0 left-0 w-px bg-[var(--st-accent,#5e6ad2)] opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
+        <div className="absolute inset-y-0 left-0 w-px bg-[var(--line-strong)] opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-active:bg-[var(--st-accent)] group-active:opacity-100" />
       </div>
 
       {/* detail：外层不滚动，滚动交给日志框体 / 各 Tab 面板 */}
-      <section
-        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-4 pb-4 pt-2"
-        style={{ background: "radial-gradient(70% 45% at 88% 0%, rgb(94 106 210 / 0.035), transparent 60%)" }}
-      >
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg)] px-4 pb-4 pt-3">
         {!sel ? (
-          <div className="flex h-full items-center justify-center text-sm text-[var(--t3,#8a8f98)]">{t("pages.run.selectDetail")}</div>
+          <div className="flex h-full items-center justify-center text-sm text-[var(--t3)]">{t("pages.run.selectDetail")}</div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--r-lg,16px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] shadow-[var(--shadow-1,0_1px_2px_rgb(16_24_40_/_0.05))]">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--r-lg)] border border-[var(--line)] bg-[var(--surface)] shadow-[var(--shadow-1)]">
             {sel.kind === "service" ? <ServiceDetail id={sel.id} compact={compact} /> : <ScriptDetail id={sel.id} />}
           </div>
         )}
       </section>
 
-      {/* TEMP: 临时错误弹框，验证后整体移除 */}
       {rt.state.error ? (
         <div
           className="fixed inset-0 z-[200] grid place-items-center bg-black/40"
           onClick={() => rt.actions.clearError()}
         >
           <div
-            className="w-[420px] rounded-xl border border-red-200 bg-white p-5 shadow-xl"
+            className="w-[420px] rounded-xl border border-[var(--st-danger-ring)] bg-[var(--surface)] p-5 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="mb-2 text-sm font-semibold text-red-600">{t("pages.run.startFailed")}</div>
-            <p className="mb-4 whitespace-pre-wrap break-words text-sm text-[var(--t1,#222326)]">
+            <div className="mb-2 text-sm font-semibold text-[var(--st-danger)]">{t("pages.run.startFailed")}</div>
+            <p className="mb-4 whitespace-pre-wrap break-words text-sm text-[var(--t1)]">
               {rt.state.error}
             </p>
             <div className="flex justify-end">

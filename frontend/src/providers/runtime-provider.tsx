@@ -140,10 +140,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     };
   }, [wsId]);
 
-  const wrap = async (fn: () => Promise<unknown>) => {
+  const wrap = async (fn: () => Promise<unknown>, okToast?: string) => {
     setError(null);
     try {
       await fn();
+      if (okToast) toast(okToast, "info");
     } catch (e) {
       setError(e instanceof IpcFailure ? e.message : String(e));
     }
@@ -159,11 +160,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       error,
     },
     actions: {
-      startOne: (id) => wrap(() => apiStartOne(id)),
-      stopOne: (id) => wrap(() => apiStopOne(id)),
-      restartOne: (id) => wrap(() => apiRestartOne(id)),
-      startAll: () => wrap(() => apiStartAll()),
-      stopAll: () => wrap(() => apiStopAll()),
+      startOne: (id) => wrap(() => apiStartOne(id), t("operations.startRequested", { id })),
+      stopOne: (id) => wrap(() => apiStopOne(id), t("operations.stopRequested", { id })),
+      restartOne: (id) => wrap(() => apiRestartOne(id), t("operations.restartRequested", { id })),
+      startAll: () => wrap(() => apiStartAll(), t("operations.startedAll")),
+      stopAll: () => wrap(() => apiStopAll(), t("operations.stoppedAll")),
       clearError: () => setError(null),
     },
   };
