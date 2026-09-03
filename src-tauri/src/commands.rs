@@ -1466,6 +1466,19 @@ fn install_update_windows(
 // 1.3 Docker（core 侧实现；这里只做 IPC 适配）
 // ---------------------------------------------------------------------------
 
+/// `system.metrics`：主机级 CPU / 内存 / 磁盘 / CPU 温度采样（状态栏用）。
+/// 与工作区 Job 树指标（`metrics.snapshot`）口径不同：这里是整机视角。
+/// 不持久化、不进日志、不上传。
+///
+/// `temp` 决定温度采样档位（`off` / `auto` / `fast`），由状态栏切换：
+/// Windows 上 `fast` 会常驻一个采样进程，`auto` 每分钟查一次。
+#[tauri::command(rename = "system.metrics")]
+pub fn system_metrics(
+    temp: Option<supertask_core::host_metrics::TempMode>,
+) -> supertask_core::host_metrics::HostMetrics {
+    supertask_core::host_metrics::sample_host_metrics(temp.unwrap_or_default())
+}
+
 /// `docker.probe`：三态探测，会话内缓存，`refresh` 强制刷新（规格 §4.1）。
 #[tauri::command(rename = "docker.probe")]
 pub fn docker_probe(

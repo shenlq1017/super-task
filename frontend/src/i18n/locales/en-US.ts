@@ -317,6 +317,25 @@ const enUS = {
     saveEnvVars: "Save environment variables",
     pasteHint: "Tip: press Ctrl+V anywhere in this section to paste .env / YAML text; it is parsed and merged automatically",
   },
+  statusBar: {
+    system: "System load",
+    environment: "Environment",
+    cpu: "CPU",
+    memory: "Memory",
+    disk: "Disk",
+    cpuTemp: "CPU temp",
+    unsupported: "Unavailable",
+    notFound: "Not found",
+    toggleDetails: "Toggle system and environment details",
+    tempOffValue: "Off",
+    tempModeLabel: "Temp sampling",
+    tempUnsupportedHint: "This machine exposes no CPU temperature sensor (common on desktops), so no mode can produce a reading.",
+    tempModes: {
+      off: { label: "Off", hint: "CPU temperature is not sampled and stays hidden in the bar." },
+      auto: { label: "Auto", hint: "Low cadence: sensors read directly on Linux, one WMI query a minute on Windows." },
+      fast: { label: "Fast", hint: "Near real time: on Windows one resident sampler streams readings instead of spawning a process per sample." },
+    },
+  },
   pages: {
     ai: {
       title: "AI Assistant",

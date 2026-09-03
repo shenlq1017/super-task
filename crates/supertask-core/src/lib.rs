@@ -12,6 +12,7 @@ pub mod gateway;
 pub mod git;
 pub mod graph;
 pub mod health;
+pub mod host_metrics;
 pub mod ide;
 pub mod importer;
 pub mod ipc;

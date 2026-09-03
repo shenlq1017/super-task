@@ -103,6 +103,25 @@ const zhTW = {
     "saveEnvVars": "儲存環境變數",
     "pasteHint": "提示：可直接 Ctrl+V 貼上 .env / YAML 文本，自動解析合併",
   },
+  "statusBar": {
+    "system": "系統負載",
+    "environment": "開發環境",
+    "cpu": "CPU",
+    "memory": "記憶體",
+    "disk": "磁碟",
+    "cpuTemp": "CPU 溫度",
+    "unsupported": "不可用",
+    "notFound": "未發現",
+    "toggleDetails": "展開 / 收起系統與環境詳情",
+    "tempOffValue": "已關閉",
+    "tempModeLabel": "溫度取樣",
+    "tempUnsupportedHint": "本機未提供 CPU 溫度感測器（桌機常見），切換檔位也拿不到讀數。",
+    "tempModes": {
+      "off": { "label": "關閉", "hint": "不取樣 CPU 溫度，狀態列隱藏該項。" },
+      "auto": { "label": "自動", "hint": "低頻取樣：Linux 直接讀感測器，Windows 每分鐘查一次 WMI。" },
+      "fast": { "label": "高頻", "hint": "近即時：Windows 常駐一個取樣行程持續讀數，不再每次開新行程。" }
+    }
+  },
   "pages": {
     "ai": {
       "title": "AI 助手",

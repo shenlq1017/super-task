@@ -11,6 +11,7 @@ import { useWorkspace } from "../providers/workspace-provider";
 import { useToast } from "@/components/ui/toast";
 import { CommandPalette } from "@/components/command-palette";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
+import { StatusBar, type EnvItem } from "@/components/status-bar";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
 import { readCompactPref, readLogFollowPref, writeCompactPref, writeLogFollowPref } from "@/lib/workspace-storage";
 import { isTauri } from "../ipc/invoke";
@@ -56,21 +57,6 @@ function WatchingPulse({ active }: { active: boolean }) {
         ))}
       </span>
       {active ? "watching" : "idle"}
-    </span>
-  );
-}
-
-function ProbeChip({ name, found, version }: { name: string; found: boolean; version: string | null }) {
-  return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap">
-      <span
-        className="size-1.5 shrink-0 rounded-full"
-        style={{ background: found ? "var(--st-ok)" : "var(--st-warn-dot)" }}
-      />
-      <span className="font-semibold text-[var(--t1)]">{name}</span>
-      {found ? (
-        <span className="text-[var(--t3)]">{version ?? "✓"}</span>
-      ) : null}
     </span>
   );
 }
@@ -211,7 +197,7 @@ export function AppShell() {
   };
 
   const probe = state.app?.probe;
-  const probeItems = probe
+  const probeItems: EnvItem[] = probe
     ? [
         { name: "JDK", ok: probe.java.found, v: probe.java.version },
         { name: "Maven", ok: probe.maven.found, v: probe.maven.version },
@@ -342,23 +328,20 @@ export function AppShell() {
         </div>
       </div>
 
-      <footer className="flex h-[30px] shrink-0 items-center gap-2 overflow-hidden whitespace-nowrap border-t border-[var(--line)] bg-[var(--surface)] px-3 font-mono text-[11px] text-[var(--t3)]">
-        <WatchingPulse active={!!ws.state.workspaceId} />
-        <span className="text-[var(--line-strong)]">·</span>
-        <span className="flex min-w-0 items-center gap-3 overflow-hidden">
-          {probeItems.map((p) => (
-            <ProbeChip key={p.name} name={p.name} found={p.ok} version={p.v} />
-          ))}
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2 pl-3">
-          <span className="flex items-center gap-1.5 text-[var(--st-ok-deep)]">
-            <span className="size-1.5 rounded-full bg-[var(--st-ok)]" />
-            {ws.state.workspaceId ? t("common.workspaceSynced") : t("common.noWorkspace")}
-          </span>
-          <span className="text-[var(--line-strong)]">·</span>
-          <span>v{state.hello?.product_version ?? "1.0"}</span>
-        </span>
-      </footer>
+      <StatusBar
+        env={probeItems}
+        left={<WatchingPulse active={!!ws.state.workspaceId} />}
+        right={
+          <>
+            <span className="flex items-center gap-1.5 text-[var(--st-ok-deep)]">
+              <span className="size-1.5 rounded-full bg-[var(--st-ok)]" />
+              {ws.state.workspaceId ? t("common.workspaceSynced") : t("common.noWorkspace")}
+            </span>
+            <span className="text-[var(--line-strong)]">·</span>
+            <span>v{state.hello?.product_version ?? "1.0"}</span>
+          </>
+        }
+      />
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} features={features} />
     </div>
