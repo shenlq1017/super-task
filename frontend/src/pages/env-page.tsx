@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Pin, RefreshCw, XCircle, Wrench, ArrowUpCircle, Download } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Lock, RefreshCw, XCircle, Wrench, ArrowUpFromLine, Download } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -584,11 +584,11 @@ function ToolCard(p: ToolCardProps) {
           {isFound ? (
             <>
               <Button variant="warn" size="sm" onClick={p.onUpgrade} disabled={!p.managers || (!p.managers.mise && !p.managers.winget)}>
-                <ArrowUpCircle className="size-3.5" /> {t("pages.env.upgrade")}
+                <ArrowUpFromLine className="size-3.5" /> {t("pages.env.upgrade")}
               </Button>
               {p.canPin && (
                 <Button variant="outline" size="sm" onClick={p.onPin} title={t("pages.env.pinCurrentTitle")}>
-                  <Pin className="size-3.5" /> {t("pages.env.pinCurrent")}
+                  <Lock className="size-3.5" /> {t("pages.env.pinCurrent")}
                 </Button>
               )}
             </>
@@ -625,7 +625,7 @@ function ToolCard(p: ToolCardProps) {
               </Button>
               {p.canPin && p.required && (
                 <Button variant="ghost" size="sm" onClick={p.onPin} title={t("pages.env.installPinTitle", { version: p.required })}>
-                  <Pin className="size-3.5" /> {t("pages.env.installPin")}
+                  <Lock className="size-3.5" /> {t("pages.env.installPin")}
                 </Button>
               )}
             </>

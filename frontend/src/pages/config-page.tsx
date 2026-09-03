@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Braces,
   ChevronDown,
   ChevronRight,
   FileInput,
-  FileText,
   KeyRound,
   Layers,
   RefreshCw,
@@ -903,7 +903,7 @@ export function ConfigPage() {
         <div className="inline-flex items-center gap-0.5 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-0.5">
           {([
             { k: "form", label: t("pages.config.tabForm"), icon: SlidersHorizontal },
-            { k: "raw", label: t("pages.config.tabRaw"), icon: FileText },
+            { k: "raw", label: t("pages.config.tabRaw"), icon: Braces },
           ] as const).map((tabItem) => (
             <button
               key={tabItem.k}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { History, ScrollText, TerminalSquare } from "lucide-react";
+import { Activity, History, ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/providers/runtime-provider";
 import { useWorkspace } from "@/providers/workspace-provider";
@@ -52,7 +52,7 @@ export function LogsPage() {
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <aside className="w-52 shrink-0 overflow-y-auto border-r border-[var(--line,#e6e6e6)] bg-[var(--bg,#f7f8f8)] p-2">
         <div className="mb-2 flex items-center gap-1 px-1">
-          {modeBtn("live", <TerminalSquare className="size-3.5" />, t("logs.modeLive"))}
+          {modeBtn("live", <Activity className="size-3.5" />, t("logs.modeLive"))}
           {modeBtn("history", <History className="size-3.5" />, t("logs.modeHistory"))}
         </div>
         <button onClick={() => setSel(null)} className={navCls(current === null)}>

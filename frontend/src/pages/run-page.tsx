@@ -76,8 +76,11 @@ import {
   Square,
   RotateCw,
   Settings2,
-  Activity,
   FileText,
+  ScrollText,
+  SlidersHorizontal,
+  HeartPulse,
+  BarChart3,
   ExternalLink,
   Copy,
   Check,
@@ -1333,15 +1336,15 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
 
   type DetailTab = "logs" | "vars" | "ports" | "runtime" | "health" | "config" | "metrics" | "terminal" | "container" | "proxy";
   const tabs: { k: DetailTab; label: string; icon: typeof FileText }[] = [
-    { k: "logs", label: t("nav.logs"), icon: FileText },
+    { k: "logs", label: t("nav.logs"), icon: ScrollText },
     { k: "terminal", label: t("pages.run.tabTerminal"), icon: SquareTerminal },
     // 「环境」Tab 拆分：变量（env vars + 生效快照）、端口（检查/建议/改端口）、环境（运行时工具版本）
     { k: "vars", label: t("pages.run.tabEnv"), icon: Braces },
     { k: "ports", label: t("pages.run.tabPorts"), icon: ArrowLeftRight },
     { k: "runtime", label: t("pages.run.tabRuntime"), icon: Layers },
-    { k: "health", label: t("pages.run.tabHealth"), icon: Activity },
-    { k: "config", label: t("nav.config"), icon: FileText },
-    { k: "metrics", label: t("pages.run.tabMetrics"), icon: Activity },
+    { k: "health", label: t("pages.run.tabHealth"), icon: HeartPulse },
+    { k: "config", label: t("nav.config"), icon: SlidersHorizontal },
+    { k: "metrics", label: t("pages.run.tabMetrics"), icon: BarChart3 },
     // 1.3：容器 Tab 仅 compose 服务显示（镜像/容器 ID/healthcheck/退出码，只读）
     ...(isCompose ? [{ k: "container" as DetailTab, label: t("nav.docker"), icon: Container }] : []),
     // 1.6：代理 Tab 仅网关已配置且启用时显示（本服务视角：网关状态 + 指向本服务的路由）

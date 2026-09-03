@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Globe,
+  KeyRound,
   Loader2,
   Network,
   Play,
@@ -588,7 +589,7 @@ export function GatewayPage() {
             </Select>
             {draft.tls === "internal" ? (
               <Button variant="soft" size="sm" onClick={() => setTrustOpen(true)}>
-                <ShieldCheck className="size-3.5" />
+                <KeyRound className="size-3.5" />
                 {t("pages.gateway.trust")}
               </Button>
             ) : null}

@@ -25,14 +25,13 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings as SettingsIcon,
-  Settings2,
-  Command,
-  Wrench,
-  FileText,
+  SlidersHorizontal,
+  ScrollText,
+  KeyRound,
+  Globe,
   LayoutTemplate,
   GitBranch,
   Container,
-  Network,
   Cloud,
   Sparkles,
 } from "lucide-react";
@@ -260,7 +259,7 @@ export function AppShell() {
             onClick={() => setCmdOpen(true)}
             className="mt-1.5 flex items-center gap-2 rounded-full border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-3 py-1.5 text-[var(--t3,#8a8f98)] shadow-sm transition-all hover:border-[var(--line-strong,#d0d6e0)] hover:text-[var(--t2,#62666d)]"
           >
-            <Command className="size-3.5" />
+            <Search className="size-3.5" />
             <span className={cn("text-[0.74rem]", collapsed && "hidden")}>{t("common.searchCommand")}</span>
             <kbd
               className={cn(
@@ -289,7 +288,7 @@ export function AppShell() {
                     key={f.id}
                     to={f.path}
                     label={navText(f.id)}
-                    icon={NAV_ICONS[f.id] ?? <Wrench className="size-4" />}
+                    icon={NAV_ICONS[f.id] ?? <SlidersHorizontal className="size-4" />}
                     soon={f.status === "soon"}
                     version={f.since}
                     collapsed={collapsed}
@@ -392,15 +391,15 @@ export function AppShell() {
 
 const NAV_ICONS: Record<string, React.ReactNode> = {
   run: <Play className="size-4" />,
-  logs: <FileText className="size-4" />,
-  config: <Settings2 className="size-4" />,
-  env: <Wrench className="size-4" />,
+  logs: <ScrollText className="size-4" />,
+  config: <SlidersHorizontal className="size-4" />,
+  env: <KeyRound className="size-4" />,
   workspaces: <Folders className="size-4" />,
   discover: <Radar className="size-4" />,
   templates: <LayoutTemplate className="size-4" />,
   git: <GitBranch className="size-4" />,
   docker: <Container className="size-4" />,
-  gateway: <Network className="size-4" />,
+  gateway: <Globe className="size-4" />,
   cloud: <Cloud className="size-4" />,
   ai: <Sparkles className="size-4" />,
 };

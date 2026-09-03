@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Boxes,
   Container,
   Download,
-  Hammer,
   Image as ImageIcon,
+  Layers,
   Loader2,
+  Package,
+  PackagePlus,
   RefreshCw,
   Square,
+  Upload,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -377,7 +379,7 @@ export function DockerPage() {
         {/* ================= 工作区卡（compose 服务） ================= */}
         <Card className="p-4">
           <SectionHead
-            icon={<Boxes className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
+            icon={<Package className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
             title={t("pages.docker.wsCompose")}
             count={composeServices.length}
           />
@@ -411,7 +413,7 @@ export function DockerPage() {
                   title={composeReady ? t("pages.docker.importTitle") : offlineReason ?? undefined}
                   onClick={() => void importFromCompose()}
                 >
-                  <Download className="size-3.5" /> {t("pages.docker.importFromCompose")}
+                  <Upload className="size-3.5" /> {t("pages.docker.importFromCompose")}
                 </Button>
               </div>
               {composeServices.length === 0 ? (
@@ -572,7 +574,7 @@ export function DockerPage() {
         {/* ================= 构建入口（docker.builds 条目，走 operation） ================= */}
         <Card className="p-4">
           <SectionHead
-            icon={<Hammer className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
+            icon={<Layers className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
             title={t("pages.docker.imageBuild")}
             count={builds.length}
             disabled={!composeReady}
@@ -630,7 +632,7 @@ export function DockerPage() {
                               disabled={!workspaceId}
                               onClick={() => void triggerBuild(b.name)}
                             >
-                              <Hammer className="size-3.5" /> {t("pages.docker.buildImage")}
+                              <PackagePlus className="size-3.5" /> {t("pages.docker.buildImage")}
                             </Button>
                           )}
                         </div>
