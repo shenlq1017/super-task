@@ -115,6 +115,14 @@ const zhCN = {
     unsupported: "不可用",
     notFound: "未发现",
     toggleDetails: "展开 / 收起系统与环境详情",
+    tempOffValue: "已关闭",
+    tempModeLabel: "温度采样",
+    tempUnsupportedHint: "本机未暴露 CPU 温度传感器（常见于台式机），切换档位也拿不到读数。",
+    tempModes: {
+      off: { label: "关闭", hint: "不采样 CPU 温度，状态栏隐藏该项。" },
+      auto: { label: "自动", hint: "低频采样：Linux 直接读传感器，Windows 每分钟查一次 WMI。" },
+      fast: { label: "高频", hint: "近实时：Windows 常驻一个采样进程持续读数，不再每次开新进程。" },
+    },
   },
   pages: {
     ai: {

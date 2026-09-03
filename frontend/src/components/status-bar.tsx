@@ -3,11 +3,25 @@ import { useTranslation } from "react-i18next";
 import { ChevronUp, Cpu, HardDrive, MemoryStick, Thermometer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiSystemMetrics } from "../ipc/api";
-import type { HostMetrics } from "../ipc/protocol";
+import { TEMP_MODES, type HostMetrics, type TempMode } from "../ipc/protocol";
 
 const POLL_MS = 3000;
+/** Fast temperature mode polls harder: the backend sampler is already resident,
+ *  so the only extra cost here is one cheap IPC round trip. */
+const POLL_MS_FAST_TEMP = 1200;
 const ROTATE_MS = 4200;
 const HISTORY = 24;
+const TEMP_MODE_KEY = "supertask.statusBar.tempMode";
+
+function loadTempMode(): TempMode {
+  try {
+    const raw = window.localStorage.getItem(TEMP_MODE_KEY);
+    if (raw && (TEMP_MODES as readonly string[]).includes(raw)) return raw as TempMode;
+  } catch {
+    // Private mode / disabled storage: fall back to the default.
+  }
+  return "auto";
+}
 
 function fmtBytes(n: number | null | undefined): string {
   if (n == null) return "\u2014";
@@ -116,13 +130,23 @@ export function StatusBar(props: {
   const [expanded, setExpanded] = useState(false);
   const [rotateIdx, setRotateIdx] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [tempMode, setTempMode] = useState<TempMode>(loadTempMode);
   const alive = useRef(true);
+
+  const pickTempMode = (mode: TempMode) => {
+    setTempMode(mode);
+    try {
+      window.localStorage.setItem(TEMP_MODE_KEY, mode);
+    } catch {
+      // Preference is cosmetic; losing persistence is not worth surfacing.
+    }
+  };
 
   useEffect(() => {
     alive.current = true;
     const tick = async () => {
       try {
-        const m = await apiSystemMetrics();
+        const m = await apiSystemMetrics(tempMode);
         if (!alive.current) return;
         setHost(m);
         const c = m.cpuPercent;
@@ -132,12 +156,15 @@ export function StatusBar(props: {
       }
     };
     void tick();
-    const id = window.setInterval(() => void tick(), POLL_MS);
+    const id = window.setInterval(
+      () => void tick(),
+      tempMode === "fast" ? POLL_MS_FAST_TEMP : POLL_MS,
+    );
     return () => {
       alive.current = false;
       window.clearInterval(id);
     };
-  }, []);
+  }, [tempMode]);
 
   const missing = useMemo(() => props.env.filter((x) => !x.ok), [props.env]);
   const healthy = useMemo(() => props.env.filter((x) => x.ok), [props.env]);
@@ -153,6 +180,7 @@ export function StatusBar(props: {
   const diskPct = pct(host?.diskUsedBytes ?? null, host?.diskTotalBytes ?? null);
   const cpu = host?.cpuPercent ?? null;
   const temp = host?.cpuTempC ?? null;
+  const tempSupported = host?.cpuTempSupported ?? true;
   const current = rotating.length ? rotating[rotateIdx % rotating.length] : null;
 
   const memTitle = host?.memoryTotalBytes
@@ -200,11 +228,49 @@ export function StatusBar(props: {
                 />
                 <Row
                   label={t("statusBar.cpuTemp")}
-                  value={temp == null ? t("statusBar.unsupported") : temp.toFixed(0) + " \u00b0C"}
+                  value={
+                    temp != null
+                      ? temp.toFixed(0) + " \u00b0C"
+                      : !tempSupported
+                        ? t("statusBar.unsupported")
+                        : tempMode === "off"
+                          ? t("statusBar.tempOffValue")
+                          : "\u2014"
+                  }
                   ratio={temp == null ? null : Math.min(100, temp)}
                   color={tempColor(temp)}
                 />
               </dl>
+
+              <div className="mt-2.5 flex items-center gap-2 text-[11px]">
+                <span className="w-16 shrink-0 text-[var(--t3)]">{t("statusBar.tempModeLabel")}</span>
+                <div className="flex overflow-hidden rounded-[var(--r-sm)] border border-[var(--line)]">
+                  {TEMP_MODES.map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      disabled={!tempSupported && mode !== "off"}
+                      onClick={() => pickTempMode(mode)}
+                      title={t(`statusBar.tempModes.${mode}.hint`)}
+                      className={cn(
+                        "px-2 py-0.5 transition-colors duration-150",
+                        "border-l border-[var(--line)] first:border-l-0",
+                        tempMode === mode
+                          ? "bg-[var(--st-accent-tint)] font-semibold text-[var(--st-accent-hover)]"
+                          : "text-[var(--t2)] hover:bg-[var(--surface-2)]",
+                        !tempSupported && mode !== "off" && "cursor-not-allowed opacity-40 hover:bg-transparent",
+                      )}
+                    >
+                      {t(`statusBar.tempModes.${mode}.label`)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--t3)]">
+                {tempSupported
+                  ? t(`statusBar.tempModes.${tempMode}.hint`)
+                  : t("statusBar.tempUnsupportedHint")}
+              </p>
             </section>
             <section>
               <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3)]">

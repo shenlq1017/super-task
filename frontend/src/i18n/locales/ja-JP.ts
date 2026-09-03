@@ -327,6 +327,14 @@ const jaJP = {
     unsupported: "利用不可",
     notFound: "未検出",
     toggleDetails: "システム・環境詳細を開閉",
+    tempOffValue: "オフ",
+    tempModeLabel: "温度サンプリング",
+    tempUnsupportedHint: "このマシンには CPU 温度センサーがありません（デスクトップでは一般的です）。どのモードでも値は取得できません。",
+    tempModes: {
+      off: { label: "オフ", hint: "CPU 温度を取得せず、ステータスバーからも隠します。" },
+      auto: { label: "自動", hint: "低頻度：Linux はセンサーを直接読み、Windows は 1 分ごとに WMI を照会します。" },
+      fast: { label: "高頻度", hint: "ほぼリアルタイム：Windows では常駐サンプラーが値を流し続け、毎回プロセスを起動しません。" },
+    },
   },
   pages: {
     ai: {

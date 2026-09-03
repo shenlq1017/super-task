@@ -44,6 +44,7 @@ import {
   type SecretsStatusOut,
   type SecretsValidateOut,
   type HostMetrics,
+  type TempMode,
   type MetricsSnapshotOut,
   type ProfilesListOut,
   type ProfilesActivateOut,
@@ -289,7 +290,8 @@ export const apiMetricsSubscribe = (workspaceId: string) =>
 export const apiMetricsUnsubscribe = (workspaceId: string) =>
   invoke<{ ok: boolean }>(cmd.METRICS_UNSUBSCRIBE, { workspaceId });
 
-export const apiSystemMetrics = () => invoke<HostMetrics>(cmd.SYSTEM_METRICS, {});
+export const apiSystemMetrics = (temp: TempMode = "auto") =>
+  invoke<HostMetrics>(cmd.SYSTEM_METRICS, { temp });
 
 export const apiProfilesList = (workspaceId: string) =>
   invoke<ProfilesListOut>(cmd.PROFILES_LIST, { workspaceId });

@@ -327,6 +327,14 @@ const enUS = {
     unsupported: "Unavailable",
     notFound: "Not found",
     toggleDetails: "Toggle system and environment details",
+    tempOffValue: "Off",
+    tempModeLabel: "Temp sampling",
+    tempUnsupportedHint: "This machine exposes no CPU temperature sensor (common on desktops), so no mode can produce a reading.",
+    tempModes: {
+      off: { label: "Off", hint: "CPU temperature is not sampled and stays hidden in the bar." },
+      auto: { label: "Auto", hint: "Low cadence: sensors read directly on Linux, one WMI query a minute on Windows." },
+      fast: { label: "Fast", hint: "Near real time: on Windows one resident sampler streams readings instead of spawning a process per sample." },
+    },
   },
   pages: {
     ai: {

@@ -1518,13 +1518,17 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     // Mock：随时间轻微波动的主机指标，便于无 Tauri 环境预览状态栏。
     const tick = Date.now() / 1000;
     const total = 32 * 1024 ** 3;
+    const temp = (args as { temp?: string } | undefined)?.temp ?? "auto";
+    // fast 档波动更快，用来验证高频档确实在跳数。
+    const tempC = temp === "fast" ? 52 + 6 * Math.abs(Math.sin(tick / 2)) : 52 + 6 * Math.abs(Math.sin(tick / 13));
     return {
       cpuPercent: 18 + 12 * Math.abs(Math.sin(tick / 7)),
       memoryUsedBytes: Math.round(total * (0.44 + 0.06 * Math.sin(tick / 11))),
       memoryTotalBytes: total,
       diskUsedBytes: Math.round(931 * 1024 ** 3 * 0.62),
       diskTotalBytes: 931 * 1024 ** 3,
-      cpuTempC: 52 + 6 * Math.abs(Math.sin(tick / 13)),
+      cpuTempC: temp === "off" ? null : tempC,
+      cpuTempSupported: true,
       sampledAtMs: Date.now(),
     };
   }
