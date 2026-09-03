@@ -1,22 +1,43 @@
 import type { RtState, ScriptRuntimeView, ScriptState } from "@/ipc/protocol";
 import i18n from "@/i18n";
 import { errorDisplayText } from "@/lib/error-messages";
+import { cn } from "@/lib/utils";
 
 /** 状态点配色（文案走 `states.*` 的 i18n key，见 stateLabel）。 */
 export const STATE_META: Record<RtState, { color: string; ring: string }> = {
   stopped: { color: "var(--t3)", ring: "var(--line)" },
-  building: { color: "#9a6700", ring: "#f0d58a" },
-  starting: { color: "#9a6700", ring: "#f0d58a" },
-  running: { color: "var(--st-ok)", ring: "#9be3ad" },
-  unhealthy: { color: "var(--st-danger)", ring: "#f3b4b4" },
-  stopping: { color: "#9a6700", ring: "#f0d58a" },
-  exited: { color: "var(--st-danger)", ring: "#f3b4b4" },
+  building: { color: "var(--st-warn-dot)", ring: "var(--st-warn-ring)" },
+  starting: { color: "var(--st-warn-dot)", ring: "var(--st-warn-ring)" },
+  running: { color: "var(--st-ok)", ring: "var(--st-ok-ring)" },
+  unhealthy: { color: "var(--st-danger)", ring: "var(--st-danger-ring)" },
+  stopping: { color: "var(--st-warn-dot)", ring: "var(--st-warn-ring)" },
+  exited: { color: "var(--st-danger)", ring: "var(--st-danger-ring)" },
 };
 
-export function StatusDot({ state, size = 8 }: { state: RtState; size?: number }) {
+/** 服务状态 chip 底色（tint + 深字；选中态不再抢紫，状态色只走这里）。 */
+export const SERVICE_STATE_TINT: Record<RtState, string> = {
+  running: "bg-[var(--st-ok-tint)] text-[var(--st-ok-deep)]",
+  starting: "bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+  building: "bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+  stopping: "bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+  unhealthy: "bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+  exited: "bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+  stopped: "bg-[var(--surface-2)] text-[var(--t2)]",
+};
+
+export function StatusDot({
+  state,
+  size = 8,
+  pulse,
+}: {
+  state: RtState;
+  size?: number;
+  /** 运行中默认轻脉冲；过渡态也可开启。 */
+  pulse?: boolean;
+}) {
   const m = STATE_META[state];
-  // ring 用 box-shadow 外扩；外层占位避免被父级 overflow-hidden 裁切
   const ring = 3;
+  const shouldPulse = pulse ?? (state === "running" || state === "starting" || state === "stopping" || state === "building");
   return (
     <span
       aria-hidden
@@ -24,6 +45,7 @@ export function StatusDot({ state, size = 8 }: { state: RtState; size?: number }
       style={{ width: size + ring * 2, height: size + ring * 2 }}
     >
       <span
+        className={cn(shouldPulse && state === "running" && "animate-pulse")}
         style={{
           width: size,
           height: size,
@@ -33,6 +55,39 @@ export function StatusDot({ state, size = 8 }: { state: RtState; size?: number }
           display: "block",
         }}
       />
+    </span>
+  );
+}
+
+/** 紧凑状态 chip：卡片 / 详情头共用，避免只靠紫/绿文案区分。 */
+export function StatusChip({
+  state,
+  label,
+  extra,
+  className,
+}: {
+  state: RtState;
+  label?: string;
+  extra?: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 max-w-full items-center gap-1 truncate rounded-full px-2 text-[11px] font-medium leading-none",
+        SERVICE_STATE_TINT[state],
+        className,
+      )}
+    >
+      <span
+        aria-hidden
+        className="size-1.5 shrink-0 rounded-full"
+        style={{ background: STATE_META[state].color }}
+      />
+      <span className="truncate">
+        {label ?? stateLabel(state)}
+        {extra ? ` · ${extra}` : ""}
+      </span>
     </span>
   );
 }
@@ -58,7 +113,7 @@ export function fmtTime(ts: number): string {
 
 export function healthClass(ok: boolean | null | undefined): string {
   if (ok === null || ok === undefined) return "text-muted-foreground";
-  return ok ? "text-emerald-600" : "text-red-600";
+  return ok ? "text-[var(--st-ok-deep)]" : "text-[var(--st-danger)]";
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +123,7 @@ export function healthClass(ok: boolean | null | undefined): string {
 /** 脚本状态点配色（文案走 `states.script*` 的 i18n key）。 */
 export const SCRIPT_STATE_META: Record<ScriptState, { color: string; ring: string }> = {
   idle: { color: "var(--t3)", ring: "var(--line)" },
-  running: { color: "var(--st-ok)", ring: "#9be3ad" },
+  running: { color: "var(--st-ok)", ring: "var(--st-ok-ring)" },
   exited: { color: "var(--t3)", ring: "var(--line)" },
 };
 
@@ -96,24 +151,24 @@ export function scriptStateLabel(view: Pick<ScriptRuntimeView, "state" | "last_e
 
 /** 网关状态 chip 底色（tint + 深字，与服务状态 chip 同一视觉语言）。 */
 export const GATEWAY_STATE_TINT: Record<RtState, string> = {
-  running: "bg-[#e9f7ed] text-[#1e7e35]",
-  starting: "bg-[#fff8e1] text-[#9a6700]",
-  building: "bg-[#fff8e1] text-[#9a6700]",
-  stopping: "bg-[#fff8e1] text-[#9a6700]",
-  unhealthy: "bg-[#fdecec] text-[#dc2626]",
-  exited: "bg-[#fdecec] text-[#dc2626]",
-  stopped: "bg-[var(--surface-2,#f3f4f5)] text-[var(--t2,#62666d)]",
+  running: "bg-[var(--st-ok-tint)] text-[var(--st-ok-deep)]",
+  starting: "bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+  building: "bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+  stopping: "bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+  unhealthy: "bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+  exited: "bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+  stopped: "bg-[var(--surface-2)] text-[var(--t2)]",
 };
 
 /** 网关状态点颜色（chip 内小圆点）。 */
 export const GATEWAY_STATE_DOT: Record<RtState, string> = {
-  running: "bg-[#27a644]",
-  starting: "bg-[#d9a514]",
-  building: "bg-[#d9a514]",
-  stopping: "bg-[#d9a514]",
-  unhealthy: "bg-[#dc2626]",
-  exited: "bg-[#dc2626]",
-  stopped: "bg-[#8a8f98]",
+  running: "bg-[var(--st-ok)]",
+  starting: "bg-[var(--st-warn-dot)]",
+  building: "bg-[var(--st-warn-dot)]",
+  stopping: "bg-[var(--st-warn-dot)]",
+  unhealthy: "bg-[var(--st-danger)]",
+  exited: "bg-[var(--st-danger)]",
+  stopped: "bg-[var(--t3)]",
 };
 
 // ---------------------------------------------------------------------------

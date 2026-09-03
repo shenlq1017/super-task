@@ -7,35 +7,35 @@ import { cn } from "@/lib/utils"
 const buttonVariants = cva(
   // 圆角统一 --r-sm(8px)；禁止在带文字的按钮上用 rounded-full（会裁切字/图标）
   // leading-none 不能放这里：tailwind-merge 会认为后面的 text-* 尺寸类与 leading 冲突并把它删掉，须写在各 size 的 text-* 之后
-  "group/button inline-flex cursor-pointer shrink-0 items-center justify-center gap-1.5 overflow-visible rounded-[var(--r-sm,8px)] border bg-clip-padding font-semibold whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-150 ease-[var(--st-ease,cubic-bezier(.22,1,.36,1))] outline-none select-none focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)] focus-visible:outline-offset-2 focus-visible:ring-0 active:scale-[.97] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
+  "group/button inline-flex cursor-pointer shrink-0 items-center justify-center gap-1.5 overflow-visible rounded-[var(--r-sm)] border bg-clip-padding font-semibold whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-150 ease-[var(--st-ease)] outline-none select-none focus-visible:outline-2 focus-visible:outline-[var(--st-accent)] focus-visible:outline-offset-2 focus-visible:ring-0 active:scale-[.97] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
   {
     variants: {
       variant: {
         // 主操作：启动 / 安装 / 主 CTA
         default:
-          "border-[var(--st-accent,#5e6ad2)] bg-[var(--st-accent,#5e6ad2)] text-white shadow-[0_1px_2px_rgb(94_106_210_/_0.25)] hover:border-[var(--st-accent-hover,#4f5ac8)] hover:bg-[var(--st-accent-hover,#4f5ac8)] hover:shadow-[var(--st-glow,0_4px_16px_rgb(94_106_210_/_0.28))]",
+          "border-[var(--st-accent)] bg-[var(--st-accent)] text-[var(--primary-foreground)] shadow-[0_1px_2px_color-mix(in_srgb,var(--st-accent)_25%,transparent)] hover:border-[var(--st-accent-hover)] hover:bg-[var(--st-accent-hover)] hover:shadow-[var(--st-glow)]",
         // 中性次操作：打开 / 收起 / 刷新 / 建议 — 白底 + 强描边
         outline:
-          "border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] text-[var(--t1,#222326)] shadow-[0_1px_0_rgb(16_24_40_/_0.04)] hover:border-[var(--t3,#8a8f98)] hover:bg-[var(--surface-2,#f3f4f5)] aria-expanded:bg-[var(--surface-2,#f3f4f5)] aria-expanded:text-[var(--t1,#222326)]",
+          "border-[var(--line-strong)] bg-[var(--surface)] text-[var(--t1)] shadow-[var(--shadow-1)] hover:border-[var(--t3)] hover:bg-[var(--surface-2)] aria-expanded:bg-[var(--surface-2)] aria-expanded:text-[var(--t1)]",
         // 辅助灰底：构建 jar 等
         secondary:
-          "border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] text-[var(--t1,#222326)] hover:border-[var(--t3,#8a8f98)] hover:bg-[var(--surface,#fff)]",
+          "border-[var(--line-strong)] bg-[var(--surface-2)] text-[var(--t1)] hover:border-[var(--t3)] hover:bg-[var(--surface)]",
         // 低强调：行内次要
         ghost:
-          "border-transparent bg-transparent text-[var(--t2,#62666d)] hover:border-transparent hover:bg-[rgb(0_0_0_/_0.05)] hover:text-[var(--t1,#222326)] aria-expanded:bg-[rgb(0_0_0_/_0.05)] aria-expanded:text-[var(--t1,#222326)]",
+          "border-transparent bg-transparent text-[var(--t2)] hover:border-transparent hover:bg-[var(--surface-2)] hover:text-[var(--t1)] aria-expanded:bg-[var(--surface-2)] aria-expanded:text-[var(--t1)]",
         // 品牌软色：检查 / 探测 / 校验
         soft:
-          "border-[rgb(94_106_210_/_0.45)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)] hover:border-[var(--st-accent,#5e6ad2)] hover:bg-[rgb(94_106_210_/_0.16)]",
+          "border-[var(--st-accent-tint-line)] bg-[var(--st-accent-tint)] text-[var(--st-accent)] hover:border-[var(--st-accent)] hover:bg-[color-mix(in_srgb,var(--st-accent)_16%,transparent)]",
         // 成功软色：保存 / 确认写入
         success:
-          "border-[rgb(39_166_68_/_0.45)] bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)] hover:border-[var(--st-ok,#27a644)] hover:bg-[rgb(39_166_68_/_0.18)]",
+          "border-[color-mix(in_srgb,var(--st-ok)_45%,transparent)] bg-[var(--st-ok-tint)] text-[var(--st-ok-deep)] hover:border-[var(--st-ok)] hover:bg-[color-mix(in_srgb,var(--st-ok)_18%,transparent)]",
         // 警示软色：重启 / 升级
         warn:
-          "border-[var(--st-warn-line,#f0dcb0)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)] hover:border-[#E0C080] hover:bg-[rgb(234_179_8_/_0.2)]",
+          "border-[var(--st-warn-line)] bg-[var(--st-warn-tint)] text-[var(--st-warn)] hover:border-[var(--st-warn)]/50 hover:bg-[color-mix(in_srgb,var(--st-warn-dot)_20%,transparent)]",
         // 破坏性：停止 / 删除 — 实心红
         destructive:
-          "border-[var(--st-danger,#dc2626)] bg-[var(--st-danger,#dc2626)] text-white shadow-[0_1px_2px_rgb(220_38_38_/_0.22)] hover:border-[#B91C1C] hover:bg-[#B91C1C] hover:text-white",
-        link: "h-auto border-transparent bg-transparent p-0 text-[var(--st-accent,#5e6ad2)] underline-offset-4 hover:underline active:scale-100",
+          "border-[var(--st-danger)] bg-[var(--st-danger)] text-white shadow-[0_1px_2px_color-mix(in_srgb,var(--st-danger)_22%,transparent)] hover:border-[var(--st-danger-deep)] hover:bg-[var(--st-danger-deep)] hover:text-white",
+        link: "h-auto border-transparent bg-transparent p-0 text-[var(--st-accent)] underline-offset-4 hover:underline active:scale-100",
       },
       size: {
         default:

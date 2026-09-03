@@ -19,6 +19,7 @@ import { errorDisplayText } from "@/lib/error-messages";
 import { useToast } from "@/components/ui/toast";
 import { applyLocalePreference } from "@/i18n";
 import { isSupportedLocale, resolveLocale, SUPPORTED_LOCALES } from "@/i18n/resolve-locale";
+import { applyTheme } from "@/lib/theme";
 
 /** 偏好开关行：与既有 checkbox 样式一致，说明文案放第二行。 */
 function PrefRow({
@@ -347,7 +348,7 @@ function CloudSettingsCard() {
 }
 
 function SettingsPageInner() {
-  const { state } = useSession();
+  const { state, actions: sessionActions } = useSession();
   const { toast } = useToast();
   const { t } = useTranslation();
   const shell = useOutletContext<ShellCtx>();
@@ -369,10 +370,17 @@ function SettingsPageInner() {
     setUpdateCheck(state.app?.prefs.updateCheck ?? true);
   }, [state.app]);
 
+  const pickTheme = (th: "light" | "dark") => {
+    setTheme(th);
+    applyTheme(th);
+  };
+
   const save = async () => {
     try {
       localStorage.setItem("st:crashNotify", crashNotify ? "on" : "off");
       await apiSavePrefs({ theme, locale, restoreLast: restore, closeToTray, startOnLogin, updateCheck });
+      applyTheme(theme);
+      void sessionActions.reload();
       toast(t("operations.prefsSaved"), "ok");
     } catch (e) {
       if (e instanceof IpcFailure && e.code === "AUTOSTART_FAILED") {
@@ -445,22 +453,21 @@ function SettingsPageInner() {
           </Card>
 
           <Card className="p-4">
-            <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.settings.appearance")}</h3>
+            <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1)]">{t("pages.settings.appearance")}</h3>
             <div className="flex gap-2">
               {(["light", "dark"] as const).map((th) => (
                 <button
                   key={th}
-                  disabled={th === "dark"}
-                  onClick={() => setTheme(th)}
+                  type="button"
+                  onClick={() => pickTheme(th)}
                   className={cn(
-                    "flex-1 rounded-[var(--r-sm,8px)] border px-3 py-2 text-[0.875rem] transition-colors duration-150",
+                    "flex-1 rounded-[var(--r-sm)] border px-3 py-2 text-[0.875rem] transition-colors duration-150",
                     theme === th
-                      ? "border-[var(--st-accent,#5e6ad2)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent-hover,#4f5ac8)]"
-                      : "border-[var(--line,#e6e6e6)] text-[var(--t2,#62666d)] hover:border-[var(--line-strong,#d0d6e0)]",
-                    th === "dark" && "opacity-50",
+                      ? "border-[var(--st-accent)] bg-[var(--st-accent-tint)] text-[var(--st-accent-hover)]"
+                      : "border-[var(--line)] text-[var(--t2)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]",
                   )}
                 >
-                  {th === "light" ? t("pages.settings.themeLight") : t("pages.settings.themeDarkSoon")}
+                  {th === "light" ? t("pages.settings.themeLight") : t("pages.settings.themeDark")}
                 </button>
               ))}
             </div>

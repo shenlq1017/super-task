@@ -9,8 +9,18 @@ import { ToastProvider } from "../components/ui/toast";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { AiExplainProvider } from "../providers/ai-explain-provider";
 import { migrateLocalRecents } from "../lib/migrate-recents";
+import { applyTheme } from "../lib/theme";
 import { CrashNotifier } from "../components/crash-notifier";
 import { AppRoutes } from "./routes";
+
+/** Sync document theme class from engine prefs (light/dark). */
+function ThemeSync() {
+  const { state } = useSession();
+  useEffect(() => {
+    applyTheme(state.app?.prefs.theme);
+  }, [state.app?.prefs.theme]);
+  return null;
+}
 
 /** app.load 完成且工作区 bootstrap 结束后，做一次 localStorage 最近工作区迁移。 */
 function RecentsMigrator() {
@@ -36,6 +46,7 @@ function Gate() {
   }
   return (
     <WorkspaceProvider>
+      <ThemeSync />
       <RecentsMigrator />
       <RuntimeProvider>
         <CrashNotifier />
