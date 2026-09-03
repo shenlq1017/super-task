@@ -186,8 +186,12 @@ fn windows_memory() -> Option<(u64, u64)> {
         ..Default::default()
     };
     unsafe { GlobalMemoryStatusEx(&mut m) }.ok()?;
-    (m.ullTotalPhys > 0)
-        .then(|| (m.ullTotalPhys.saturating_sub(m.ullAvailPhys), m.ullTotalPhys))
+    (m.ullTotalPhys > 0).then(|| {
+        (
+            m.ullTotalPhys.saturating_sub(m.ullAvailPhys),
+            m.ullTotalPhys,
+        )
+    })
 }
 
 #[cfg(windows)]
@@ -211,7 +215,12 @@ fn windows_disk() -> Option<(u64, u64)> {
     let mut total: u64 = 0;
     let mut free: u64 = 0;
     unsafe {
-        GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), None, Some(&mut total), Some(&mut free))
+        GetDiskFreeSpaceExW(
+            PCWSTR(wide.as_ptr()),
+            None,
+            Some(&mut total),
+            Some(&mut free),
+        )
     }
     .ok()?;
     (total > 0).then(|| (total.saturating_sub(free), total))

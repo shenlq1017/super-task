@@ -9,7 +9,7 @@ const POLL_MS = 3000;
 /** Fast temperature mode polls harder: the backend sampler is already resident,
  *  so the only extra cost here is one cheap IPC round trip. */
 const POLL_MS_FAST_TEMP = 1200;
-const ROTATE_MS = 4200;
+const ROTATE_MS = 2400;
 const HISTORY = 24;
 const TEMP_MODE_KEY = "supertask.statusBar.tempMode";
 
@@ -170,6 +170,16 @@ export function StatusBar(props: {
   const healthy = useMemo(() => props.env.filter((x) => x.ok), [props.env]);
   const rotating = missing.length ? [] : healthy;
 
+  // Escape closes the popover, matching the app's other overlays.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setExpanded(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
+
   useEffect(() => {
     if (paused || expanded || rotating.length < 2) return;
     const id = window.setInterval(() => setRotateIdx((i) => (i + 1) % rotating.length), ROTATE_MS);
@@ -191,112 +201,124 @@ export function StatusBar(props: {
     : t("statusBar.disk");
 
   return (
-    <div className="shrink-0">
+    <div className="relative shrink-0">
       {expanded ? (
-        <div className="border-t border-[var(--line)] bg-[var(--surface)] px-3.5 py-3">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <section>
-              <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3)]">
-                {t("statusBar.system")}
-              </h4>
-              <dl className="flex flex-col gap-1.5 text-[11px]">
-                <Row
-                  label={t("statusBar.cpu")}
-                  value={cpu == null ? "\u2014" : cpu.toFixed(0) + "%"}
-                  ratio={cpu}
-                  color={loadColor(cpu)}
-                />
-                <Row
-                  label={t("statusBar.memory")}
-                  value={
-                    host?.memoryTotalBytes
-                      ? fmtBytes(host.memoryUsedBytes) + " / " + fmtBytes(host.memoryTotalBytes)
-                      : "\u2014"
-                  }
-                  ratio={memPct}
-                  color={loadColor(memPct)}
-                />
-                <Row
-                  label={t("statusBar.disk")}
-                  value={
-                    host?.diskTotalBytes
-                      ? fmtBytes(host.diskUsedBytes) + " / " + fmtBytes(host.diskTotalBytes)
-                      : "\u2014"
-                  }
-                  ratio={diskPct}
-                  color={loadColor(diskPct)}
-                />
-                <Row
-                  label={t("statusBar.cpuTemp")}
-                  value={
-                    temp != null
-                      ? temp.toFixed(0) + " \u00b0C"
-                      : !tempSupported
-                        ? t("statusBar.unsupported")
-                        : tempMode === "off"
-                          ? t("statusBar.tempOffValue")
-                          : "\u2014"
-                  }
-                  ratio={temp == null ? null : Math.min(100, temp)}
-                  color={tempColor(temp)}
-                />
-              </dl>
+        <>
+          {/* Click anywhere else to dismiss, without stealing focus or scroll. */}
+          <div className="fixed inset-0 z-[90]" onClick={() => setExpanded(false)} aria-hidden />
+          <div
+            role="dialog"
+            aria-label={t("statusBar.system")}
+            className={cn(
+              "absolute bottom-full right-2 z-[100] mb-1.5 w-[min(34rem,calc(100vw-1rem))]",
+              "rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface)] px-3.5 py-3",
+              "shadow-[0_12px_32px_rgb(0_0_0/0.16)] duration-150 animate-in fade-in-0 slide-in-from-bottom-1",
+            )}
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <section>
+                <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3)]">
+                  {t("statusBar.system")}
+                </h4>
+                <dl className="flex flex-col gap-1.5 text-[11px]">
+                  <Row
+                    label={t("statusBar.cpu")}
+                    value={cpu == null ? "\u2014" : cpu.toFixed(0) + "%"}
+                    ratio={cpu}
+                    color={loadColor(cpu)}
+                  />
+                  <Row
+                    label={t("statusBar.memory")}
+                    value={
+                      host?.memoryTotalBytes
+                        ? fmtBytes(host.memoryUsedBytes) + " / " + fmtBytes(host.memoryTotalBytes)
+                        : "\u2014"
+                    }
+                    ratio={memPct}
+                    color={loadColor(memPct)}
+                  />
+                  <Row
+                    label={t("statusBar.disk")}
+                    value={
+                      host?.diskTotalBytes
+                        ? fmtBytes(host.diskUsedBytes) + " / " + fmtBytes(host.diskTotalBytes)
+                        : "\u2014"
+                    }
+                    ratio={diskPct}
+                    color={loadColor(diskPct)}
+                  />
+                  <Row
+                    label={t("statusBar.cpuTemp")}
+                    value={
+                      temp != null
+                        ? temp.toFixed(0) + " \u00b0C"
+                        : !tempSupported
+                          ? t("statusBar.unsupported")
+                          : tempMode === "off"
+                            ? t("statusBar.tempOffValue")
+                            : "\u2014"
+                    }
+                    ratio={temp == null ? null : Math.min(100, temp)}
+                    color={tempColor(temp)}
+                  />
+                </dl>
 
-              <div className="mt-2.5 flex items-center gap-2 text-[11px]">
-                <span className="w-16 shrink-0 text-[var(--t3)]">{t("statusBar.tempModeLabel")}</span>
-                <div className="flex overflow-hidden rounded-[var(--r-sm)] border border-[var(--line)]">
-                  {TEMP_MODES.map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      disabled={!tempSupported && mode !== "off"}
-                      onClick={() => pickTempMode(mode)}
-                      title={t(`statusBar.tempModes.${mode}.hint`)}
-                      className={cn(
-                        "px-2 py-0.5 transition-colors duration-150",
-                        "border-l border-[var(--line)] first:border-l-0",
-                        tempMode === mode
-                          ? "bg-[var(--st-accent-tint)] font-semibold text-[var(--st-accent-hover)]"
-                          : "text-[var(--t2)] hover:bg-[var(--surface-2)]",
-                        !tempSupported && mode !== "off" && "cursor-not-allowed opacity-40 hover:bg-transparent",
-                      )}
-                    >
-                      {t(`statusBar.tempModes.${mode}.label`)}
-                    </button>
-                  ))}
+                <div className="mt-2.5 flex items-center gap-2 text-[11px]">
+                  <span className="w-16 shrink-0 text-[var(--t3)]">{t("statusBar.tempModeLabel")}</span>
+                  <div className="flex overflow-hidden rounded-[var(--r-sm)] border border-[var(--line)]">
+                    {TEMP_MODES.map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        disabled={!tempSupported && mode !== "off"}
+                        onClick={() => pickTempMode(mode)}
+                        title={t(`statusBar.tempModes.${mode}.hint`)}
+                        className={cn(
+                          "px-2 py-0.5 transition-colors duration-150",
+                          "border-l border-[var(--line)] first:border-l-0",
+                          tempMode === mode
+                            ? "bg-[var(--st-accent-tint)] font-semibold text-[var(--st-accent-hover)]"
+                            : "text-[var(--t2)] hover:bg-[var(--surface-2)]",
+                          !tempSupported && mode !== "off" && "cursor-not-allowed opacity-40 hover:bg-transparent",
+                        )}
+                      >
+                        {t(`statusBar.tempModes.${mode}.label`)}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--t3)]">
-                {tempSupported
-                  ? t(`statusBar.tempModes.${tempMode}.hint`)
-                  : t("statusBar.tempUnsupportedHint")}
-              </p>
-            </section>
-            <section>
-              <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3)]">
-                {t("statusBar.environment")}
-              </h4>
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px]">
-                {props.env.length ? (
-                  props.env.map((item) => (
-                    <span key={item.name} className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                      <span
-                        className="size-1.5 shrink-0 rounded-full"
-                        style={{ background: item.ok ? "var(--st-ok)" : "var(--st-warn-dot)" }}
-                      />
-                      <span className="font-semibold text-[var(--t1)]">{item.name}</span>
-                      <span className="font-mono text-[var(--t3)]">
-                        {item.ok ? item.v ?? "\u2713" : t("statusBar.notFound")}
+                <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--t3)]">
+                  {tempSupported
+                    ? t(`statusBar.tempModes.${tempMode}.hint`)
+                    : t("statusBar.tempUnsupportedHint")}
+                </p>
+              </section>
+              <section>
+                <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3)]">
+                  {t("statusBar.environment")}
+                </h4>
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px]">
+                  {props.env.length ? (
+                    props.env.map((item) => (
+                      <span key={item.name} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                        <span
+                          className="size-1.5 shrink-0 rounded-full"
+                          style={{ background: item.ok ? "var(--st-ok)" : "var(--st-warn-dot)" }}
+                        />
+                        <span className="font-semibold text-[var(--t1)]">{item.name}</span>
+                        <span className="font-mono text-[var(--t3)]">
+                          {item.ok ? item.v ?? "\u2713" : t("statusBar.notFound")}
+                        </span>
                       </span>
-                    </span>
-                  ))
-                ) : (
-                  <span className="text-[var(--t3)]">{"\u2014"}</span>
-                )}
-              </div>
-            </section>
+                    ))
+                  ) : (
+                    <span className="text-[var(--t3)]">{"\u2014"}</span>
+                  )}
+                </div>
+              </section>
+            </div>
           </div>
-        </div>
+        </>
       ) : null}
 
       <footer
