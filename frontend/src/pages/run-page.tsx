@@ -264,7 +264,11 @@ function IdeOpenMenu({ variant }: { variant: "icon" | "button" }) {
         aria-haspopup="menu"
         aria-expanded={open}
         title={t("pages.run.openWsTitle")}
-        className={cn(buttonVariants({ variant: "outline", size: "sm" }), variant === "icon" && "size-7 px-0")}
+        className={
+          variant === "icon"
+            ? buttonVariants({ variant: "outline", size: "icon-xs" })
+            : buttonVariants({ variant: "outline", size: "sm" })
+        }
       >
         <ExternalLink className="size-3.5" />
         {variant === "button" ? t("common.open") : null}
@@ -459,7 +463,7 @@ function ServiceCard({
             <button
               type="button"
               // 极窄卡（<250px）再舍弃次级操作：重启；启停恒留
-              className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--st-warn-line,#f0dcb0)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)] transition-colors duration-150 hover:border-[#E0C080] hover:bg-[rgb(234_179_8_/_0.2)] disabled:cursor-not-allowed disabled:opacity-50 @max-[250px]:hidden"
+              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-[var(--st-warn-line,#f0dcb0)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)] transition-colors duration-150 hover:border-[#E0C080] hover:bg-[rgb(234_179_8_/_0.2)] disabled:cursor-not-allowed disabled:opacity-50 @max-[250px]:hidden"
               title={external ? t("pages.run.restartExternalTitle") : t("common.restart")}
               disabled={isBusy}
               onClick={() => runtime.actions.restartOne(id)}
@@ -470,7 +474,7 @@ function ServiceCard({
           <button
             type="button"
             className={cn(
-              "grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50",
+              "grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50",
               isRunning
                 ? "border-transparent text-[var(--st-danger,#dc2626)] hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)]"
                 : "border-transparent text-[var(--t3,#8a8f98)] hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)]",
@@ -1874,7 +1878,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
           {isRunning ? (
             <button
               type="button"
-              className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--st-danger,#dc2626)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--st-danger,#dc2626)] transition-colors duration-150 hover:border-[#FECACA] hover:bg-[var(--st-danger-tint,#fdecec)] disabled:cursor-not-allowed disabled:opacity-50"
               title={t("pages.run.stopScriptTitle")}
               onClick={() => setConfirmStop(true)}
             >
@@ -1883,7 +1887,7 @@ function ScriptCard({ id, spec, selected, onOpen }: { id: string; spec: ScriptSp
           ) : (
             <button
               type="button"
-              className="grid size-[1.8rem] cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="grid size-7 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] border border-transparent text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:border-[var(--line-strong,#d0d6e0)] hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--st-accent,#5e6ad2)] disabled:cursor-not-allowed disabled:opacity-50"
               title={anyRunning ? t("pages.run.scriptBusy") : t("pages.run.runScriptTitle")}
               disabled={anyRunning}
               onClick={() => void run()}
