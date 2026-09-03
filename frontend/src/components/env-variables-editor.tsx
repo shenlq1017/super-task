@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Settings2, Trash2, Upload } from "lucide-react";
+import { Plus, KeyRound, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { parseEnvImport, type EnvImportFormat } from "@/lib/env-import";
@@ -153,7 +153,7 @@ export function EnvVariablesEditor({
       <div className="flex flex-wrap items-center gap-2">
         {!hideTitle ? (
           <SectionTitle
-            icon={<Settings2 />}
+            icon={<KeyRound />}
             title={t("env.title")}
             meta={<SectionCount className="rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 normal-case">{rows.length}</SectionCount>}
           />

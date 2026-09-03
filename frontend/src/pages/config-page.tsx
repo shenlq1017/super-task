@@ -6,7 +6,6 @@ import {
   ChevronRight,
   FileInput,
   KeyRound,
-  Layers,
   RefreshCw,
   SlidersHorizontal,
   Sparkles,
@@ -184,7 +183,7 @@ function V12ConfigPanel() {
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="rounded-[var(--r-md,12px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] p-3">
           <div className="mb-2 flex items-center gap-2">
-            <Layers className="size-3.5 text-[var(--st-accent,#5e6ad2)]" />
+            <SlidersHorizontal className="size-3.5 text-[var(--st-accent,#5e6ad2)]" />
             <h3 className="text-[0.8rem] font-semibold text-[var(--t1,#222326)]">Profile</h3>
             <Badge variant="secondary" className="text-[10px]">env / enabled / port</Badge>
             <Button className="ml-auto" variant="soft" size="sm" onClick={() => void reload()} disabled={!wid || loading}>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Lock, RefreshCw, XCircle, Wrench, ArrowUpFromLine, Download } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Lock, RefreshCw, XCircle, KeyRound, ArrowUpFromLine, Download } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -255,7 +255,7 @@ export function EnvPage() {
         {/* 1.4 §11.2：Gradle 仅信息展示（wrapper 是唯一推荐执行方式），不提供安装 */}
         {probe?.gradle && (
           <Card className="mt-3 flex flex-wrap items-center gap-2 p-3">
-            <Wrench className="size-4 shrink-0 text-[var(--t3,#8a8f98)]" />
+            <KeyRound className="size-4 shrink-0 text-[var(--t3,#8a8f98)]" />
             <span className="text-[0.88rem] font-semibold text-[var(--t1,#222326)]">Gradle</span>
             {probe.gradle.found ? (
               <>
@@ -482,7 +482,7 @@ function ToolCard(p: ToolCardProps) {
           )}
         >
           {p.found == null ? (
-            <Wrench className="size-5" />
+            <KeyRound className="size-5" />
           ) : isFound ? (
             <CheckCircle2 className="size-5" />
           ) : (

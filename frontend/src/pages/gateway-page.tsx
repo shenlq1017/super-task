@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Fingerprint,
   Globe,
-  KeyRound,
   Loader2,
-  Network,
   Play,
   RotateCw,
   ShieldCheck,
@@ -303,7 +302,7 @@ export function GatewayPage() {
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4">
       <div className="flex items-center gap-2">
-        <Network className="size-5 text-[var(--primary,#5E6AD2)]" />
+        <Globe className="size-5 text-[var(--primary,#5E6AD2)]" />
         <h1 className="text-[1.05rem] font-semibold text-[var(--t1,#222326)]">{t("pages.gateway.title")}</h1>
         <StateChip state={liveState} />
         {dirty ? (
@@ -589,7 +588,7 @@ export function GatewayPage() {
             </Select>
             {draft.tls === "internal" ? (
               <Button variant="soft" size="sm" onClick={() => setTrustOpen(true)}>
-                <KeyRound className="size-3.5" />
+                <Fingerprint className="size-3.5" />
                 {t("pages.gateway.trust")}
               </Button>
             ) : null}

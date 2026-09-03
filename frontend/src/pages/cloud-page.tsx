@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, CloudUpload, Eye, EyeOff, LogOut, RefreshCw, Settings2 } from "lucide-react";
+import { Check, CloudUpload, Eye, EyeOff, LogOut, RefreshCw, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -321,7 +321,7 @@ export function CloudPage() {
           </Card>
 
           <Card className="p-4">
-            <h3 className="mb-2 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]"><Settings2 className="size-4" /> {t("pages.cloud.advancedTitle")}</h3>
+            <h3 className="mb-2 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]"><Settings className="size-4" /> {t("pages.cloud.advancedTitle")}</h3>
             <form onSubmit={(event) => void saveEndpoint(event)} className="flex flex-col gap-2">
               <label htmlFor="cloud-endpoint" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.endpoint")}</label>
               <div className="flex flex-col gap-2 sm:flex-row"><Input id="cloud-endpoint" value={endpoint} onChange={(event) => { setEndpoint(event.target.value); setEndpointError(null); }} type="url" inputMode="url" aria-invalid={!!endpointError} aria-describedby={endpointError ? "cloud-endpoint-error" : "cloud-endpoint-help"} /><Button variant="success" size="sm" type="submit" disabled={busy || !endpoint.trim()}>{t("pages.cloud.saveEndpoint")}</Button></div>

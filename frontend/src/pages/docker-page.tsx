@@ -4,7 +4,6 @@ import {
   Container,
   Download,
   Image as ImageIcon,
-  Layers,
   Loader2,
   Package,
   PackagePlus,
@@ -574,7 +573,7 @@ export function DockerPage() {
         {/* ================= 构建入口（docker.builds 条目，走 operation） ================= */}
         <Card className="p-4">
           <SectionHead
-            icon={<Layers className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
+            icon={<PackagePlus className="size-4 text-[var(--st-accent,#5e6ad2)]" />}
             title={t("pages.docker.imageBuild")}
             count={builds.length}
             disabled={!composeReady}

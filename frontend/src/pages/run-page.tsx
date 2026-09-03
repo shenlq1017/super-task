@@ -75,24 +75,23 @@ import {
   Play,
   Square,
   RotateCw,
-  Settings2,
   FileText,
   ScrollText,
   SlidersHorizontal,
   HeartPulse,
   BarChart3,
+  Globe,
+  KeyRound,
   ExternalLink,
   Copy,
   Check,
   Cpu,
   HardDrive,
   Boxes,
-  Hammer,
   Loader2,
   Container,
   MemoryStick,
-  Network,
-  Braces,
+  PackagePlus,
   SquareTerminal,
   ChevronDown,
   ChevronRight,
@@ -659,7 +658,7 @@ function PortsPanel({ id, compact }: { id: string; compact: boolean }) {
     <div className={cn("flex flex-col gap-5 p-4", compact && "gap-4 p-3")}>
       <section className="flex flex-col gap-2">
         <SectionTitle
-          icon={<Settings2 />}
+          icon={<ArrowLeftRight />}
           title={t("pages.run.portSection")}
           meta={
             svc.port != null ? (
@@ -801,7 +800,7 @@ function EnvPanel({ id, compact }: { id: string; compact: boolean }) {
 
       <section className="flex flex-col gap-2">
         <SectionTitle
-          icon={<Braces />}
+          icon={<KeyRound />}
           title={t("pages.run.effectiveEnv")}
           meta={
             effEnv?.captured_at_ms ? (
@@ -1339,7 +1338,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
     { k: "logs", label: t("nav.logs"), icon: ScrollText },
     { k: "terminal", label: t("pages.run.tabTerminal"), icon: SquareTerminal },
     // 「环境」Tab 拆分：变量（env vars + 生效快照）、端口（检查/建议/改端口）、环境（运行时工具版本）
-    { k: "vars", label: t("pages.run.tabEnv"), icon: Braces },
+    { k: "vars", label: t("pages.run.tabEnv"), icon: KeyRound },
     { k: "ports", label: t("pages.run.tabPorts"), icon: ArrowLeftRight },
     { k: "runtime", label: t("pages.run.tabRuntime"), icon: Layers },
     { k: "health", label: t("pages.run.tabHealth"), icon: HeartPulse },
@@ -1348,7 +1347,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
     // 1.3：容器 Tab 仅 compose 服务显示（镜像/容器 ID/healthcheck/退出码，只读）
     ...(isCompose ? [{ k: "container" as DetailTab, label: t("nav.docker"), icon: Container }] : []),
     // 1.6：代理 Tab 仅网关已配置且启用时显示（本服务视角：网关状态 + 指向本服务的路由）
-    ...(rt.state.gateway ? [{ k: "proxy" as DetailTab, label: t("pages.run.lockProxy"), icon: Network }] : []),
+    ...(rt.state.gateway ? [{ k: "proxy" as DetailTab, label: t("pages.run.lockProxy"), icon: Globe }] : []),
   ];
 
   return (
@@ -1398,7 +1397,7 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
           <IdeOpenMenu variant="button" />
           {jarService || composeService ? (
             <Button size="sm" variant="secondary" className="gap-1" onClick={() => void buildJar()} disabled={building || isBusy}>
-              {building ? <Loader2 className="size-3.5 animate-spin" /> : <Hammer className="size-3.5" />}
+              {building ? <Loader2 className="size-3.5 animate-spin" /> : <PackagePlus className="size-3.5" />}
               {building ? t("pages.run.building") : jarService ? t("pages.run.buildJar") : t("pages.docker.buildImage")}
             </Button>
           ) : null}
@@ -1964,7 +1963,7 @@ function ProxyPanel({ id }: { id: string }) {
       {/* 网关状态卡 */}
       <div className="rounded-[var(--r-lg,16px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <Network className="size-4 shrink-0 text-[var(--primary,#5E6AD2)]" />
+          <Globe className="size-4 shrink-0 text-[var(--primary,#5E6AD2)]" />
           <span className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{t("nav.gateway")}</span>
           <span className="font-mono text-[0.78rem] text-[var(--t2,#62666d)]">
             {gw.kind} · :{gw.port}
@@ -2007,7 +2006,7 @@ function ProxyPanel({ id }: { id: string }) {
           <span className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{t("pages.run.proxyRoutes")}</span>
           <span className="font-mono text-[11px] text-[var(--t3,#8a8f98)]">{routes.length}</span>
           <Button variant="outline" size="sm" className="ml-auto" onClick={() => navigate("/gateway")}>
-            <Network className="size-3.5" />
+            <Globe className="size-3.5" />
             {t("pages.run.proxyOpenGateway")}
           </Button>
         </div>

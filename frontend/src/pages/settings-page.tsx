@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useOutletContext } from "react-router-dom";
-import { Cloud, Loader2, Settings2 } from "lucide-react";
+import { Cloud, Loader2, Settings } from "lucide-react";
 import type { ShellCtx } from "../app/AppShell";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -311,7 +311,7 @@ function CloudSettingsCard() {
         <>
           <form onSubmit={(event) => void saveEndpoint(event)} className="flex flex-col gap-2">
             <label htmlFor="settings-cloud-endpoint" className="flex items-center gap-2 text-[0.75rem] text-[var(--t2,#62666d)]">
-              <Settings2 className="size-3.5" /> {t("pages.settings.cloudEndpoint")}
+              <Settings className="size-3.5" /> {t("pages.settings.cloudEndpoint")}
             </label>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Input
