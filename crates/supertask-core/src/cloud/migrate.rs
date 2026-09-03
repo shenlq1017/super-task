@@ -25,9 +25,19 @@ pub enum ToolchainGap {
     Unpinned { tool: String },
 }
 
+/// 迁移计划中的远端实体摘要（不包含实体内容）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntitySummary {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub name: String,
+}
+
 /// 恢复计划（`cloud.migrate.plan` 出参）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RestorePlan {
+    pub entities: Vec<EntitySummary>,
     /// 工具链差量（全部工作区钉扎的并集去重）。
     pub toolchain_gaps: Vec<ToolchainGap>,
 }

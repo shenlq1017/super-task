@@ -1,12 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, CloudUpload, Eye, EyeOff, LogOut, RefreshCw, Settings } from "lucide-react";
+import {
+  AlertTriangle,
+  Cloud,
+  CloudOff,
+  CloudUpload,
+  Eye,
+  EyeOff,
+  HardDrive,
+  LogOut,
+  RefreshCw,
+  Settings,
+  ShieldAlert,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/toast";
 import { useSession } from "../providers/session-provider";
+import { CloudAdvancedDialog } from "@/components/cloud-advanced-dialog";
+import { CloudMigrationDialog } from "@/components/cloud-migration-dialog";
 import {
   apiCloudLogin,
   apiCloudLogout,
@@ -20,27 +36,65 @@ import {
 } from "../ipc/api";
 import type {
   CloudMigratePlanOut,
+  CloudResolveChoice,
   CloudStatusOut,
   CloudSyncOut,
-  CloudResolveChoice,
 } from "../ipc/protocol";
 import { IpcFailure } from "../ipc/protocol";
 import { errorDisplayText } from "@/lib/error-messages";
+import { cn } from "@/lib/utils";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-type Action = "status" | "login" | "logout" | "sync" | "resolve" | "migrate" | "endpoint" | "telemetry" | null;
+type Action =
+  | "status"
+  | "login"
+  | "logout"
+  | "sync"
+  | "resolve"
+  | "migrate"
+  | "endpoint"
+  | "telemetry"
+  | null;
 
 function cloudError(error: unknown): string {
-  return error instanceof IpcFailure ? errorDisplayText(error.code, error.message) : error instanceof Error ? error.message : String(error);
+  return error instanceof IpcFailure
+    ? errorDisplayText(error.code, error.message)
+    : error instanceof Error
+      ? error.message
+      : String(error);
 }
 
-function formatLastSynced(ts: number | null | undefined, fallback: string): string {
+function formatTime(ts: number | null | undefined, fallback: string): string {
   if (!ts) return fallback;
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(ts));
 }
 
-/** Cloud account, sync, migration and telemetry workspace. The page talks only to typed API wrappers. */
+function formatBytes(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Math.max(0, n);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+function connectionTone(connection: CloudStatusOut["connection"]): string {
+  switch (connection) {
+    case "online":
+      return "text-[var(--st-ok)]";
+    case "offline":
+      return "text-[var(--st-warn)]";
+    case "auth_required":
+      return "text-[var(--st-danger)]";
+    default:
+      return "text-[var(--t3)]";
+  }
+}
+
+/** Cloud account, sync, migration and telemetry workspace. */
 export function CloudPage() {
   const { state } = useSession();
   const { t } = useTranslation();
@@ -55,18 +109,28 @@ export function CloudPage() {
   const [action, setAction] = useState<Action>(null);
   const [lastSync, setLastSync] = useState<CloudSyncOut | null>(null);
   const [migration, setMigration] = useState<CloudMigratePlanOut | null>(null);
+  const [workspaceDirs, setWorkspaceDirs] = useState<Record<string, string>>({});
   const [endpoint, setEndpoint] = useState("");
   const [endpointError, setEndpointError] = useState<string | null>(null);
   const [includeTemplates, setIncludeTemplates] = useState(true);
   const [includeSettings, setIncludeSettings] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const busy = action !== null;
-  const conflictIds = useMemo(
-    () => status?.conflict_ids?.length ? status.conflict_ids : (lastSync?.conflicts ?? []),
-    [lastSync?.conflicts, status?.conflict_ids],
-  );
-  const migrationEntities = migration?.entities ?? [];
-  const conflictCount = status?.conflicts ?? conflictIds.length;
+  const conflictDetails = useMemo(() => {
+    if (status?.conflict_details?.length) return status.conflict_details;
+    const ids = status?.conflict_ids?.length ? status.conflict_ids : (lastSync?.conflicts ?? []);
+    return ids.map((id) => ({
+      id,
+      entity_type: "unknown",
+      server_rev: 0,
+      has_local: true,
+      has_server: true,
+    }));
+  }, [lastSync?.conflicts, status?.conflict_details, status?.conflict_ids]);
+  const conflictCount = status?.conflicts ?? conflictDetails.length;
+  const syncing = status?.runtime?.phase === "syncing" || action === "sync" || action === "migrate";
+  const connection = status?.connection ?? (status?.logged_in ? "unknown" : "auth_required");
 
   const refresh = async (silent = false) => {
     if (!silent) setAction("status");
@@ -75,7 +139,10 @@ export function CloudPage() {
       const next = await apiCloudStatus();
       setStatus(next);
       setEndpoint(next.endpoint);
-      if (!next.logged_in) setMigration(null);
+      if (!next.logged_in) {
+        setMigration(null);
+        setWorkspaceDirs({});
+      }
       return next;
     } catch (error) {
       setLoadFailed(true);
@@ -93,8 +160,12 @@ export function CloudPage() {
   }, []);
 
   useEffect(() => {
-    if (status?.endpoint && !endpoint) setEndpoint(status.endpoint);
-  }, [endpoint, status?.endpoint]);
+    if (!status?.logged_in) return;
+    const id = window.setInterval(() => {
+      void refresh(true).catch(() => undefined);
+    }, syncing ? 1500 : 12000);
+    return () => window.clearInterval(id);
+  }, [status?.logged_in, syncing]);
 
   const validateEmail = (value: string) => {
     const normalized = value.trim();
@@ -115,7 +186,6 @@ export function CloudPage() {
     setAction("login");
     try {
       await apiCloudLogin(email.trim(), password);
-      // Clear the secret immediately; it is never stored in component state after login.
       setPassword("");
       const next = await apiCloudStatus();
       setStatus(next);
@@ -134,6 +204,7 @@ export function CloudPage() {
       await apiCloudLogout();
       setLastSync(null);
       setMigration(null);
+      setWorkspaceDirs({});
       setPassword("");
       await refresh(true);
       toast(t("pages.cloud.loggedOut"), "ok");
@@ -151,9 +222,15 @@ export function CloudPage() {
       setLastSync(out);
       const next = await apiCloudStatus();
       setStatus(next);
-      toast(out.conflicts.length ? t("pages.cloud.syncConflicts", { n: out.conflicts.length }) : t("pages.cloud.syncDone", { pushed: out.pushed, pulled: out.pulled }), out.conflicts.length ? "warn" : "ok");
+      toast(
+        out.conflicts.length
+          ? t("pages.cloud.syncConflicts", { n: out.conflicts.length })
+          : t("pages.cloud.syncDone", { pushed: out.pushed, pulled: out.pulled }),
+        out.conflicts.length ? "warn" : "ok",
+      );
     } catch (error) {
       toast(cloudError(error), "err");
+      await refresh(true).catch(() => undefined);
     } finally {
       setAction(null);
     }
@@ -165,7 +242,9 @@ export function CloudPage() {
       await apiCloudResolve(entityId, choice);
       const next = await apiCloudStatus();
       setStatus(next);
-      setLastSync((current) => current ? { ...current, conflicts: current.conflicts.filter((id) => id !== entityId) } : current);
+      setLastSync((current) =>
+        current ? { ...current, conflicts: current.conflicts.filter((id) => id !== entityId) } : current,
+      );
       toast(t("pages.cloud.resolved"), "ok");
     } catch (error) {
       toast(cloudError(error), "err");
@@ -177,7 +256,9 @@ export function CloudPage() {
   const loadMigrationPlan = async () => {
     setAction("migrate");
     try {
-      setMigration(await apiCloudMigratePlan());
+      const plan = await apiCloudMigratePlan();
+      setMigration(plan);
+      setWorkspaceDirs({});
     } catch (error) {
       toast(cloudError(error), "err");
     } finally {
@@ -187,13 +268,26 @@ export function CloudPage() {
 
   const applyMigration = async () => {
     if (!migration) return;
+    const workspaces = (migration.entities ?? []).filter((entity) => entity.type === "workspace");
+    for (const entity of workspaces) {
+      if (!workspaceDirs[entity.id]?.trim()) {
+        toast(t("pages.cloud.mapAllWorkspaces"), "err");
+        return;
+      }
+    }
     setAction("migrate");
     try {
-      await apiCloudMigrateApply({
-        workspaces: migrationEntities.filter((entity) => entity.type === "workspace").map((entity) => ({ entityId: entity.id, dir: "" })),
+      const out = await apiCloudMigrateApply({
+        workspaces: workspaces.map((entity) => ({
+          entityId: entity.id,
+          dir: workspaceDirs[entity.id].trim(),
+        })),
         includeTemplates,
         includeSettings,
       });
+      setLastSync(out);
+      setMigration(null);
+      setWorkspaceDirs({});
       await refresh(true);
       toast(t("pages.cloud.migrationApplied"), "ok");
     } catch (error) {
@@ -215,8 +309,14 @@ export function CloudPage() {
     try {
       const out = await apiCloudSetEndpoint(value);
       setEndpoint(out.endpoint);
-      setStatus((current) => current ? { ...current, endpoint: out.endpoint } : current);
-      toast(out.supported === false || out.local_only === true ? t("pages.cloud.endpointSavedLocal") : t("pages.cloud.endpointSaved"), "ok");
+      setStatus((current) => (current ? { ...current, endpoint: out.endpoint } : current));
+      toast(
+        out.supported === false || out.local_only === true
+          ? t("pages.cloud.endpointSavedLocal")
+          : t("pages.cloud.endpointSaved"),
+        "ok",
+      );
+      setAdvancedOpen(false);
     } catch (error) {
       setEndpointError(cloudError(error));
     } finally {
@@ -228,7 +328,7 @@ export function CloudPage() {
     setAction("telemetry");
     try {
       const out = await apiCloudTelemetrySet(enabled);
-      setStatus((current) => current ? { ...current, telemetry_enabled: out.enabled } : current);
+      setStatus((current) => (current ? { ...current, telemetry_enabled: out.enabled } : current));
       toast(t("pages.cloud.telemetrySaved"), "ok");
     } catch (error) {
       toast(cloudError(error), "err");
@@ -237,104 +337,307 @@ export function CloudPage() {
     }
   };
 
+  const ConnectionIcon =
+    connection === "online" ? Wifi : connection === "offline" ? WifiOff : connection === "auth_required" ? ShieldAlert : CloudOff;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto p-6">
-        <div className="mx-auto flex max-w-3xl flex-col gap-4">
+        <div className="mx-auto flex max-w-4xl flex-col gap-4">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1,#222326)]">{t("pages.cloud.title")}</h2>
-              <p className="mt-0.5 text-[0.78rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.subtitle")}</p>
+              <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1)]">{t("pages.cloud.title")}</h2>
+              <p className="mt-0.5 text-[0.78rem] text-[var(--t3)]">{t("pages.cloud.subtitle")}</p>
             </div>
-            <Button variant="soft" size="sm" className="gap-1" onClick={() => void refresh()} disabled={busy} aria-label={t("pages.cloud.refreshStatus")}>
-              <RefreshCw className={action === "status" ? "size-3.5 animate-spin" : "size-3.5"} /> {t("common.refresh")}
-            </Button>
+            <span className="flex shrink-0 gap-2">
+              <Button variant="outline" size="sm" className="gap-1" onClick={() => setAdvancedOpen(true)} disabled={busy}>
+                <Settings className="size-3.5" /> {t("pages.cloud.advancedTitle")}
+              </Button>
+              <Button variant="soft" size="sm" className="gap-1" onClick={() => void refresh()} disabled={busy} aria-label={t("pages.cloud.refreshStatus")}>
+                <RefreshCw className={action === "status" ? "size-3.5 animate-spin" : "size-3.5"} /> {t("common.refresh")}
+              </Button>
+            </span>
           </div>
 
           {status && !status.logged_in ? (
-            <Card className="p-4">
-              <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.cloud.loginTitle")}</h3>
-              <form onSubmit={(event) => void login(event)} noValidate>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div>
-                    <label htmlFor="cloud-email" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.email")}</label>
-                    <Input id="cloud-email" className="mt-1" value={email} onChange={(event) => { setEmail(event.target.value); if (emailError) setEmailError(validateEmail(event.target.value)); }} type="email" required aria-required="true" aria-invalid={!!emailError} aria-describedby={emailError ? "cloud-email-error" : undefined} autoComplete="username" />
-                    {emailError ? <p id="cloud-email-error" className="mt-1 text-[0.72rem] text-[#DC2626]" role="alert">{emailError}</p> : null}
-                  </div>
-                  <div>
-                    <label htmlFor="cloud-password" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.password")}</label>
-                    <div className="relative mt-1">
-                      <Input id="cloud-password" className="pr-10" type={showPassword ? "text" : "password"} value={password} onChange={(event) => { setPassword(event.target.value); setFormError(null); }} required aria-required="true" autoComplete="current-password" />
-                      <button type="button" className="absolute right-1 top-1/2 inline-flex size-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)] hover:text-[var(--t1,#222326)] focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? t("pages.cloud.hidePassword") : t("pages.cloud.showPassword")}>
-                        {showPassword ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                      </button>
+            <Card className="overflow-hidden p-0">
+              <div className="grid gap-0 md:grid-cols-[1.1fr_0.9fr]">
+                <div className="p-5">
+                  <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1)]">{t("pages.cloud.loginTitle")}</h3>
+                  <form onSubmit={(event) => void login(event)} noValidate>
+                    <div className="grid grid-cols-1 gap-3">
+                      <div>
+                        <label htmlFor="cloud-email" className="text-[0.75rem] text-[var(--t3)]">{t("pages.cloud.email")}</label>
+                        <Input
+                          id="cloud-email"
+                          className="mt-1"
+                          value={email}
+                          onChange={(event) => {
+                            setEmail(event.target.value);
+                            if (emailError) setEmailError(validateEmail(event.target.value));
+                          }}
+                          type="email"
+                          required
+                          aria-invalid={!!emailError}
+                          autoComplete="username"
+                        />
+                        {emailError ? <p className="mt-1 text-[0.72rem] text-[#DC2626]" role="alert">{emailError}</p> : null}
+                      </div>
+                      <div>
+                        <label htmlFor="cloud-password" className="text-[0.75rem] text-[var(--t3)]">{t("pages.cloud.password")}</label>
+                        <div className="relative mt-1">
+                          <Input
+                            id="cloud-password"
+                            className="pr-10"
+                            type={showPassword ? "text" : "password"}
+                            value={password}
+                            onChange={(event) => {
+                              setPassword(event.target.value);
+                              setFormError(null);
+                            }}
+                            required
+                            autoComplete="current-password"
+                          />
+                          <button
+                            type="button"
+                            className="absolute right-1 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-[var(--r-sm)] text-[var(--t3)] hover:bg-[var(--surface-2)]"
+                            onClick={() => setShowPassword((visible) => !visible)}
+                            aria-label={showPassword ? t("pages.cloud.hidePassword") : t("pages.cloud.showPassword")}
+                          >
+                            {showPassword ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                    {formError ? (
+                      <p className="mt-3 rounded-[var(--r-sm)] border border-red-200 bg-[var(--st-danger-tint)] px-3 py-2 text-[0.75rem] text-[#DC2626]" role="alert">
+                        {formError}
+                      </p>
+                    ) : null}
+                    <div className="mt-3 flex items-center gap-2">
+                      <Button variant="default" size="sm" type="submit" disabled={busy || !email.trim() || !password}>
+                        {action === "login" ? t("common.loading") : t("pages.cloud.loginBtn")}
+                      </Button>
+                      <span className="text-[0.72rem] text-[var(--t3)]">{t("pages.cloud.enterToSubmit")}</span>
+                    </div>
+                  </form>
                 </div>
-                {formError ? <p className="mt-3 rounded-[var(--r-sm,8px)] border border-red-200 bg-[var(--st-danger-tint,#fdecec)] px-3 py-2 text-[0.75rem] text-[#DC2626]" role="alert">{formError}</p> : null}
-                <div className="mt-3 flex items-center gap-2">
-                  <Button variant="default" size="sm" type="submit" disabled={busy || !email.trim() || !password}>
-                    {action === "login" ? t("common.loading") : t("pages.cloud.loginBtn")}
-                  </Button>
-                  <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.enterToSubmit")}</span>
-                </div>
-                <p className="mt-2 text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.endpointHint", { endpoint: status.endpoint })}</p>
-              </form>
+                <aside className="border-t border-[var(--line)] bg-[var(--surface-2)] p-5 md:border-l md:border-t-0">
+                  <p className="text-[0.75rem] font-semibold text-[var(--t1)]">{t("pages.cloud.localFirstTitle")}</p>
+                  <ul className="mt-2 list-inside list-disc text-[0.72rem] leading-relaxed text-[var(--t2)]">
+                    <li>{t("pages.cloud.localFirstBullet1")}</li>
+                    <li>{t("pages.cloud.localFirstBullet2")}</li>
+                    <li>{t("pages.cloud.localFirstBullet3")}</li>
+                  </ul>
+                  <p className="mt-4 text-[0.72rem] text-[var(--t3)]">{t("pages.cloud.endpointHint", { endpoint: status.endpoint })}</p>
+                </aside>
+              </div>
             </Card>
           ) : null}
 
           {status?.logged_in ? (
             <>
               <Card className="p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{status.email}</h3>
-                  <Badge variant="secondary">{t("pages.cloud.device", { device: status.device.slice(0, 8) })}</Badge>
-                  <span className="ml-auto flex gap-2">
-                    <Button variant="soft" size="sm" className="gap-1" onClick={() => void sync()} disabled={busy}>
-                      <RefreshCw className={action === "sync" ? "size-3.5 animate-spin" : "size-3.5"} /> {t("pages.cloud.syncNow")}
+                <div className="flex flex-wrap items-start gap-3">
+                  <div className="flex size-11 items-center justify-center rounded-full bg-[var(--st-accent-tint)] text-[var(--st-accent-hover)]">
+                    <Cloud className="size-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-[0.95rem] font-semibold text-[var(--t1)]">{status.email}</h3>
+                      <Badge variant="secondary">{t("pages.cloud.device", { device: status.device.slice(0, 8) })}</Badge>
+                      <span className={cn("inline-flex items-center gap-1 text-[0.72rem] font-medium", connectionTone(connection))}>
+                        <ConnectionIcon className="size-3.5" />
+                        {t(`pages.cloud.connection.${connection}`)}
+                      </span>
+                      {syncing ? <Badge variant="outline">{t("pages.cloud.syncing")}</Badge> : null}
+                    </div>
+                    <p className="mt-1 text-[0.72rem] text-[var(--t3)]">
+                      {t("pages.cloud.lastSynced", {
+                        time: formatTime(status.last_synced_ms ?? status.runtime?.last_success_ms, t("pages.cloud.neverSynced")),
+                      })}
+                    </p>
+                    {status.health_detail ? <p className="mt-1 text-[0.72rem] text-[var(--st-warn)]">{status.health_detail}</p> : null}
+                    {status.runtime?.last_error ? (
+                      <p className="mt-1 text-[0.72rem] text-[var(--st-danger)]">{t("pages.cloud.lastError", { error: status.runtime.last_error })}</p>
+                    ) : null}
+                  </div>
+                  <span className="flex shrink-0 gap-2">
+                    <Button variant="soft" size="sm" className="gap-1" onClick={() => void sync()} disabled={busy || syncing}>
+                      <RefreshCw className={syncing ? "size-3.5 animate-spin" : "size-3.5"} />
+                      {syncing ? t("pages.cloud.syncing") : t("pages.cloud.syncNow")}
                     </Button>
                     <Button variant="outline" size="sm" className="gap-1" onClick={() => void logout()} disabled={busy}>
                       <LogOut className="size-3.5" /> {t("pages.cloud.logout")}
                     </Button>
                   </span>
                 </div>
-                <p className="mt-2 text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.lastSynced", { time: formatLastSynced(status.last_synced_ms, t("pages.cloud.neverSynced")) })}</p>
-                {status.quota ? <p className="mt-1 font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.quota", { entities: status.quota.entities, entitiesMax: status.quota.entities_max, bytes: status.quota.bytes, bytesMax: status.quota.bytes_max })}</p> : null}
+
+                <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <Metric
+                    icon={<HardDrive className="size-3.5" />}
+                    label={t("pages.cloud.trackedEntities")}
+                    value={String(status.tracked?.total ?? "—")}
+                    hint={t("pages.cloud.trackedBreakdown", {
+                      settings: status.tracked?.settings ?? 0,
+                      templates: status.tracked?.templates ?? 0,
+                      workspaces: status.tracked?.workspaces ?? 0,
+                      mapped: status.tracked?.mapped_workspaces ?? 0,
+                    })}
+                  />
+                  <Metric
+                    icon={<AlertTriangle className="size-3.5" />}
+                    label={t("pages.cloud.conflictsLabel")}
+                    value={String(conflictCount)}
+                    hint={t("pages.cloud.pendingTelemetry", { n: status.telemetry_pending ?? 0 })}
+                  />
+                  <Metric
+                    icon={<CloudUpload className="size-3.5" />}
+                    label={t("pages.cloud.quotaEntities")}
+                    value={status.quota ? `${status.quota.entities}/${status.quota.entities_max}` : "—"}
+                    hint={status.quota ? t("pages.cloud.quotaBytes", {
+                      bytes: formatBytes(status.quota.bytes),
+                      bytesMax: formatBytes(status.quota.bytes_max),
+                    }) : t("pages.cloud.quotaUnavailable")}
+                  />
+                  <Metric
+                    icon={<RefreshCw className="size-3.5" />}
+                    label={t("pages.cloud.lastResult")}
+                    value={
+                      status.runtime?.last_result
+                        ? `↑${status.runtime.last_result.pushed} ↓${status.runtime.last_result.pulled}`
+                        : lastSync
+                          ? `↑${lastSync.pushed} ↓${lastSync.pulled}`
+                          : "—"
+                    }
+                    hint={t("pages.cloud.lastResultHint", {
+                      pending: status.runtime?.last_result?.pending ?? lastSync?.pending.length ?? 0,
+                      skipped: status.runtime?.last_result?.skipped ?? lastSync?.skipped.length ?? 0,
+                    })}
+                  />
+                </div>
               </Card>
 
-              <Card className="p-4">
-                <h3 className="mb-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.cloud.syncCenter")}</h3>
-                {lastSync ? <p className="mb-2 text-[0.75rem] text-[var(--t2,#62666d)]">{t("pages.cloud.lastSync", { pushed: lastSync.pushed, pulled: lastSync.pulled, pending: lastSync.pending.length })}</p> : null}
-                {!conflictCount ? <p className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.noConflicts")}</p> : <div className="flex flex-col gap-2"><p className="text-[0.78rem] text-[var(--st-warn,#9a6700)]">{t("pages.cloud.conflictCount", { n: conflictCount })}</p>{conflictIds.map((id) => <div key={id} className="flex flex-wrap items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] p-2"><span className="font-mono text-[0.72rem]">{id}</span><span className="ml-auto flex flex-wrap gap-1"><Button variant="outline" size="sm" onClick={() => void resolve(id, "local")} disabled={busy}>{t("pages.cloud.keepLocal")}</Button><Button variant="outline" size="sm" onClick={() => void resolve(id, "server")} disabled={busy}>{t("pages.cloud.keepServer")}</Button><Button variant="outline" size="sm" onClick={() => void resolve(id, "both")} disabled={busy}>{t("pages.cloud.keepBoth")}</Button></span></div>)}</div>}
-              </Card>
+              <div className="grid gap-4 lg:grid-cols-[1.35fr_0.85fr]">
+                <Card className="p-4">
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <h3 className="text-[0.875rem] font-semibold text-[var(--t1)]">{t("pages.cloud.syncCenter")}</h3>
+                    {lastSync || status.runtime?.last_result ? (
+                      <span className="text-[0.72rem] text-[var(--t3)]">
+                        {t("pages.cloud.lastSync", {
+                          pushed: status.runtime?.last_result?.pushed ?? lastSync?.pushed ?? 0,
+                          pulled: status.runtime?.last_result?.pulled ?? lastSync?.pulled ?? 0,
+                          pending: status.runtime?.last_result?.pending ?? lastSync?.pending.length ?? 0,
+                        })}
+                      </span>
+                    ) : null}
+                  </div>
+                  {!conflictCount ? (
+                    <p className="rounded-[var(--r-sm)] border border-dashed border-[var(--line-strong)] px-3 py-6 text-center text-[0.75rem] text-[var(--t3)]">
+                      {t("pages.cloud.noConflicts")}
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[0.78rem] text-[var(--st-warn)]">{t("pages.cloud.conflictCount", { n: conflictCount })}</p>
+                      {conflictDetails.map((conflict) => (
+                        <div key={conflict.id} className="rounded-[var(--r-sm)] border border-[var(--line-strong)] p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-[0.75rem] font-semibold text-[var(--t1)]">{conflict.id}</span>
+                            <Badge variant="outline" className="text-[10px]">{conflict.entity_type}</Badge>
+                            {conflict.server_rev ? <span className="text-[0.68rem] text-[var(--t3)]">rev {conflict.server_rev}</span> : null}
+                          </div>
+                          <p className="mt-1 text-[0.68rem] text-[var(--t3)]">
+                            {t("pages.cloud.conflictSides", {
+                              local: conflict.has_local ? t("pages.cloud.hasContent") : t("pages.cloud.missingContent"),
+                              server: conflict.has_server ? t("pages.cloud.hasContent") : t("pages.cloud.missingContent"),
+                            })}
+                          </p>
+                          <span className="mt-2 flex flex-wrap gap-1">
+                            <Button variant="outline" size="sm" onClick={() => void resolve(conflict.id, "local")} disabled={busy}>
+                              {t("pages.cloud.keepLocal")}
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => void resolve(conflict.id, "server")} disabled={busy}>
+                              {t("pages.cloud.keepServer")}
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => void resolve(conflict.id, "both")} disabled={busy}>
+                              {t("pages.cloud.keepBoth")}
+                            </Button>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
+
+                <Card className="p-4">
+                  <h3 className="mb-2 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1)]">
+                    <CloudUpload className="size-4 text-[var(--st-accent)]" />
+                    {t("pages.cloud.migrateTitle")}
+                  </h3>
+                  <p className="text-[0.75rem] leading-relaxed text-[var(--t3)]">{t("pages.cloud.migrateHint")}</p>
+                  <Button className="mt-3" variant="soft" size="sm" onClick={() => void loadMigrationPlan()} disabled={busy || syncing}>
+                    {action === "migrate" && !migration ? t("common.loading") : t("pages.cloud.previewMigration")}
+                  </Button>
+                  <p className="mt-2 text-[0.72rem] text-[var(--t3)]">{t("pages.cloud.migrationCardHint")}</p>
+                </Card>
+              </div>
             </>
           ) : null}
 
-          <Card className="p-4">
-            <h3 className="mb-2 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]"><CloudUpload className="size-4" /> {t("pages.cloud.migrateTitle")}</h3>
-            <p className="text-[0.75rem] leading-relaxed text-[var(--t3,#8a8f98)]">{t("pages.cloud.migrateHint")}</p>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button variant="soft" size="sm" onClick={() => void loadMigrationPlan()} disabled={busy || !status?.logged_in}>{action === "migrate" && !migration ? t("common.loading") : t("pages.cloud.previewMigration")}</Button>
-              {!status?.logged_in ? <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.loginForMigration")}</span> : null}
-            </div>
-            {migration ? <div className="mt-3 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] p-3"><p className="text-[0.78rem] font-semibold text-[var(--t1,#222326)]">{t("pages.cloud.migrationEntities", { n: migrationEntities.length })}</p><ul className="mt-1 list-inside list-disc text-[0.72rem] text-[var(--t2,#62666d)]">{migrationEntities.map((entity) => <li key={entity.id}>{entity.name ?? entity.id} · {entity.type}</li>)}</ul>{migration.toolchain_gaps.length ? <p className="mt-2 text-[0.72rem] text-[var(--st-warn,#9a6700)]">{t("pages.cloud.toolchainGaps", { n: migration.toolchain_gaps.length })}</p> : null}<div className="mt-3 flex flex-col gap-1.5 text-[0.75rem] text-[var(--t2,#62666d)]"><label className="flex cursor-pointer items-center gap-2"><input type="checkbox" checked={includeTemplates} onChange={(event) => setIncludeTemplates(event.target.checked)} />{t("pages.cloud.includeTemplates")}</label><label className="flex cursor-pointer items-center gap-2"><input type="checkbox" checked={includeSettings} onChange={(event) => setIncludeSettings(event.target.checked)} />{t("pages.cloud.includeSettings")}</label></div><Button className="mt-3 gap-1" variant="default" size="sm" onClick={() => void applyMigration()} disabled={busy}><Check className="size-3.5" /> {t("pages.cloud.applyMigration")}</Button></div> : null}
-          </Card>
-
-          <Card className="p-4">
-            <h3 className="mb-2 flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--t1,#222326)]"><Settings className="size-4" /> {t("pages.cloud.advancedTitle")}</h3>
-            <form onSubmit={(event) => void saveEndpoint(event)} className="flex flex-col gap-2">
-              <label htmlFor="cloud-endpoint" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.endpoint")}</label>
-              <div className="flex flex-col gap-2 sm:flex-row"><Input id="cloud-endpoint" value={endpoint} onChange={(event) => { setEndpoint(event.target.value); setEndpointError(null); }} type="url" inputMode="url" aria-invalid={!!endpointError} aria-describedby={endpointError ? "cloud-endpoint-error" : "cloud-endpoint-help"} /><Button variant="success" size="sm" type="submit" disabled={busy || !endpoint.trim()}>{t("pages.cloud.saveEndpoint")}</Button></div>
-              <p id="cloud-endpoint-help" className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.endpointLocalHint")}</p>
-              {endpointError ? <p id="cloud-endpoint-error" className="text-[0.72rem] text-[#DC2626]" role="alert">{endpointError}</p> : null}
-            </form>
-            <div className="mt-4 border-t border-[var(--line,#e6e6e6)] pt-3"><label className="flex cursor-pointer items-start justify-between gap-4 text-[0.8rem] text-[var(--t1,#222326)]"><span>{t("pages.cloud.telemetry")}</span><input type="checkbox" checked={!!status?.telemetry_enabled} onChange={(event) => void toggleTelemetry(event.target.checked)} disabled={busy} aria-label={t("pages.cloud.telemetry")} /></label><p className="mt-1 text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.cloud.telemetryHint")}</p></div>
-          </Card>
-
-          {loadFailed ? <Card className="p-4"><p className="text-[0.78rem] text-[var(--st-warn,#9a6700)]" role="alert">{t("pages.cloud.loadFailed")}</p><Button className="mt-2 gap-1" variant="soft" size="sm" onClick={() => void refresh()} disabled={busy}><RefreshCw className="size-3.5" /> {t("pages.cloud.retry")}</Button></Card> : null}
-          {!state.hello ? <p className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("common.connectingEngine")}</p> : null}
+          {loadFailed ? (
+            <Card className="p-4">
+              <p className="text-[0.78rem] text-[var(--st-warn)]" role="alert">{t("pages.cloud.loadFailed")}</p>
+              <Button className="mt-2 gap-1" variant="soft" size="sm" onClick={() => void refresh()} disabled={busy}>
+                <RefreshCw className="size-3.5" /> {t("pages.cloud.retry")}
+              </Button>
+            </Card>
+          ) : null}
+          {!state.hello ? <p className="text-[0.75rem] text-[var(--t3)]">{t("common.connectingEngine")}</p> : null}
         </div>
       </div>
+
+      <CloudMigrationDialog
+        plan={migration}
+        busy={action === "migrate"}
+        includeTemplates={includeTemplates}
+        includeSettings={includeSettings}
+        workspaceDirs={workspaceDirs}
+        onIncludeTemplates={setIncludeTemplates}
+        onIncludeSettings={setIncludeSettings}
+        onWorkspaceDir={(id, dir) => setWorkspaceDirs((current) => ({ ...current, [id]: dir }))}
+        onApply={() => void applyMigration()}
+        onClose={() => {
+          setMigration(null);
+          setWorkspaceDirs({});
+        }}
+      />
+      <CloudAdvancedDialog
+        open={advancedOpen}
+        busy={busy}
+        endpoint={endpoint}
+        endpointError={endpointError}
+        telemetryEnabled={!!status?.telemetry_enabled}
+        onEndpointChange={(value) => {
+          setEndpoint(value);
+          setEndpointError(null);
+        }}
+        onSaveEndpoint={(event) => void saveEndpoint(event)}
+        onTelemetryChange={(enabled) => void toggleTelemetry(enabled)}
+        onClose={() => setAdvancedOpen(false)}
+      />
+    </div>
+  );
+}
+
+function Metric(props: { icon: React.ReactNode; label: string; value: string; hint: string }) {
+  return (
+    <div className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2.5">
+      <span className="flex items-center gap-1.5 text-[0.68rem] text-[var(--t3)]">
+        {props.icon}
+        {props.label}
+      </span>
+      <strong className="mt-1 block font-mono text-[0.95rem] text-[var(--t1)]">{props.value}</strong>
+      <p className="mt-0.5 text-[0.65rem] leading-relaxed text-[var(--t3)]">{props.hint}</p>
     </div>
   );
 }
