@@ -12,6 +12,7 @@
 //! - 全局自定义指令（≤8000 字符）与场景 Prompt 模板（enabled 总量 ≤16000 字符）
 //!   注入 system（限额沿 dbx prompt_template）。
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::appdata::AppData;
 use crate::error::{Error, ErrorCode, Result};
 
+pub mod cli_agent;
 pub mod client;
 pub mod prompt;
 pub mod sanitize;
@@ -82,66 +84,199 @@ pub struct ProviderPreset {
     pub key_optional: bool,
     pub default_endpoint: &'static str,
     pub default_model: &'static str,
+    /// HTTP 端点还是本机 CLI；决定校验规则与执行路径。
+    pub kind: ProviderKind,
+    /// 本地 CLI 的默认可执行名（PATH 查找）；HTTP provider 为空。
+    pub cli_program: &'static str,
+    /// 本地 CLI 的默认参数。取自 dbx 的实现，但配置里可改：各家 flag 会随版本变，
+    /// 写死会让用户在 CLI 升级后无路可走。
+    pub cli_args: &'static [&'static str],
+    /// 本地 CLI 常见可选模型（CLI 无 /models 端点，模型发现只能给预置项）。
+    pub cli_models: &'static [&'static str],
 }
 
-/// 与前端 `AI_PROVIDER_PRESETS`（dbx 预设表裁剪版）同源；CLI provider 不在列。
-pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
+/// provider 的执行形态。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    /// 通过 HTTP 调远端（或本地 Ollama）端点。
+    #[default]
+    Http,
+    /// 调用本机已安装的编码 CLI，凭据由该 CLI 自己管。
+    LocalCli,
+}
+
+/// HTTP provider 的预设简写（保持既有条目可读）。
+const fn http(
+    key: &'static str,
+    api_style: ApiStyle,
+    key_optional: bool,
+    default_endpoint: &'static str,
+    default_model: &'static str,
+) -> ProviderPreset {
     ProviderPreset {
-        key: "openai-compatible",
-        api_style: ApiStyle::OpenAiCompletions,
-        key_optional: false,
-        default_endpoint: "https://api.openai.com/v1",
-        default_model: "gpt-4o-mini",
-    },
+        key,
+        api_style,
+        key_optional,
+        default_endpoint,
+        default_model,
+        kind: ProviderKind::Http,
+        cli_program: "",
+        cli_args: &[],
+        cli_models: &[],
+    }
+}
+
+/// 本地 CLI provider 的预设简写。key 恒为可选（凭据在 CLI 侧）。
+const fn local_cli(
+    key: &'static str,
+    cli_program: &'static str,
+    cli_args: &'static [&'static str],
+    cli_models: &'static [&'static str],
+) -> ProviderPreset {
     ProviderPreset {
-        key: "claude",
-        api_style: ApiStyle::AnthropicMessages,
-        key_optional: false,
-        default_endpoint: "https://api.anthropic.com",
-        default_model: "claude-sonnet-4-5",
-    },
-    ProviderPreset {
-        key: "deepseek",
-        api_style: ApiStyle::OpenAiCompletions,
-        key_optional: false,
-        default_endpoint: "https://api.deepseek.com",
-        default_model: "deepseek-chat",
-    },
-    ProviderPreset {
-        key: "qwen",
-        api_style: ApiStyle::OpenAiCompletions,
-        key_optional: false,
-        default_endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        default_model: "qwen-plus",
-    },
-    ProviderPreset {
-        key: "minimax",
-        api_style: ApiStyle::OpenAiCompletions,
-        key_optional: false,
-        default_endpoint: "https://api.minimaxi.com/v1",
-        default_model: "MiniMax-Text-01",
-    },
-    ProviderPreset {
-        key: "gemini",
-        api_style: ApiStyle::OpenAiCompletions,
-        key_optional: false,
-        default_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-        default_model: "gemini-2.0-flash",
-    },
-    ProviderPreset {
-        key: "ollama",
+        key,
         api_style: ApiStyle::OpenAiCompletions,
         key_optional: true,
-        default_endpoint: "http://localhost:11434/v1",
-        default_model: "qwen2.5:7b",
-    },
-    ProviderPreset {
-        key: "custom",
-        api_style: ApiStyle::OpenAiCompletions,
-        key_optional: false,
         default_endpoint: "",
-        default_model: "",
-    },
+        default_model: "default",
+        kind: ProviderKind::LocalCli,
+        cli_program,
+        cli_args,
+        cli_models,
+    }
+}
+
+/// 与前端 `AI_PROVIDER_PRESETS` 同源。
+///
+/// 两类：HTTP 端点，以及本机编码 CLI（`*-cli`）。CLI 的默认 argv 参考 dbx 的对应
+/// 实现，选的都是各家「非交互一次性输出」模式；用户可在配置里覆盖。
+pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
+    http(
+        "openai-compatible",
+        ApiStyle::OpenAiCompletions,
+        false,
+        "https://api.openai.com/v1",
+        "gpt-4o-mini",
+    ),
+    http(
+        "claude",
+        ApiStyle::AnthropicMessages,
+        false,
+        "https://api.anthropic.com",
+        "claude-sonnet-4-5",
+    ),
+    http(
+        "anthropic-compatible",
+        ApiStyle::AnthropicMessages,
+        true,
+        "",
+        "",
+    ),
+    http(
+        "deepseek",
+        ApiStyle::OpenAiCompletions,
+        false,
+        "https://api.deepseek.com",
+        "deepseek-chat",
+    ),
+    http(
+        "kimi",
+        ApiStyle::OpenAiCompletions,
+        false,
+        "https://api.moonshot.cn/v1",
+        "kimi-k2-0905-preview",
+    ),
+    http(
+        "qwen",
+        ApiStyle::OpenAiCompletions,
+        false,
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "qwen-plus",
+    ),
+    http(
+        "minimax",
+        ApiStyle::OpenAiCompletions,
+        false,
+        "https://api.minimaxi.com/v1",
+        "MiniMax-Text-01",
+    ),
+    http(
+        "gemini",
+        ApiStyle::OpenAiCompletions,
+        false,
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-2.0-flash",
+    ),
+    http(
+        "ollama",
+        ApiStyle::OpenAiCompletions,
+        true,
+        "http://localhost:11434/v1",
+        "qwen2.5:7b",
+    ),
+    // ---- 本地 CLI ----
+    local_cli(
+        "claude-code-cli",
+        "claude",
+        &[
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--input-format",
+            "text",
+            "--no-session-persistence",
+            "--permission-mode",
+            "dontAsk",
+            "--tools",
+            "",
+        ],
+        &["default", "sonnet", "opus", "haiku"],
+    ),
+    local_cli(
+        "codex-cli",
+        "codex",
+        &[
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "-c",
+            "features.shell_tool=false",
+            "-c",
+            "web_search=\"disabled\"",
+            "-",
+        ],
+        &["default", "gpt-5-codex", "o4-mini"],
+    ),
+    local_cli(
+        "opencode-cli",
+        "opencode",
+        &["run", "--format", "json", "--pure"],
+        &["default"],
+    ),
+    local_cli(
+        "cursor-cli",
+        "agent",
+        &["--print", "--output-format", "text"],
+        &["default"],
+    ),
+    local_cli(
+        "codebuddy-cli",
+        "codebuddy",
+        &["--print", "--output-format", "stream-json", "--verbose"],
+        &["default"],
+    ),
+    local_cli(
+        "qoder-cli",
+        "qodercli",
+        &["--print", "--output-format", "stream-json"],
+        &["default"],
+    ),
+    local_cli("pi-agent-cli", "pi", &["--print"], &["default"]),
+    http("custom", ApiStyle::OpenAiCompletions, false, "", ""),
 ];
 
 pub fn provider_preset(key: &str) -> Option<&'static ProviderPreset> {
@@ -167,6 +302,14 @@ pub struct ProviderConfig {
     pub context_window: Option<u64>,
     /// 临时错误自动重试次数（0–10）。
     pub max_retries: u32,
+    /// 本地 CLI provider：可执行文件路径（空 = 走 PATH 查找预设程序名）。
+    pub cli_path: Option<String>,
+    /// 本地 CLI provider：argv（空 = 用预设默认参数）。
+    #[serde(default)]
+    pub cli_args: Vec<String>,
+    /// 本地 CLI provider：显式传给子进程的环境变量（如 HTTPS_PROXY）。
+    #[serde(default)]
+    pub cli_env: BTreeMap<String, String>,
 }
 
 impl Default for ProviderConfig {
@@ -183,6 +326,9 @@ impl Default for ProviderConfig {
             proxy_url: None,
             context_window: None,
             max_retries: DEFAULT_MAX_RETRIES,
+            cli_path: None,
+            cli_args: Vec::new(),
+            cli_env: BTreeMap::new(),
         }
     }
 }
@@ -197,6 +343,33 @@ impl ProviderConfig {
 
     pub fn key_optional(&self) -> bool {
         provider_preset(&self.provider).is_some_and(|p| p.key_optional)
+    }
+
+    pub fn kind(&self) -> ProviderKind {
+        provider_preset(&self.provider)
+            .map(|p| p.kind)
+            .unwrap_or_default()
+    }
+
+    pub fn is_local_cli(&self) -> bool {
+        self.kind() == ProviderKind::LocalCli
+    }
+
+    /// 生效 argv：配置里非空则用它，否则用预设默认值。
+    pub fn effective_cli_args(&self) -> Vec<String> {
+        if !self.cli_args.is_empty() {
+            return self.cli_args.clone();
+        }
+        provider_preset(&self.provider)
+            .map(|p| p.cli_args.iter().map(|a| a.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn cli_program(&self) -> String {
+        let default_program = provider_preset(&self.provider)
+            .map(|p| p.cli_program)
+            .unwrap_or("");
+        cli_agent::resolve_program(self.cli_path.as_deref(), default_program)
     }
 }
 
@@ -346,30 +519,41 @@ pub fn config_save(app: &mut AppData, input: ConfigSaveInput) -> Result<NamedAiC
             "配置名不能为空且不超过 50 字符",
         ));
     }
-    let base_url = validate_base_url(
-        &input
-            .base_url
-            .clone()
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-    )
-    .map_err(|e| {
-        if input.base_url.is_none() {
-            Error::new(ErrorCode::AiNotConfigured, "base_url 不能为空")
-        } else {
-            e
-        }
-    })?;
-    let model = input.model.trim().to_string();
-    if model.is_empty() {
-        return Err(Error::new(ErrorCode::AiNotConfigured, "model 不能为空"));
-    }
     if !input.provider.is_empty() && provider_preset(&input.provider).is_none() {
         return Err(Error::new(
             ErrorCode::AiNotConfigured,
             format!("未知 provider: {}", input.provider),
         ));
+    }
+    let local_cli =
+        provider_preset(&input.provider).is_some_and(|p| p.kind == ProviderKind::LocalCli);
+    // 本地 CLI 没有端点可填，强求 base_url 只会逼用户编一个 URL
+    let base_url = if local_cli {
+        String::new()
+    } else {
+        validate_base_url(
+            &input
+                .base_url
+                .clone()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        )
+        .map_err(|e| {
+            if input.base_url.is_none() {
+                Error::new(ErrorCode::AiNotConfigured, "base_url 不能为空")
+            } else {
+                e
+            }
+        })?
+    };
+    let model = input.model.trim().to_string();
+    if model.is_empty() {
+        return Err(Error::new(ErrorCode::AiNotConfigured, "model 不能为空"));
+    }
+    let cli_path = cli_agent::validate_cli_path(input.cli_path.as_deref().unwrap_or_default())?;
+    for name in input.cli_env.keys() {
+        cli_agent::validate_env_name(name)?;
     }
     if input.proxy_enabled {
         normalize_proxy_url(input.proxy_url.as_deref().unwrap_or_default())?;
@@ -445,6 +629,14 @@ pub fn config_save(app: &mut AppData, input: ConfigSaveInput) -> Result<NamedAiC
             .max_retries
             .unwrap_or(DEFAULT_MAX_RETRIES)
             .clamp(0, 10),
+        cli_path,
+        cli_args: input
+            .cli_args
+            .into_iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty())
+            .collect(),
+        cli_env: input.cli_env,
     };
     if let Some(existing) = app.ai_configs.iter_mut().find(|c| c.id == id) {
         existing.name = name;
@@ -810,6 +1002,9 @@ pub struct ConfigSaveInput {
     pub proxy_url: Option<String>,
     pub context_window: Option<u64>,
     pub max_retries: Option<u32>,
+    pub cli_path: Option<String>,
+    pub cli_args: Vec<String>,
+    pub cli_env: BTreeMap<String, String>,
 }
 
 /// ai.template.save 入参（id None = 新建）。
@@ -836,6 +1031,18 @@ pub struct CompleteRequest<'a> {
 /// `on_chunk` 非空时走 SSE 流式并在每块文本到达时回调（供壳层 `st-ai` 推送）。
 pub fn complete<F: FnMut(&str)>(
     http: &dyn AiHttp,
+    app: &mut AppData,
+    key: Option<&str>,
+    req: CompleteRequest<'_>,
+    on_chunk: Option<F>,
+) -> Result<AiCompleteOut> {
+    complete_with(http, &cli_agent::ProcessCliRunner, app, key, req, on_chunk)
+}
+
+/// [`complete`] 的可注入版本：CLI provider 的进程执行器可替换，便于测试。
+pub fn complete_with<F: FnMut(&str)>(
+    http: &dyn AiHttp,
+    cli: &dyn cli_agent::CliRunner,
     app: &mut AppData,
     key: Option<&str>,
     req: CompleteRequest<'_>,
@@ -919,6 +1126,16 @@ pub fn complete<F: FnMut(&str)>(
             ErrorCode::AiContextTooLarge,
             format!("上下文过大（约 {est_tokens} tokens > 上限 {budget}），请缩小日志范围"),
         ));
+    }
+
+    // 本地 CLI：没有 HTTP 请求可发，交给子进程执行器。
+    if cfg.is_local_cli() {
+        let text = run_local_cli(cli, &cfg, &system, &user)?;
+        if let Some(ref mut chunk_cb) = on_chunk {
+            // CLI 是一次性输出，没有真正的增量；一次性回调保持壳层流式接口不变。
+            chunk_cb(&text);
+        }
+        return Ok(finish(app, text, None, cfg.model.clone()));
     }
 
     let stream = on_chunk.is_some();
@@ -1025,6 +1242,12 @@ pub fn models(
         })?,
     }
     .config;
+    // CLI provider 没有 /models 端点；给预置项而不是报错，用户仍可手填任意模型名
+    if cfg.is_local_cli() {
+        return Ok(provider_preset(&cfg.provider)
+            .map(|p| p.cli_models.iter().map(|m| m.to_string()).collect())
+            .unwrap_or_default());
+    }
     if cfg.effective_api_style() != ApiStyle::OpenAiCompletions {
         return Err(Error::new(
             ErrorCode::AiRequestFailed,
@@ -1057,6 +1280,48 @@ pub fn models(
         ));
     }
     parse_models_response(&resp.body)
+}
+
+/// 跑一次本地 CLI：prompt 走 stdin（不进 argv，避免命令行长度上限与转义问题）。
+fn run_local_cli(
+    cli: &dyn cli_agent::CliRunner,
+    cfg: &ProviderConfig,
+    system: &str,
+    user: &str,
+) -> Result<String> {
+    let program = cfg.cli_program();
+    if program.is_empty() {
+        return Err(Error::new(
+            ErrorCode::AiNotConfigured,
+            "未配置 CLI 可执行文件路径",
+        ));
+    }
+    let mut args = cfg.effective_cli_args();
+    let model = cfg.model.trim();
+    // "default" = 用 CLI 自己的默认模型，不传 --model
+    if !model.is_empty() && !model.eq_ignore_ascii_case("default") {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    let invocation = cli_agent::CliInvocation {
+        program: program.clone(),
+        args,
+        env: cli_agent::build_env(&cfg.cli_env)?,
+        stdin: format!("{system}\n\n{user}"),
+        timeout_secs: cfg.timeout_secs,
+    };
+    let out = cli.run(&invocation)?;
+    if !out.success() {
+        return Err(cli_agent::run_error(&program, &out));
+    }
+    let text = cli_agent::extract_text(&out.stdout);
+    if text.is_empty() {
+        return Err(Error::new(
+            ErrorCode::AiRequestFailed,
+            format!("{program} 没有返回任何文本输出"),
+        ));
+    }
+    Ok(text)
 }
 
 fn finish(
@@ -1265,10 +1530,10 @@ mod tests {
         assert!(provider_preset("claude").is_some());
         assert!(provider_preset("ollama").is_some_and(|p| p.key_optional));
         assert!(provider_preset("openai-compatible").is_some_and(|p| !p.key_optional));
-        assert!(
-            provider_preset("codex-cli").is_none(),
-            "CLI provider 不进预设"
-        );
+        assert!(provider_preset("codex-cli").is_some_and(|p| {
+            p.kind == ProviderKind::LocalCli && p.cli_program == "codex" && p.key_optional
+        }));
+        assert!(provider_preset("claude-code-cli").is_some_and(|p| !p.cli_args.is_empty()));
         assert!(provider_preset("custom").is_some_and(|p| p.default_endpoint.is_empty()));
     }
 
@@ -1363,12 +1628,27 @@ mod tests {
                 name: "P".into(),
                 base_url: Some("http://x/v1".into()),
                 model: "m".into(),
-                provider: "codex-cli".into(),
+                provider: "unknown-provider".into(),
                 ..Default::default()
             },
         )
         .unwrap_err();
         assert_eq!(e.code(), ErrorCode::AiNotConfigured);
+
+        let cli = config_save(
+            &mut app,
+            ConfigSaveInput {
+                name: "CLI".into(),
+                base_url: None,
+                model: "default".into(),
+                provider: "codex-cli".into(),
+                cli_path: Some("codex".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(cli.config.is_local_cli());
+        assert!(cli.config.base_url.is_empty());
     }
 
     #[test]

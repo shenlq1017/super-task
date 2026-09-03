@@ -99,6 +99,7 @@ export const cmd = {
   AI_CONFIG_SAVE: "ai.config.save",
   AI_CONFIG_DELETE: "ai.config.delete",
   AI_CONFIG_DEFAULT: "ai.config.default",
+  AI_CLI_PROBE: "ai.cli.probe",
   AI_INSTRUCTIONS_SAVE: "ai.instructions.save",
   AI_TEMPLATE_SAVE: "ai.template.save",
   AI_TEMPLATE_DELETE: "ai.template.delete",
@@ -962,15 +963,24 @@ export type AiTask = "explain_logs" | "config_suggest" | "enrich_draft" | "test_
 /** API 风格（mirror core ai::ApiStyle，serde snake_case）。 */
 export type AiApiStyle = "openai_completions" | "anthropic_messages";
 export type AiAuthMethod = "api_key" | "bearer";
-/** provider 预设 key（与 core PROVIDER_PRESETS 同源；CLI provider 不做）。 */
+/** provider 预设 key（与 core PROVIDER_PRESETS 同源）。 */
 export type AiProviderKey =
   | "openai-compatible"
   | "claude"
+  | "anthropic-compatible"
+  | "gemini"
   | "deepseek"
+  | "kimi"
   | "qwen"
   | "minimax"
-  | "gemini"
   | "ollama"
+  | "claude-code-cli"
+  | "codex-cli"
+  | "opencode-cli"
+  | "cursor-cli"
+  | "codebuddy-cli"
+  | "qoder-cli"
+  | "pi-agent-cli"
   | "custom";
 
 export type AiConfigOut = {
@@ -987,6 +997,9 @@ export type AiConfigOut = {
   proxy_url?: string | null;
   context_window?: number | null;
   max_retries: number;
+  cli_path?: string | null;
+  cli_args: string[];
+  cli_env: Record<string, string>;
 };
 
 export type AiConfigSummary = {
@@ -996,6 +1009,16 @@ export type AiConfigSummary = {
   provider: string;
   model: string;
   base_url: string;
+  timeout_secs: number;
+  max_tokens: number;
+  auth_method: AiAuthMethod;
+  proxy_enabled: boolean;
+  proxy_url?: string | null;
+  context_window?: number | null;
+  max_retries: number;
+  cli_path?: string | null;
+  cli_args: string[];
+  cli_env: Record<string, string>;
 };
 
 export type AiTemplate = { id: string; name: string; content: string; enabled: boolean };
@@ -1025,11 +1048,21 @@ export type AiConfigSaveIn = {
   proxyUrl?: string | null;
   contextWindow?: number | null;
   maxRetries?: number | null;
+  cliPath?: string | null;
+  cliArgs?: string[];
+  cliEnv?: Record<string, string>;
   /** None 不动；"" 清除；非空覆盖。 */
   apiKey?: string | null;
 };
 
 export type AiTemplateSaveIn = { id?: string | null; name: string; content: string; enabled: boolean };
+
+export type AiCliProbeOut = {
+  program: string;
+  found: boolean;
+  version?: string | null;
+  detail?: string | null;
+};
 
 export type AiUsage = { date: string; count: number };
 

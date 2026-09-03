@@ -391,6 +391,7 @@ pub fn run() {
             commands::ai_template_delete,
             commands::ai_status,
             commands::ai_models,
+            commands::ai_cli_probe,
             commands::ai_complete,
             commands::toolchain_install,
             commands::toolchain_upgrade,

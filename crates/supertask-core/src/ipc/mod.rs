@@ -95,6 +95,7 @@ pub mod cmd {
     pub const AI_CONFIG_SAVE: &str = "ai.config.save";
     pub const AI_CONFIG_DELETE: &str = "ai.config.delete";
     pub const AI_CONFIG_DEFAULT: &str = "ai.config.default";
+    pub const AI_CLI_PROBE: &str = "ai.cli.probe";
     pub const AI_INSTRUCTIONS_SAVE: &str = "ai.instructions.save";
     pub const AI_TEMPLATE_SAVE: &str = "ai.template.save";
     pub const AI_TEMPLATE_DELETE: &str = "ai.template.delete";
