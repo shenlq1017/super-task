@@ -38,6 +38,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
+        "https://cnb.cool/sweetshuyan/super-task/-/releases/download/stable/latest.json",
         "https://github.com/shenlq1017/super-task/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUyOTUzQzk0RDNFNDgyQzUKUldURmd1VFRsRHlWNG9zKzR1ajVmRTE2Wm5tS3BiaVNvTDg5ZGFlVXgwUUpsWXNrSUZnMFpXRGoK"

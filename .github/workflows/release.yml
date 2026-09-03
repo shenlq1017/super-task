@@ -38,3 +38,77 @@ jobs:
           releaseName: SuperTask ${{ github.ref_name }}
           releaseDraft: true
           prerelease: false
+
+  # 把发布产物镜像到 cnb.cool（国内更新端点）：
+  # 检测/下载走固定滚动 tag `stable`，端点 URL 恒为
+  # https://cnb.cool/sweetshuyan/super-task/-/releases/download/stable/latest.json
+  mirror-to-cnb:
+    name: Mirror release to CNB
+    runs-on: ubuntu-latest
+    needs: windows
+    env:
+      CNB_SLUG: sweetshuyan/super-task
+      CNB_API: https://api.cnb.cool
+    steps:
+      - name: Download GitHub release assets（draft 也可下载）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" --dir dist --clobber
+          ls -la dist
+
+      - name: Rewrite latest.json download URLs to CNB (stable)
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          base = "https://cnb.cool/sweetshuyan/super-task/-/releases/download/stable"
+          p = pathlib.Path("dist/latest.json")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          for info in data.get("platforms", {}).values():
+              name = info.get("url", "").rstrip("/").rsplit("/", 1)[-1]
+              info["url"] = f"{base}/{name}"
+          p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+          print(p.read_text(encoding="utf-8"))
+          PY
+
+      - name: Create/update CNB release (tag: stable) and upload assets
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          TAG: stable
+        run: |
+          set -euo pipefail
+          slug="$CNB_SLUG"; api="$CNB_API"
+          auth=( -H "Authorization: Bearer $CNB_TOKEN" )
+
+          release_id=$(curl -sf "${auth[@]}" "$api/$slug/-/releases/tags/$TAG" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null) || release_id=""
+          if [ -z "$release_id" ]; then
+            echo "CNB 上不存在 $TAG 的 Release，创建中…"
+            release_id=$(curl -sf -X POST "${auth[@]}" -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"SuperTask stable\",\"draft\":false,\"make_latest\":\"true\"}" \
+              "$api/$slug/-/releases" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          fi
+          echo "CNB release_id=$release_id"
+          # 刷新标题/描述，便于在 CNB 页面上看到当前稳定版本
+          curl -sf -X PATCH "${auth[@]}" -H "Content-Type: application/json" \
+            -d "{\"name\":\"SuperTask ${{ github.ref_name }} (stable)\",\"body\":\"自动更新稳定通道，同步自 GitHub ${{ github.ref_name }}\"}" \
+            "$api/$slug/-/releases/$release_id" >/dev/null || true
+
+          for f in dist/*; do
+            name=$(basename "$f"); size=$(stat -c%s "$f")
+            echo "上传 $name（$size 字节）…"
+            up=$(curl -sf -X POST "${auth[@]}" -H "Content-Type: application/json" \
+              -d "{\"asset_name\":\"$name\",\"size\":$size,\"overwrite\":true}" \
+              "$api/$slug/-/releases/$release_id/asset-upload-url")
+            upload_url=$(printf '%s' "$up" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"])')
+            verify_url=$(printf '%s' "$up" | python3 -c 'import json,sys; print(json.load(sys.stdin)["verify_url"])')
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X PUT --data-binary @"$f" -H "Content-Type: application/octet-stream" "$upload_url")
+            echo "预签名上传 HTTP $code"
+            [ "$code" = "200" ] || { echo "上传失败：$name"; exit 1; }
+            curl -sf -X POST "${auth[@]}" "$verify_url" >/dev/null
+            echo "已确认 $name"
+          done
+          echo "国内更新端点：https://cnb.cool/$slug/-/releases/download/stable/latest.json"
