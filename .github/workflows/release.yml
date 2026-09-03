@@ -27,6 +27,25 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # 发布说明：按 tag 版本号提取 CHANGELOG.md 对应段落，
+      # tauri-action 会写入 GitHub Release body，并同步为 latest.json 的 notes（应用内更新弹窗展示）。
+      - name: Extract changelog for release notes
+        id: changelog
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          body=$(awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" {flag=1; next}
+            /^## \[/ && flag {exit}
+            flag {print}
+          ' CHANGELOG.md | sed -e '/./,$!d')
+          {
+            echo "body<<CHANGELOG_EOF"
+            printf '%s\n' "$body"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+          test -n "$body" || echo "::warning::CHANGELOG.md 中未找到 [${version}] 段落，发布说明为空"
+
       - name: Build and publish Windows bundles
         uses: tauri-apps/tauri-action@v0
         env:
@@ -36,6 +55,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: SuperTask ${{ github.ref_name }}
+          releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: true
           prerelease: false
 
