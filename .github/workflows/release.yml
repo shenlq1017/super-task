@@ -79,14 +79,14 @@ jobs:
         run: |
           set -euo pipefail
           slug="$CNB_SLUG"; api="$CNB_API"
-          auth=( -H "Authorization: Bearer $CNB_TOKEN" )
+          auth=( -H "Authorization: Bearer $CNB_TOKEN" -H "Accept: application/json" )
 
           release_id=$(curl -sf "${auth[@]}" "$api/$slug/-/releases/tags/$TAG" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null) || release_id=""
           if [ -z "$release_id" ]; then
             echo "CNB 上不存在 $TAG 的 Release，创建中…"
             release_id=$(curl -sf -X POST "${auth[@]}" -H "Content-Type: application/json" \
-              -d "{\"tag_name\":\"$TAG\",\"name\":\"SuperTask stable\",\"draft\":false,\"make_latest\":\"true\"}" \
+              -d "{\"tag_name\":\"$TAG\",\"target_commitish\":\"main\",\"name\":\"SuperTask stable\",\"draft\":false,\"make_latest\":\"true\"}" \
               "$api/$slug/-/releases" \
               | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
           fi
