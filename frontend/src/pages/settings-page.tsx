@@ -19,7 +19,15 @@ import { errorDisplayText } from "@/lib/error-messages";
 import { useToast } from "@/components/ui/toast";
 import { applyLocalePreference } from "@/i18n";
 import { isSupportedLocale, resolveLocale, SUPPORTED_LOCALES } from "@/i18n/resolve-locale";
-import { applyTheme } from "@/lib/theme";
+import {
+  applyTheme,
+  formatTheme,
+  parseTheme,
+  PALETTE_SWATCHES,
+  THEME_PALETTES,
+  type ThemeMode,
+  type ThemePalette,
+} from "@/lib/theme";
 
 /** 偏好开关行：与既有 checkbox 样式一致，说明文案放第二行。 */
 function PrefRow({
@@ -370,9 +378,25 @@ function SettingsPageInner() {
     setUpdateCheck(state.app?.prefs.updateCheck ?? true);
   }, [state.app]);
 
-  const pickTheme = (th: "light" | "dark") => {
-    setTheme(th);
-    applyTheme(th);
+  const parsed = parseTheme(theme);
+
+  const persistTheme = async (next: string) => {
+    setTheme(next);
+    applyTheme(next);
+    try {
+      await apiSavePrefs({ theme: next });
+      void sessionActions.reload();
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    }
+  };
+
+  const pickMode = (mode: ThemeMode) => {
+    void persistTheme(formatTheme(parsed.palette, mode));
+  };
+
+  const pickPalette = (palette: ThemePalette) => {
+    void persistTheme(formatTheme(palette, parsed.mode));
   };
 
   const save = async () => {
@@ -454,20 +478,50 @@ function SettingsPageInner() {
 
           <Card className="p-4">
             <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1)]">{t("pages.settings.appearance")}</h3>
+            <p className="mb-2 text-[0.75rem] text-[var(--t3)]">{t("pages.settings.colorPalette")}</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {THEME_PALETTES.map((p) => {
+                const sw = PALETTE_SWATCHES[p];
+                const active = parsed.palette === p;
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => pickPalette(p)}
+                    className={cn(
+                      "flex items-center gap-2.5 rounded-[var(--r-sm)] border px-2.5 py-2 text-left text-[0.8rem] transition-colors duration-150",
+                      active
+                        ? "border-[var(--st-accent)] bg-[var(--st-accent-tint)] text-[var(--t1)]"
+                        : "border-[var(--line)] text-[var(--t2)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]",
+                    )}
+                  >
+                    <span
+                      className="flex size-7 shrink-0 overflow-hidden rounded-md border border-[var(--line)]"
+                      aria-hidden
+                    >
+                      <span className="w-1/2" style={{ background: sw.bg }} />
+                      <span className="w-1/2" style={{ background: sw.accent }} />
+                    </span>
+                    <span className="min-w-0 truncate font-medium">{t(`pages.settings.palette.${p}`)}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mb-2 mt-4 text-[0.75rem] text-[var(--t3)]">{t("pages.settings.colorMode")}</p>
             <div className="flex gap-2">
-              {(["light", "dark"] as const).map((th) => (
+              {(["light", "dark"] as const).map((mode) => (
                 <button
-                  key={th}
+                  key={mode}
                   type="button"
-                  onClick={() => pickTheme(th)}
+                  onClick={() => pickMode(mode)}
                   className={cn(
                     "flex-1 rounded-[var(--r-sm)] border px-3 py-2 text-[0.875rem] transition-colors duration-150",
-                    theme === th
+                    parsed.mode === mode
                       ? "border-[var(--st-accent)] bg-[var(--st-accent-tint)] text-[var(--st-accent-hover)]"
                       : "border-[var(--line)] text-[var(--t2)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]",
                   )}
                 >
-                  {th === "light" ? t("pages.settings.themeLight") : t("pages.settings.themeDark")}
+                  {mode === "light" ? t("pages.settings.themeLight") : t("pages.settings.themeDark")}
                 </button>
               ))}
             </div>

@@ -999,6 +999,16 @@ const zhTW = {
       "themeLight": "淺色",
       "themeDark": "深色",
       "themeDarkSoon": "深色（即將）",
+      "colorPalette": "配色方案",
+      "colorMode": "明暗模式",
+      "palette": {
+        "indigo": "Indigo 靛藍",
+        "slate": "Slate 石板",
+        "emerald": "Emerald 翠綠",
+        "amber": "Amber 琥珀",
+        "rose": "Rose 玫瑰",
+        "ocean": "Ocean 海洋"
+      },
       "language": "語言",
       "languageDesc": "切換即時生效，無需重啟",
       "languageAuto": "跟隨系統",

@@ -13,7 +13,7 @@ import { applyTheme } from "../lib/theme";
 import { CrashNotifier } from "../components/crash-notifier";
 import { AppRoutes } from "./routes";
 
-/** Sync document theme class from engine prefs (light/dark). */
+/** Sync document palette + light/dark from engine prefs.theme. */
 function ThemeSync() {
   const { state } = useSession();
   useEffect(() => {
