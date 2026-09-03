@@ -47,6 +47,149 @@ pub fn classify_process(name: &str) -> &'static str {
     "other"
 }
 
+/// 端口归属判定结果：仅端口命中不可信，必须结合工作目录 + 程序类型。
+#[derive(Debug, Clone)]
+pub enum PortOwnership {
+    /// 端口无监听（TCP 回环探测也不通）。
+    Free,
+    /// 有监听且归属本工作区（cwd 在工作区根下 + 程序类型兼容；compose 另认 docker 系进程）。
+    Owned(ForeignService),
+    /// 有监听但归属外部（占位进程明细可能为空：TCP 通但发现表不可见时）。
+    Conflict(Vec<ForeignService>),
+    /// 发现表不可读，无法验证归属（调用方退回旧口径：端口通即按外部运行展示）。
+    Unknown,
+}
+
+/// 服务 kind 是否需要严格的运行时类型匹配。
+/// typed（spring-boot/node/python）必须 kind 兼容；go/generic/compose 只看归属位置。
+fn service_needs_kind_match(expected_kind: &str) -> bool {
+    matches!(expected_kind, "spring-boot" | "node" | "python")
+}
+
+/// typed 服务的 kind 兼容：spring-boot↔java；node 兼容 node/bun/deno（JS 运行时互换）；
+/// python↔python。neutral kind 不应走到这里。
+fn service_kind_compatible(expected_kind: &str, occupant_kind: &str) -> bool {
+    match expected_kind {
+        "spring-boot" => occupant_kind == "java",
+        "node" => matches!(occupant_kind, "node" | "bun" | "deno"),
+        "python" => occupant_kind == "python",
+        _ => true,
+    }
+}
+
+/// compose 服务的宿主监听常挂在 docker 系进程（cwd 不在工作区内），名字命中即视为归属。
+fn is_docker_host_process(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.contains("docker") || n.contains("vpnkit") || n.contains("containerd")
+}
+
+/// 路径归一化：分隔符统一为 `/`，去尾斜杠；Windows 下大小写不敏感比较。
+fn norm_path_str(s: &str) -> String {
+    let mut out = s.replace('\\', "/");
+    while out.len() > 1 && out.ends_with('/') {
+        out.pop();
+    }
+    #[cfg(windows)]
+    {
+        out.to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        out
+    }
+}
+
+fn cwd_under_root(cwd: Option<&str>, root: &std::path::Path) -> bool {
+    let Some(c) = cwd else { return false };
+    if c.is_empty() {
+        return false;
+    }
+    let root_s = norm_path_str(&root.to_string_lossy());
+    let cwd_s = norm_path_str(c);
+    !root_s.is_empty() && (cwd_s == root_s || cwd_s.starts_with(&format!("{root_s}/")))
+}
+
+fn cmdline_hits_root(cmd: Option<&str>, root: &std::path::Path) -> bool {
+    let Some(c) = cmd else { return false };
+    if c.is_empty() {
+        return false;
+    }
+    let root_s = norm_path_str(&root.to_string_lossy());
+    if root_s.len() < 4 {
+        return false;
+    }
+    norm_path_str(c).contains(&root_s)
+}
+
+/// 单个占位进程是否归属本工作区的该服务。
+fn occupant_owned(occ: &ForeignService, expected_kind: &str, root: &std::path::Path) -> bool {
+    let placed = cwd_under_root(occ.cwd.as_deref(), root)
+        || cmdline_hits_root(occ.cmd_line.as_deref(), root);
+    if expected_kind == "compose" {
+        // compose 手工 up 的宿主进程（docker-proxy 等）cwd 不在工作区内，名字命中即认领。
+        if is_docker_host_process(&occ.name) {
+            return true;
+        }
+        return placed;
+    }
+    if !placed {
+        return false;
+    }
+    if !service_needs_kind_match(expected_kind) {
+        return true; // go/generic：位置命中即归属（可执行文件名任意）
+    }
+    service_kind_compatible(expected_kind, &occ.kind)
+}
+
+/// 用已枚举的发现列表做归属判定（open 时全量枚举一次，多服务复用，避免逐服务全扫描）。
+pub fn classify_with_list(
+    port: u16,
+    expected_kind: &str,
+    root: &std::path::Path,
+    all: &[ForeignService],
+) -> PortOwnership {
+    let mut occs: Vec<ForeignService> = all
+        .iter()
+        .filter(|s| s.ports.contains(&port))
+        .cloned()
+        .collect();
+    if occs.is_empty() {
+        if crate::ports::is_serving(port) {
+            return PortOwnership::Conflict(Vec::new());
+        }
+        return PortOwnership::Free;
+    }
+    occs.sort_by_key(|s| s.pid);
+    if let Some(owned) = occs
+        .iter()
+        .find(|s| occupant_owned(s, expected_kind, root))
+        .cloned()
+    {
+        return PortOwnership::Owned(owned);
+    }
+    PortOwnership::Conflict(occs)
+}
+
+/// 端口归属判定：端口 + 工作目录 + 程序类型三维。
+/// 宁可误报冲突（Stopped + 提示换端口），不误报运行（会误导停止去杀外部进程）。
+pub fn classify_port_owner(
+    port: u16,
+    expected_kind: &str,
+    root: &std::path::Path,
+) -> PortOwnership {
+    match discover_services() {
+        Ok(all) => classify_with_list(port, expected_kind, root, &all),
+        Err(_) => {
+            // 发现表不可读时无法验证归属：调用方退回旧口径展示，不在此臆断冲突。
+            if crate::ports::is_serving(port) {
+                PortOwnership::Unknown
+            } else {
+                PortOwnership::Free
+            }
+        }
+    }
+}
+
 /// 枚举系统中「正在监听端口」的进程（含白名单外的 other）。
 pub fn discover_services() -> Result<Vec<ForeignService>> {
     let listeners = listen_ports_by_pid().map_err(|e| {
@@ -691,6 +834,27 @@ pub fn listen_ports_by_pid() -> Result<HashMap<u32, Vec<u16>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn foreign(
+        pid: u32,
+        name: &str,
+        kind: &str,
+        ports: Vec<u16>,
+        cwd: Option<&str>,
+        cmd: Option<&str>,
+    ) -> ForeignService {
+        ForeignService {
+            pid,
+            name: name.into(),
+            kind: kind.into(),
+            ports,
+            cwd: cwd.map(str::to_string),
+            cmd_line: cmd.map(str::to_string),
+            cpu_percent: None,
+            memory_bytes: None,
+        }
+    }
 
     #[test]
     fn classify_matches_prefixes_and_other() {
@@ -834,5 +998,156 @@ mod tests {
             mine.iter().any(|e| e.port == port && e.ip.is_ipv6()),
             "本进程 [::1]:{port} 端点未被发现: {mine:?}"
         );
+    }
+
+    /// 端口归属三维判定：java 服务 + 同工作区 cwd 的 java 进程 → Owned（外部已运行）。
+    #[test]
+    fn port_owner_java_in_workspace_is_owned() {
+        let root = PathBuf::from(if cfg!(windows) {
+            "C:\\ws\\knife4j"
+        } else {
+            "/tmp/ws/knife4j"
+        });
+        let cwd = if cfg!(windows) {
+            "C:\\ws\\knife4j\\knife4j-insight"
+        } else {
+            "/tmp/ws/knife4j/knife4j-insight"
+        };
+        let all = vec![foreign(
+            1234,
+            "javaw.exe",
+            "java",
+            vec![10000],
+            Some(cwd),
+            Some("java -jar app.jar"),
+        )];
+        match classify_with_list(10000, "spring-boot", &root, &all) {
+            PortOwnership::Owned(o) => assert_eq!(o.pid, 1234),
+            other => panic!("应为 Owned，实际 {other:?}"),
+        }
+    }
+
+    /// 核心回归：外部程序（SangforPromoteService.exe，cwd 不在工作区）占同端口 →
+    /// Conflict（Stopped + 换端口提示），绝不能误判为本服务运行中。
+    #[test]
+    fn port_owner_foreign_exe_is_conflict() {
+        let root = PathBuf::from(if cfg!(windows) {
+            "C:\\ws\\knife4j"
+        } else {
+            "/tmp/ws/knife4j"
+        });
+        let cwd = if cfg!(windows) {
+            "C:\\Program Files\\Sangfor\\Promote"
+        } else {
+            "/opt/sangfor/promote"
+        };
+        let all = vec![foreign(
+            18468,
+            "SangforPromoteService.exe",
+            "other",
+            vec![10000],
+            Some(cwd),
+            None,
+        )];
+        match classify_with_list(10000, "spring-boot", &root, &all) {
+            PortOwnership::Conflict(occs) => assert_eq!(occs[0].pid, 18468),
+            other => panic!("应为 Conflict，实际 {other:?}"),
+        }
+    }
+
+    /// 同 kind 但不同工作区的 java 进程占同端口 → Conflict（不能因 kind 相同就认领）。
+    #[test]
+    fn port_owner_java_elsewhere_is_conflict() {
+        let root = PathBuf::from(if cfg!(windows) {
+            "C:\\ws\\a"
+        } else {
+            "/tmp/ws/a"
+        });
+        let cwd = if cfg!(windows) {
+            "C:\\ws\\b"
+        } else {
+            "/tmp/ws/b"
+        };
+        let all = vec![foreign(
+            2222,
+            "java.exe",
+            "java",
+            vec![8080],
+            Some(cwd),
+            None,
+        )];
+        match classify_with_list(8080, "spring-boot", &root, &all) {
+            PortOwnership::Conflict(_) => {}
+            other => panic!("应为 Conflict，实际 {other:?}"),
+        }
+    }
+
+    /// go/generic 可执行文件名任意：cwd 在工作区内即 Owned（kind 只看位置）。
+    #[test]
+    fn port_owner_go_binary_in_workspace_is_owned() {
+        let root = PathBuf::from(if cfg!(windows) {
+            "C:\\ws\\gosvc"
+        } else {
+            "/tmp/ws/gosvc"
+        });
+        let cwd = if cfg!(windows) {
+            "C:\\ws\\gosvc"
+        } else {
+            "/tmp/ws/gosvc"
+        };
+        let all = vec![foreign(
+            3333,
+            "myapp.exe",
+            "other",
+            vec![9000],
+            Some(cwd),
+            None,
+        )];
+        match classify_with_list(9000, "go", &root, &all) {
+            PortOwnership::Owned(o) => assert_eq!(o.pid, 3333),
+            other => panic!("应为 Owned，实际 {other:?}"),
+        }
+    }
+
+    /// cwd 不可读时命令行命中工作区根也可认领（提权进程读不到 PEB 的兜底）。
+    #[test]
+    fn port_owner_cmdline_hits_root_is_owned() {
+        let root = PathBuf::from(if cfg!(windows) {
+            "C:\\ws\\nodeapp"
+        } else {
+            "/tmp/ws/nodeapp"
+        });
+        let cmd = if cfg!(windows) {
+            "node C:\\ws\\nodeapp\\server.js"
+        } else {
+            "node /tmp/ws/nodeapp/server.js"
+        };
+        let all = vec![foreign(4444, "node.exe", "node", vec![3000], None, Some(cmd))];
+        match classify_with_list(3000, "node", &root, &all) {
+            PortOwnership::Owned(o) => assert_eq!(o.pid, 4444),
+            other => panic!("应为 Owned，实际 {other:?}"),
+        }
+    }
+
+    /// 无占位且端口不通 → Free；占位表为空但端口通（竞争窗口）→ Conflict 空明细。
+    #[test]
+    fn port_owner_free_and_invisible_conflict() {
+        let root = PathBuf::from(if cfg!(windows) {
+            "C:\\ws\\a"
+        } else {
+            "/tmp/ws/a"
+        });
+        // 端口 0 永不监听：无占位 + 不通 = Free（确定性，不依赖本机状态）
+        match classify_with_list(0, "node", &root, &[]) {
+            PortOwnership::Free => {}
+            other => panic!("端口 0 应为 Free，实际 {other:?}"),
+        }
+        // 真实监听但占位表为空（传入空列表模拟发现滞后）→ Conflict（不误报运行）
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        match classify_with_list(port, "node", &root, &[]) {
+            PortOwnership::Conflict(occs) => assert!(occs.is_empty()),
+            other => panic!("隐形占位应为 Conflict，实际 {other:?}"),
+        }
     }
 }

@@ -144,11 +144,35 @@ export function DiscoverPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, ws.state.workspaceId]);
 
-  // 当前工作区占用的端口 → 服务 id 映射（用于行级关联标注）
-  const portOwner = new Map<number, string>();
+  // 当前工作区占用的端口 → 服务（用于行级关联标注）。
+  // 仅端口相同不可信：必须再看工作目录 + 程序类型，否则外部程序占同端口会被标成「↔ 工作区」。
+  const portOwner = new Map<number, { id: string; kind: string }>();
   for (const [id, svc] of Object.entries(ws.state.spec?.services ?? {})) {
-    if (svc.port != null) portOwner.set(svc.port, id);
+    if (svc.port != null) portOwner.set(svc.port, { id, kind: svc.kind });
   }
+
+  /**
+   * 占位进程是否归属当前工作区的该服务（与后端 discover::classify_port_owner 同口径）：
+   * cwd / 命令行命中工作区根 + 程序类型兼容；compose 另认 docker 系进程。
+   */
+  const isOwnedByWorkspace = (s: ForeignService, expectedKind: string): boolean => {
+    const root = ws.state.workspaceId ?? "";
+    if (!root) return false;
+    const norm = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const rootN = norm(root);
+    const cwdHit = !!s.cwd && (norm(s.cwd) === rootN || norm(s.cwd).startsWith(`${rootN}/`));
+    const cmdHit = !!s.cmd_line && rootN.length >= 4 && norm(s.cmd_line).includes(rootN);
+    if (expectedKind === "compose") {
+      const n = s.name.toLowerCase();
+      if (n.includes("docker") || n.includes("vpnkit") || n.includes("containerd")) return true;
+      return cwdHit || cmdHit;
+    }
+    if (!cwdHit && !cmdHit) return false;
+    if (expectedKind === "spring-boot") return s.kind === "java";
+    if (expectedKind === "node") return s.kind === "node" || s.kind === "bun" || s.kind === "deno";
+    if (expectedKind === "python") return s.kind === "python";
+    return true; // go / generic：位置命中即归属
+  };
 
   // 筛选：kind 多选 + 端口子串匹配；空集合 = 全部，空 query = 不过滤
   const filteredItems = useMemo(() => {
@@ -189,7 +213,13 @@ export function DiscoverPage() {
   // 弹框里的对象要跟随刷新（进程可能已退出 / 读数更新），按 pid 重新对位
   const detailLive = detail ? (items.find((s) => s.pid === detail.pid) ?? detail) : null;
   const detailMatched = detailLive
-    ? detailLive.ports.map((p) => ({ p, id: portOwner.get(p) })).filter((x) => x.id)
+    ? detailLive.ports
+        .map((p) => {
+          const owner = portOwner.get(p);
+          if (!owner) return null;
+          return { p, id: owner.id, owned: isOwnedByWorkspace(detailLive, owner.kind) };
+        })
+        .filter((x): x is { p: number; id: string; owned: boolean } => x !== null)
     : [];
 
   const copy = async (text: string, label: string) => {
@@ -299,8 +329,14 @@ export function DiscoverPage() {
 
   const renderRow = (s: ForeignService) => {
     const matched = s.ports
-      .map((p) => ({ p, id: portOwner.get(p) }))
-      .filter((x) => x.id);
+      .map((p) => {
+        const owner = portOwner.get(p);
+        if (!owner) return null;
+        return { p, id: owner.id, owned: isOwnedByWorkspace(s, owner.kind) };
+      })
+      .filter((x): x is { p: number; id: string; owned: boolean } => x !== null);
+    const owned = matched.filter((m) => m.owned);
+    const conflicted = matched.filter((m) => !m.owned);
     return (
       <tr
         key={`${s.pid}-${s.name}`}
@@ -351,11 +387,21 @@ export function DiscoverPage() {
           )}
         </td>
         <td className="px-4 py-2.5">
-          {matched.length > 0 ? (
+          {owned.length > 0 ? (
             <span className="inline-flex items-center gap-1.5">
               <Badge variant="soon" className="shrink-0">{t("pages.discover.matchedBadge")}</Badge>
               <span className="truncate text-[0.75rem] text-[var(--st-accent-hover,#4f5ac8)]">
-                {matched.map((m) => m.id).join(", ")}
+                {owned.map((m) => m.id).join(", ")}
+              </span>
+            </span>
+          ) : conflicted.length > 0 ? (
+            <span
+              className="inline-flex items-center gap-1.5"
+              title={t("pages.discover.portConflictTitle", { id: conflicted.map((m) => m.id).join(", "), name: s.name })}
+            >
+              <Badge variant="outline" className="shrink-0 border-red-200 bg-[var(--st-danger-tint,#fdecec)] text-[#DC2626]">{t("pages.discover.portConflictBadge")}</Badge>
+              <span className="truncate text-[0.75rem] text-[#DC2626]">
+                {conflicted.map((m) => m.id).join(", ")}
               </span>
             </span>
           ) : (
@@ -668,7 +714,20 @@ export function DiscoverPage() {
                 <DetailField label={t("pages.discover.fWorkspace")}>
                   {detailMatched.length > 0 ? (
                     <span className="inline-flex flex-wrap items-center gap-1.5">
-                      <Badge variant="soon" className="shrink-0">{t("pages.discover.matchedCurrent")}</Badge>
+                      {detailMatched.every((m) => m.owned) ? (
+                        <Badge variant="soon" className="shrink-0">{t("pages.discover.matchedCurrent")}</Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 border-red-200 bg-[var(--st-danger-tint,#fdecec)] text-[#DC2626]"
+                          title={t("pages.discover.portConflictTitle", {
+                            id: detailMatched.filter((m) => !m.owned).map((m) => m.id).join("、"),
+                            name: detailLive.name,
+                          })}
+                        >
+                          {t("pages.discover.portConflictBadge")}
+                        </Badge>
+                      )}
                       <span className="text-[0.75rem] text-[var(--st-accent-hover,#4f5ac8)]">
                         {detailMatched.map((m) => `${m.id} (${m.p})`).join("、")}
                       </span>

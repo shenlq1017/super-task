@@ -475,6 +475,9 @@ impl Engine {
         let mut slots = HashMap::new();
         let _ = crate::log::run_retention(&root, file.log_retention.as_ref());
         let mut files = HashMap::new();
+        // 端口归属一次枚举多服务复用：仅端口命中不可信，必须结合工作目录 + 程序类型，
+        // 否则外部进程占同端口会被误判为本服务运行中（还会误导停止去杀外部进程）。
+        let discovered = crate::discover::discover_services().ok();
         for (id, svc) in &file.services {
             let rel = log_file_rel("service", id);
             let abs = root.join(&rel);
@@ -486,16 +489,58 @@ impl Engine {
             )
             .map_err(|e| Error::new(ErrorCode::Spawn, format!("无法创建日志文件: {e}")))?;
             files.insert(id.clone(), lf);
-            // 端口已被监听 → 外部已在运行（用户手动起的或第三方工具），识别为非托管服务
-            let (state, managed) = match svc.port {
-                Some(p) if port_is_serving(p) => {
-                    warnings.push(ParseWarning {
-                        code: ErrorCode::PortDup,
-                        message: format!("{id}: 端口 {p} 已被占用，按外部已运行服务显示（仅监控）"),
-                    });
-                    (RtState::Running, false)
+            // 端口 + 工作目录 + 程序类型三维判定：
+            // Owned → 外部已在运行（用户手动起的），非托管仅监控；
+            // Conflict → 外部进程占位，本服务 Stopped + 提示换端口，且禁止启动；
+            // Unknown（发现表不可读）→ 退回旧口径按外部运行展示。
+            let (state, managed, last_error) = match svc.port {
+                Some(p) => {
+                    let ownership = match &discovered {
+                        Some(all) => crate::discover::classify_with_list(
+                            p,
+                            &svc.kind,
+                            &root,
+                            all,
+                        ),
+                        None => {
+                            if port_is_serving(p) {
+                                crate::discover::PortOwnership::Unknown
+                            } else {
+                                crate::discover::PortOwnership::Free
+                            }
+                        }
+                    };
+                    match ownership {
+                        crate::discover::PortOwnership::Owned(_) => {
+                            warnings.push(ParseWarning {
+                                code: ErrorCode::PortDup,
+                                message: format!(
+                                    "{id}: 端口 {p} 已被本工作区进程监听，按外部已运行服务显示（仅监控）"
+                                ),
+                            });
+                            (RtState::Running, false, None)
+                        }
+                        crate::discover::PortOwnership::Conflict(occs) => {
+                            let msg = conflict_message(id, p, &occs);
+                            warnings.push(ParseWarning {
+                                code: ErrorCode::PortInUse,
+                                message: msg.clone(),
+                            });
+                            (RtState::Stopped, true, Some(msg))
+                        }
+                        crate::discover::PortOwnership::Unknown => {
+                            warnings.push(ParseWarning {
+                                code: ErrorCode::PortDup,
+                                message: format!(
+                                    "{id}: 端口 {p} 已被占用（归属未验证），按外部已运行服务显示（仅监控）"
+                                ),
+                            });
+                            (RtState::Running, false, None)
+                        }
+                        crate::discover::PortOwnership::Free => (RtState::Stopped, true, None),
+                    }
                 }
-                _ => (RtState::Stopped, true),
+                None => (RtState::Stopped, true, None),
             };
             slots.insert(
                 id.clone(),
@@ -510,7 +555,7 @@ impl Engine {
                     started_at_ms: None,
                     grace: Duration::from_secs(svc.grace_secs.unwrap_or(0) as u64),
                     health: None,
-                    last_error: None,
+                    last_error,
                     last_exit: None,
                     cancel: Arc::new(AtomicBool::new(false)),
                     managed,
@@ -1017,6 +1062,7 @@ impl Engine {
     pub fn stop_one(&self, id: &str) -> Result<()> {
         {
             let mut g = self.inner.lock().expect("engine lock");
+            let root = g.root.clone();
             let slot = g
                 .slots
                 .get_mut(id)
@@ -1050,17 +1096,24 @@ impl Engine {
                     }
                 }
             }
-            // 外部进程：无 Job 可 terminate，按端口找到 pid 后 taskkill 整棵树
+            // 外部进程：无 Job 可 terminate；停止前复核归属，只结束本工作区的外部进程，
+            // 归属外部的占位进程（端口冲突）绝不动（只把显示置 Stopped）。
             if !slot.managed {
                 let port = slot.port;
+                let kind = slot.kind.clone();
                 slot.stop_requested = true;
                 slot.cancel.store(true, Ordering::SeqCst);
                 slot.state = RtState::Stopped;
                 emit_runtime(&g);
                 drop(g);
-                match port.and_then(crate::discover::port_to_pid) {
-                    Some(pid) => kill_foreign_by_pid(pid)?,
-                    None => {} // 端口已无人监听：按已停止处理
+                match port {
+                    Some(p) => match crate::discover::classify_port_owner(p, &kind, &root) {
+                        crate::discover::PortOwnership::Owned(occ) => {
+                            kill_foreign_by_pid(occ.pid)?
+                        }
+                        _ => {} // 占位已消失 / 归属外部 / 不可见：不杀任何进程
+                    },
+                    None => {} // 无端口：按已停止处理
                 }
                 return Ok(());
             }
@@ -1465,6 +1518,11 @@ impl Engine {
                 env_snapshot,
             )
         };
+
+        // 启动前端口归属复核：被外部进程占位直接拒绝（PORT_IN_USE + 换端口指引）。
+        if let Some(p) = port {
+            ensure_port_not_conflicted(&root, id, p, &kind)?;
+        }
 
         if is_jar {
             // 1.2 §11：package（Building）→ artifact → java -jar。构建在后台线程，
@@ -2242,6 +2300,9 @@ impl Engine {
                     format!("{id}: 端口 {p} 与其他服务重复"),
                 ));
             }
+            // 3b) 端口被外部进程占位 → PORT_IN_USE（精确归属判定，不只看端口通断）
+            let root = self.inner.lock().expect("engine lock").root.clone();
+            ensure_port_not_conflicted(&root, id, p, &svc.kind)?;
         }
         // 设 Starting + compose 上下文（up 异步执行，startOne 立即 accepted）
         let health = compose_health(svc);
@@ -3193,6 +3254,32 @@ fn emit_runtime(g: &Inner) {
 /// loopback:port 是否已有服务在监听（实现移交 ports::is_serving，CLI status 只读复用）。
 fn port_is_serving(port: u16) -> bool {
     crate::ports::is_serving(port)
+}
+
+/// 端口被外部进程占位时的统一提示：带占位进程名/pid，指引更换端口。
+/// 前端靠 `端口…被…占用` 前缀识别冲突态（禁用启动 + 指引改端口），文案调整时保持前缀稳定。
+fn conflict_message(id: &str, port: u16, occs: &[crate::discover::ForeignService]) -> String {
+    match occs.first() {
+        Some(o) => format!(
+            "{id}: 端口 {port} 被 {name}(pid {pid}) 占用，请更换端口后启动",
+            name = o.name,
+            pid = o.pid
+        ),
+        None => format!("{id}: 端口 {port} 已被占用（占位进程不可见），请更换端口后启动"),
+    }
+}
+
+/// 启动前端口归属复核：被外部进程占位时直接拒绝（PORT_IN_USE），避免起不来还刷屏。
+/// Owned（本工作区外部已运行）与 Free 放行；Unknown（发现表不可读）放行，由启动后的
+/// 端口绑定/健康检查给出真实错误。
+fn ensure_port_not_conflicted(root: &Path, id: &str, port: u16, kind: &str) -> Result<()> {
+    match crate::discover::classify_port_owner(port, kind, root) {
+        crate::discover::PortOwnership::Conflict(occs) => Err(Error::new(
+            ErrorCode::PortInUse,
+            conflict_message(id, port, &occs),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// 按 LISTEN 端口找到外部进程 pid 并 `taskkill /T /F`（等效杀整棵树）。
