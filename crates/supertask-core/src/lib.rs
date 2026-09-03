@@ -20,6 +20,7 @@ pub mod lock;
 pub mod log;
 pub mod merge;
 pub mod metrics;
+pub mod host_metrics;
 pub mod network;
 pub mod operation;
 pub mod pkg;

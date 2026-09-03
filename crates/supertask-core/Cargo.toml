@@ -40,6 +40,9 @@ chacha20poly1305 = "0.10"
 # OS 熵（RustCrypto 全系既有传递依赖，显式声明供 vault salt/nonce）
 getrandom = "0.2"
 
+# Host metrics for status bar (CPU / memory / disk / temperature)
+sysinfo = "0.35"
+
 [target.'cfg(unix)'.dependencies]
 # 1.4 proc 平台层：进程组 setpgid/killpg、Linux PDEATHSIG（复用标准封装，不裸写 libc）
 nix = { version = "0.31", default-features = false, features = ["process", "signal", "user"] }

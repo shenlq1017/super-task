@@ -66,6 +66,7 @@ pub mod cmd {
     pub const LOGS_EXPORT: &str = "logs.export";
     pub const LOGS_RETENTION_RUN: &str = "logs.retention.run";
     pub const METRICS_SNAPSHOT: &str = "metrics.snapshot";
+    pub const SYSTEM_METRICS: &str = "system.metrics";
     pub const METRICS_SUBSCRIBE: &str = "metrics.subscribe";
     pub const METRICS_UNSUBSCRIBE: &str = "metrics.unsubscribe";
     pub const PROFILES_LIST: &str = "profiles.list";

@@ -317,6 +317,17 @@ const jaJP = {
     saveEnvVars: "環境変数を保存",
     pasteHint: "ヒント：このセクションで Ctrl+V を押すと .env / YAML テキストを貼り付けて自動解析・統合できます",
   },
+  statusBar: {
+    system: "システム負荷",
+    environment: "開発環境",
+    cpu: "CPU",
+    memory: "メモリ",
+    disk: "ディスク",
+    cpuTemp: "CPU 温度",
+    unsupported: "利用不可",
+    notFound: "未検出",
+    toggleDetails: "システム・環境詳細を開閉",
+  },
   pages: {
     ai: {
       title: "AI アシスタント",

@@ -105,6 +105,17 @@ const zhCN = {
     saveEnvVars: "保存环境变量",
     pasteHint: "提示：可直接 Ctrl+V 粘贴 .env / YAML 文本，自动解析合并",
   },
+  statusBar: {
+    system: "系统负载",
+    environment: "开发环境",
+    cpu: "CPU",
+    memory: "内存",
+    disk: "磁盘",
+    cpuTemp: "CPU 温度",
+    unsupported: "不可用",
+    notFound: "未发现",
+    toggleDetails: "展开 / 收起系统与环境详情",
+  },
   pages: {
     ai: {
       title: "AI 助手",

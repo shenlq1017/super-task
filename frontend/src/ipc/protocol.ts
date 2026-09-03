@@ -43,6 +43,7 @@ export const cmd = {
   LOGS_EXPORT: "logs.export",
   LOGS_RETENTION_RUN: "logs.retention.run",
   METRICS_SNAPSHOT: "metrics.snapshot",
+  SYSTEM_METRICS: "system.metrics",
   METRICS_SUBSCRIBE: "metrics.subscribe",
   METRICS_UNSUBSCRIBE: "metrics.unsubscribe",
   PROFILES_LIST: "profiles.list",
@@ -1087,4 +1088,16 @@ export type TermEventEnvelope = {
   workspace_id: string | null;
   ts_ms: number;
   payload: TermEventPayload;
+};
+
+/** `system.metrics` 输出：主机级 CPU / 内存 / 磁盘 / CPU 温度（状态栏用）。
+ *  与工作区 Job 树指标不同口径；任一字段可能为 null（平台不暴露）。 */
+export type HostMetrics = {
+  cpuPercent: number | null;
+  memoryUsedBytes: number | null;
+  memoryTotalBytes: number | null;
+  diskUsedBytes: number | null;
+  diskTotalBytes: number | null;
+  cpuTempC: number | null;
+  sampledAtMs: number;
 };

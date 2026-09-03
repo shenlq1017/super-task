@@ -103,6 +103,17 @@ const zhTW = {
     "saveEnvVars": "儲存環境變數",
     "pasteHint": "提示：可直接 Ctrl+V 貼上 .env / YAML 文本，自動解析合併",
   },
+  "statusBar": {
+    "system": "系統負載",
+    "environment": "開發環境",
+    "cpu": "CPU",
+    "memory": "記憶體",
+    "disk": "磁碟",
+    "cpuTemp": "CPU 溫度",
+    "unsupported": "不可用",
+    "notFound": "未發現",
+    "toggleDetails": "展開 / 收起系統與環境詳情"
+  },
   "pages": {
     "ai": {
       "title": "AI 助手",

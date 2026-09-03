@@ -317,6 +317,17 @@ const enUS = {
     saveEnvVars: "Save environment variables",
     pasteHint: "Tip: press Ctrl+V anywhere in this section to paste .env / YAML text; it is parsed and merged automatically",
   },
+  statusBar: {
+    system: "System load",
+    environment: "Environment",
+    cpu: "CPU",
+    memory: "Memory",
+    disk: "Disk",
+    cpuTemp: "CPU temp",
+    unsupported: "Unavailable",
+    notFound: "Not found",
+    toggleDetails: "Toggle system and environment details",
+  },
   pages: {
     ai: {
       title: "AI Assistant",
