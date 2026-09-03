@@ -92,7 +92,7 @@ jobs:
           print(p.read_text(encoding="utf-8"))
           PY
 
-      - name: Create/update CNB release (tag: stable) and upload assets
+      - name: "Create/update CNB release (tag: stable) and upload assets"
         env:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
           TAG: stable
