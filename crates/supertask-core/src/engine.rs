@@ -496,12 +496,7 @@ impl Engine {
             let (state, managed, last_error) = match svc.port {
                 Some(p) => {
                     let ownership = match &discovered {
-                        Some(all) => crate::discover::classify_with_list(
-                            p,
-                            &svc.kind,
-                            &root,
-                            all,
-                        ),
+                        Some(all) => crate::discover::classify_with_list(p, &svc.kind, &root, all),
                         None => {
                             if port_is_serving(p) {
                                 crate::discover::PortOwnership::Unknown
@@ -1108,9 +1103,7 @@ impl Engine {
                 drop(g);
                 match port {
                     Some(p) => match crate::discover::classify_port_owner(p, &kind, &root) {
-                        crate::discover::PortOwnership::Owned(occ) => {
-                            kill_foreign_by_pid(occ.pid)?
-                        }
+                        crate::discover::PortOwnership::Owned(occ) => kill_foreign_by_pid(occ.pid)?,
                         _ => {} // 占位已消失 / 归属外部 / 不可见：不杀任何进程
                     },
                     None => {} // 无端口：按已停止处理

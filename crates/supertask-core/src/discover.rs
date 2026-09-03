@@ -1122,7 +1122,14 @@ mod tests {
         } else {
             "node /tmp/ws/nodeapp/server.js"
         };
-        let all = vec![foreign(4444, "node.exe", "node", vec![3000], None, Some(cmd))];
+        let all = vec![foreign(
+            4444,
+            "node.exe",
+            "node",
+            vec![3000],
+            None,
+            Some(cmd),
+        )];
         match classify_with_list(3000, "node", &root, &all) {
             PortOwnership::Owned(o) => assert_eq!(o.pid, 4444),
             other => panic!("应为 Owned，实际 {other:?}"),
