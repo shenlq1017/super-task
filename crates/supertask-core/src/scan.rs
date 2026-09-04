@@ -38,6 +38,28 @@ pub fn discover_compose_file(root: &Path) -> Option<String> {
         .map(|c| c.to_string())
 }
 
+/// 将扫描警告字符串归类为稳定 code（IPC additive `warning_items` 用）。
+pub fn classify_scan_warning(msg: &str) -> &'static str {
+    let m = msg.to_ascii_lowercase();
+    if msg.contains("截断") || m.contains("truncat") {
+        "SCAN_TRUNCATED"
+    } else if m.contains("docker") || msg.contains("DOCKER_") {
+        "SCAN_DOCKER"
+    } else if m.contains("compose") {
+        "SCAN_COMPOSE"
+    } else if m.contains("gradle") || m.contains("settings.gradle") {
+        "SCAN_GRADLE"
+    } else if msg.contains("跳过") || m.contains("skip") {
+        "SCAN_SKIPPED"
+    } else if msg.contains("未识别") || msg.contains("需手") {
+        "SCAN_INCOMPLETE"
+    } else if msg.contains("动态 include") {
+        "SCAN_DYNAMIC"
+    } else {
+        "SCAN_WARNING"
+    }
+}
+
 /// Scan a project tree into a draft spec. Does not write disk.
 pub fn scan_draft(root: &Path) -> Result<(SuperTaskFile, Vec<String>)> {
     scan_draft_with_runner(root, &crate::docker::ProcessDockerRunner)
@@ -2039,5 +2061,28 @@ includedBuild 'other-repo'
         let kinds2: Vec<&str> = file2.services.values().map(|s| s.kind.as_str()).collect();
         assert!(kinds2.contains(&"python") && kinds2.contains(&"go"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn classify_scan_warning_codes() {
+        assert_eq!(
+            classify_scan_warning("工程过大，扫描在深度 4 / 2000 个目录内截断，结果可能不全"),
+            "SCAN_TRUNCATED"
+        );
+        assert_eq!(
+            classify_scan_warning("跳过 compose 导入（compose.yaml）：[DOCKER_NOT_FOUND] x"),
+            "SCAN_DOCKER"
+        );
+        assert_eq!(
+            classify_scan_warning("跳过 foo：无 pom.xml"),
+            "SCAN_SKIPPED"
+        );
+        assert_eq!(
+            classify_scan_warning(
+                "svc 未识别入口（manage/main/app/server.py 均缺），生成后需手写 entry 或 module"
+            ),
+            "SCAN_INCOMPLETE"
+        );
+        assert_eq!(classify_scan_warning("其他提示"), "SCAN_WARNING");
     }
 }

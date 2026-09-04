@@ -18,6 +18,61 @@ const VERSION: u32 = 3;
 /// 最近工作区条数上限。
 const RECENTS_CAP: usize = 20;
 
+/// 最近工作区条目（IPC / UI 视图；`path` 与 `recents` 对齐）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentEntry {
+    pub path: String,
+    /// 由路径末段派生的展示名（无落盘；根路径等退化用整路径）。
+    pub display_name: String,
+    /// 最近一次打开的 Unix 毫秒时间戳；未知（迁移前）为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_opened_ms: Option<u64>,
+}
+
+/// 从绝对路径派生展示名：末段目录名；空/根则回退原路径。
+pub fn display_name_from_path(path: &str) -> String {
+    // 统一分隔符：在非 Windows 宿主上 Path 不把 `\\` 当分隔符。
+    let normalized = path.trim().replace('\\', "/");
+    let trimmed = normalized.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return path.to_string();
+    }
+    trimmed
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn now_unix_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 路径等价（忽略 `\\`/`/`；Windows 上再忽略大小写）。
+pub fn paths_equivalent(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let na = a.replace('\\', "/");
+    let nb = b.replace('\\', "/");
+    if na == nb {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        na.eq_ignore_ascii_case(&nb)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -60,6 +115,9 @@ pub struct AppData {
     pub version: u32,
     pub recents: Vec<String>,
     pub last_workspace: Option<String>,
+    /// path → 最近打开 Unix ms；与 `recents` 并行，缺省空 map（旧文件兼容）。
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub recent_opened_at: IndexMap<String, u64>,
     pub theme: String,
     pub restore_last: bool,
     pub close_to_tray: bool,
@@ -115,6 +173,7 @@ impl Default for AppData {
             version: VERSION,
             recents: Vec::new(),
             last_workspace: None,
+            recent_opened_at: IndexMap::new(),
             theme: "light".to_string(),
             restore_last: true,
             close_to_tray: true,
@@ -189,25 +248,76 @@ fn tmp_path(path: &Path) -> PathBuf {
 
 impl AppData {
     pub fn record_open(&mut self, path: &str) {
-        self.recents.retain(|p| p != path);
+        self.record_open_at(path, now_unix_ms());
+    }
+
+    /// 可注入时间戳的打开记录（单测用）。
+    pub fn record_open_at(&mut self, path: &str, opened_ms: u64) {
+        self.recents.retain(|p| !paths_equivalent(p, path));
+        self.recent_opened_at
+            .retain(|p, _| !paths_equivalent(p, path));
         self.recents.insert(0, path.to_string());
         self.recents.truncate(RECENTS_CAP);
+        self.recent_opened_at.insert(path.to_string(), opened_ms);
+        self.prune_opened_at();
         self.last_workspace = Some(path.to_string());
+        self.stale.retain(|p| !paths_equivalent(p, path));
+    }
+
+    /// 从最近列表移除；若命中 `last_workspace` 则改为剩余列表首项（或清空）。
+    /// 不删盘、不停进程——由调用方决定是否先 close。
+    pub fn forget(&mut self, path: &str) {
+        self.recents.retain(|p| !paths_equivalent(p, path));
+        self.stale.retain(|p| !paths_equivalent(p, path));
+        self.recent_opened_at
+            .retain(|p, _| !paths_equivalent(p, path));
+        if self
+            .last_workspace
+            .as_deref()
+            .is_some_and(|lw| paths_equivalent(lw, path))
+        {
+            self.last_workspace = self.recents.first().cloned();
+        }
+    }
+
+    fn prune_opened_at(&mut self) {
+        self.recent_opened_at
+            .retain(|p, _| self.recents.iter().any(|r| paths_equivalent(r, p)));
+    }
+
+    /// 与 `recents` 同序的富条目视图（展示名 + 时间戳）。
+    pub fn recent_entries(&self) -> Vec<RecentEntry> {
+        self.recents
+            .iter()
+            .map(|path| {
+                let last_opened_ms = self
+                    .recent_opened_at
+                    .iter()
+                    .find(|(p, _)| paths_equivalent(p, path))
+                    .map(|(_, ts)| *ts);
+                RecentEntry {
+                    path: path.clone(),
+                    display_name: display_name_from_path(path),
+                    last_opened_ms,
+                }
+            })
+            .collect()
     }
 
     pub fn mark_stale(&mut self, path: &str) {
-        if !self.stale.iter().any(|p| p == path) {
+        if !self.stale.iter().any(|p| paths_equivalent(p, path)) {
             self.stale.push(path.to_string());
         }
     }
 
     pub fn merge_import(&mut self, recents: &[String], last: Option<&str>) {
         for path in recents {
-            if !self.recents.contains(path) {
+            if !self.recents.iter().any(|p| paths_equivalent(p, path)) {
                 self.recents.push(path.clone());
             }
         }
         self.recents.truncate(RECENTS_CAP);
+        self.prune_opened_at();
         if self.last_workspace.is_none() {
             self.last_workspace = last.map(|s| s.to_string());
         }
@@ -394,6 +504,90 @@ mod tests {
         let disk = fs::read_to_string(&path).unwrap();
         assert!(disk.contains("version: 1"), "old file must stay: {disk}");
         assert!(disk.contains("customFutureKey"));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn display_name_from_path_uses_last_segment() {
+        assert_eq!(display_name_from_path(r"C:/work/mall"), "mall");
+        assert_eq!(display_name_from_path("C:\\work\\mall\\"), "mall");
+        assert_eq!(display_name_from_path("/home/u/proj"), "proj");
+    }
+
+    #[test]
+    fn record_open_stamps_and_recent_entries() {
+        let mut data = AppData::default();
+        data.record_open_at(r"C:/work/a", 1000);
+        data.record_open_at(r"C:/work/b", 2000);
+        data.record_open_at(r"C:/work/a", 3000);
+        assert_eq!(data.recents, vec![r"C:/work/a", r"C:/work/b"]);
+        assert_eq!(data.recent_opened_at.get(r"C:/work/a"), Some(&3000));
+        assert_eq!(data.recent_opened_at.get(r"C:/work/b"), Some(&2000));
+        let entries = data.recent_entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].display_name, "a");
+        assert_eq!(entries[0].last_opened_ms, Some(3000));
+        assert_eq!(entries[1].display_name, "b");
+        assert_eq!(entries[1].last_opened_ms, Some(2000));
+    }
+
+    #[test]
+    fn forget_clears_last_workspace_and_meta() {
+        let mut data = AppData::default();
+        data.record_open_at(r"C:/work/a", 1);
+        data.record_open_at(r"C:/work/b", 2);
+        data.mark_stale(r"C:/work/a");
+        assert_eq!(data.last_workspace.as_deref(), Some(r"C:/work/b"));
+
+        data.forget(r"C:/work/b");
+        assert_eq!(data.recents, vec![r"C:/work/a".to_string()]);
+        assert_eq!(data.last_workspace.as_deref(), Some(r"C:/work/a"));
+        assert!(!data.recent_opened_at.contains_key(r"C:/work/b"));
+
+        data.forget(r"C:/work/a");
+        assert!(data.recents.is_empty());
+        assert!(data.last_workspace.is_none());
+        assert!(data.stale.is_empty());
+        assert!(data.recent_opened_at.is_empty());
+    }
+
+    #[test]
+    fn forget_only_last_without_recents_clears_stale_last() {
+        let mut data = AppData::default();
+        data.last_workspace = Some(r"C:/only".into());
+        data.forget(r"C:/only");
+        assert!(data.last_workspace.is_none());
+    }
+
+    #[test]
+    fn recent_opened_at_roundtrip_camel_case() {
+        let mut data = AppData::default();
+        data.record_open_at(r"C:/work/a", 42);
+        let path = temp_file("recent-meta");
+        save_at(&path, &data).unwrap();
+        let disk = fs::read_to_string(&path).unwrap();
+        assert!(disk.contains("recentOpenedAt"), "camelCase 键缺失:\n{disk}");
+        let loaded = load_at(&path);
+        assert_eq!(loaded.recent_opened_at.get(r"C:/work/a"), Some(&42));
+        let entries = loaded.recent_entries();
+        assert_eq!(entries[0].last_opened_ms, Some(42));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn old_app_json_without_recent_opened_at_loads() {
+        let path = temp_file("no-meta");
+        fs::write(
+            &path,
+            "version: 3\nrecents:\n- C:/work/a\nlastWorkspace: C:/work/a\ntheme: light\nrestoreLast: true\ncloseToTray: true\nstartOnLogin: false\nupdateCheck: true\nstale: []\ntoolchainManager: auto\nlocale: auto\nnetwork:\n  proxyMode: off\n  noProxy:\n  - 127.0.0.1\nlogNotifications: true\nsystemNotifications: true\nmetricsEnabled: true\n",
+        )
+        .unwrap();
+        let data = load_at(&path);
+        assert_eq!(data.recents, vec!["C:/work/a".to_string()]);
+        assert!(data.recent_opened_at.is_empty());
+        let e = data.recent_entries();
+        assert_eq!(e[0].display_name, "a");
+        assert_eq!(e[0].last_opened_ms, None);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }

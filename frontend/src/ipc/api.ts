@@ -101,8 +101,8 @@ export const apiWorkspaceScanDraft = (path: string) =>
 export const apiWorkspaceInit = (path: string, spec: SuperTaskFile) =>
   invoke<WorkspaceOpenOut>(cmd.WORKSPACE_INIT, { path, spec });
 
-export const apiWorkspaceForget = (id: string) =>
-  invoke<{ ok: boolean }>(cmd.WORKSPACE_FORGET, { id });
+export const apiWorkspaceForget = (path: string) =>
+  invoke<{ ok: boolean }>(cmd.WORKSPACE_FORGET, { path });
 
 // 注意：Rust 端 workspace.close 要求 workspace_id 参数（仅占位也必须传），
 // 否则 Tauri 抛 invalid args 且会被上层 catch 吞掉，导致引擎实际未关闭。

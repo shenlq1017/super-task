@@ -328,10 +328,28 @@ export type Prefs = {
   locale?: string;
 };
 
+/** Additive：最近工作区富条目（与 `recents` 同序；旧后端可能缺省）。 */
+export type RecentEntry = {
+  path: string;
+  display_name: string;
+  /** Unix ms；迁移前/未知时缺省。 */
+  last_opened_ms?: number | null;
+};
+
+/** Additive：结构化警告（与 `warnings: string[]` 并行）。 */
+export type WarningItem = {
+  code: string;
+  message: string;
+};
+
 export type AppLoadOut = {
   protocol: number;
   prefs: Prefs;
   recents: string[];
+  /** Additive：富最近条目；旧后端可能缺省。 */
+  recent_entries?: RecentEntry[];
+  /** Additive：app.json lastWorkspace。 */
+  last_workspace?: string | null;
   probe: ToolchainProbe;
   /** 本机曾打开但磁盘上已不存在的工作区路径 */
   stale: string[];
@@ -622,6 +640,8 @@ export type WorkspaceOpenOut = {
   workspace_id: string;
   spec: SuperTaskFile;
   warnings: string[];
+  /** Additive：结构化警告；旧后端可能缺省。 */
+  warning_items?: WarningItem[];
 };
 
 export type YamlView = { text: string; spec: SuperTaskFile; hash: string };
