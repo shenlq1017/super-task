@@ -62,6 +62,12 @@ pub struct AppLoadOut {
     pub protocol: u32,
     pub prefs: PrefsView,
     pub recents: Vec<String>,
+    /// Additive：富最近条目（展示名 + last_opened_ms）；旧客户端只用 `recents`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_entries: Vec<supertask_core::appdata::RecentEntry>,
+    /// Additive：app.json 中的 lastWorkspace（与 prefs.restoreLast 配合）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_workspace: Option<String>,
     /// 已知失效的最近工作区路径（目录已不存在），供前端标记。
     pub stale: Vec<String>,
     pub probe: ToolchainProbe,
@@ -109,7 +115,7 @@ fn session_hello(client: String, protocol: u32) -> Result<HelloOut, IpcError> {
 #[tauri::command(rename = "app.load")]
 fn app_load(appdata: tauri::State<'_, AppDataHandle>) -> Result<AppLoadOut, IpcError> {
     // 失效检测：目录已不存在的 recent 标记 stale；本次新标记的回写一次磁盘。
-    let (prefs, recents, stale, changed) = {
+    let (prefs, recents, recent_entries, last_workspace, stale, changed) = {
         let mut data = appdata.lock().expect("appdata lock");
         let mut changed = false;
         for p in data.recents.clone() {
@@ -122,6 +128,8 @@ fn app_load(appdata: tauri::State<'_, AppDataHandle>) -> Result<AppLoadOut, IpcE
         (
             PrefsView::from_appdata(&data),
             data.recents.clone(),
+            data.recent_entries(),
+            data.last_workspace.clone(),
             data.stale.clone(),
             changed,
         )
@@ -134,6 +142,8 @@ fn app_load(appdata: tauri::State<'_, AppDataHandle>) -> Result<AppLoadOut, IpcE
         protocol: PROTOCOL,
         prefs,
         recents,
+        recent_entries,
+        last_workspace,
         stale,
         probe: probe_toolchain(),
     })

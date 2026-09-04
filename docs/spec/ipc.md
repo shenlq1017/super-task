@@ -126,8 +126,8 @@
 | `workspace.open` | `{ path }` | 同上 + runtime snapshot |
 | `workspace.close` | `{ workspace_id }` | `{ ok }` 停掉该仓全部进程后释放 |
 | `workspace.detach` | — | `{ ok }` **切换工作区专用**：不停进程，活服务移交后台注册表；重开同根工作区时按 service_id 接管（job 仍存活则直接 Running）。同一应用会话内有效；应用退出时清场 |
-| `workspace.forget` | `{ path }` | 只改最近列表，**不删盘、不停进程**（若仍打开则先 close） |
-| `workspace.scanDraft` | `{ path }` | `{ spec, warnings[] }` **不写盘** |
+| `workspace.forget` | `{ path }`（兼容别名 `id`） | 只改最近列表 / `lastWorkspace`，**不删盘**（若仍打开则先 close） |
+| `workspace.scanDraft` | `{ path }` | `{ workspace_id, spec, warnings[], warning_items?[] }` **不写盘**；`warning_items` 为 additive `{code,message}` |
 | `workspace.openExplorer` | `{ workspace_id, rel?: string }` | `{ ok }` rel 必须在沙箱内 |
 | `system.discover` | — | `ForeignService[]`（pid/name/kind/ports/cwd/cmd_line/cpu_percent/memory_bytes） 本机监听端口的 java/node/python 进程，只读。`cpu_percent` 为整机口径差分采样，**首次调用为 null**；`memory_bytes` 为物理内存工作集（字节）；两者读取失败（受保护进程）均为 null |
 | `system.killProcess` | `{ pid }` | `{ ok }` 终止该监听进程整棵树（`taskkill /T /F`）。护栏：pid ≤ 4 / SuperTask 自身 / 当前无 LISTEN 端口 → 拒绝（`JobKill`）；UI 侧二次确认 |
@@ -527,7 +527,9 @@ workspace.scanApply
 { "theme": "light", "restoreLast": true, "closeToTray": true, "startOnLogin": false, "updateCheck": true, "locale": "auto" }
 ```
 
-`app.savePrefs` 接受同样形状（全部可选，只写传入键）。1.4 新增 `locale`（app data v3）：`auto | zh-CN | zh-TW | en-US | ja-JP`，默认 `auto`（跟随系统，检测规则见 1.4 规格 §6.1）。存储位置：`%APPDATA%/SuperTask/app.json`（临时文件 + 替换写入）。1.0 的 `st:lastWorkspace` / `st:recents` localStorage 通过一次性迁移命令并入：
+`app.savePrefs` 接受同样形状（全部可选，只写传入键）。1.4 新增 `locale`（app data v3）：`auto | zh-CN | zh-TW | en-US | ja-JP`，默认 `auto`（跟随系统，检测规则见 1.4 规格 §6.1）。存储位置：`%APPDATA%/SuperTask/app.json`（临时文件 + 替换写入）。
+`app.load` additive 字段：`recent_entries?: [{ path, display_name, last_opened_ms? }]`（与 `recents` 同序）、`last_workspace?: string | null`。`workspace.open` / `workspace.init` 成功后会 `record_open` 写入 recents 与时间戳。
+`workspace.add` / `open` / `scanDraft` / `init` 的 `WorkspaceOpenOut` additive：`warning_items?: [{ code, message }]`（与 `warnings` 并行）。1.0 的 `st:lastWorkspace` / `st:recents` localStorage 通过一次性迁移命令并入：
 
 ```text
 app.importRecents

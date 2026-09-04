@@ -10,6 +10,7 @@ use indexmap::IndexMap;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use supertask_core::appdata::paths_equivalent;
 use supertask_core::engine::ScriptState;
 use supertask_core::error::ErrorCode;
 use supertask_core::git;
@@ -18,7 +19,7 @@ use supertask_core::importer;
 use supertask_core::ipc::{IpcError, LogSource, LogSourceKind, PROTOCOL};
 use supertask_core::merge;
 use supertask_core::runtime::RtState;
-use supertask_core::scan::scan_draft;
+use supertask_core::scan::{classify_scan_warning, scan_draft};
 use supertask_core::template;
 use supertask_core::Engine;
 use tauri_plugin_autostart::ManagerExt;
@@ -83,11 +84,44 @@ fn json_into<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn warnings_to_strings(w: Vec<supertask_core::spec::ParseWarning>) -> Vec<String> {
-    w.into_iter()
+fn warnings_to_strings(w: &[supertask_core::spec::ParseWarning]) -> Vec<String> {
+    w.iter()
         .map(|p| {
-            let code: ErrorCode = p.code;
-            format!("[{code:?}] {}", p.message)
+            let code = error_code_str(p.code);
+            format!("[{code}] {}", p.message)
+        })
+        .collect()
+}
+
+fn error_code_str(code: ErrorCode) -> String {
+    serde_json::to_value(code)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("{code:?}"))
+}
+
+/// Additive 结构化警告（旧客户端只读 `warnings: string[]`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct WarningItem {
+    pub code: String,
+    pub message: String,
+}
+
+fn parse_warnings_to_items(w: &[supertask_core::spec::ParseWarning]) -> Vec<WarningItem> {
+    w.iter()
+        .map(|p| WarningItem {
+            code: error_code_str(p.code),
+            message: p.message.clone(),
+        })
+        .collect()
+}
+
+fn scan_warnings_to_items(warnings: &[String]) -> Vec<WarningItem> {
+    warnings
+        .iter()
+        .map(|message| WarningItem {
+            code: classify_scan_warning(message).to_string(),
+            message: message.clone(),
         })
         .collect()
 }
@@ -119,16 +153,21 @@ pub struct WorkspaceOpenOut {
     pub workspace_id: String,
     pub spec: supertask_core::spec::SuperTaskFile,
     pub warnings: Vec<String>,
+    /// Additive：结构化警告；与 `warnings` 同序同文案，旧客户端可忽略。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warning_items: Vec<WarningItem>,
 }
 
 #[tauri::command(rename = "workspace.add")]
 pub fn workspace_add(path: String) -> Result<WorkspaceOpenOut, IpcError> {
     let root = fs_canonicalize(&path)?;
     let (spec, warnings) = scan_draft(&root).map_err(ipc_err)?;
+    let warning_items = scan_warnings_to_items(&warnings);
     Ok(WorkspaceOpenOut {
         workspace_id: root.to_string_lossy().into_owned(),
         spec,
         warnings,
+        warning_items,
     })
 }
 
@@ -145,11 +184,19 @@ pub fn workspace_open(
     let (warnings, _) = state.open(&root).map_err(ipc_err)?;
     let spec = state.spec().map_err(ipc_err)?;
     let workspace_id = state.workspace_id().map_err(ipc_err)?;
+    {
+        let mut data = appdata.lock().expect("appdata lock");
+        data.record_open(&workspace_id);
+    }
+    // 回写失败不阻塞 open（下次启动仍可从 localStorage / 内存态恢复）
+    let _ = state::save_appdata(&appdata);
     refresh_tray_from_engine(&app, &state);
+    let warning_items = parse_warnings_to_items(&warnings);
     Ok(WorkspaceOpenOut {
         workspace_id,
         spec,
-        warnings: warnings_to_strings(warnings),
+        warnings: warnings_to_strings(&warnings),
+        warning_items,
     })
 }
 
@@ -183,15 +230,36 @@ pub fn workspace_detach(
 #[tauri::command(rename = "workspace.forget")]
 pub fn workspace_forget(
     state: EngineState<'_>,
+    appdata: AppDataRef<'_>,
     app: AppHandle,
-    path: String,
+    path: Option<String>,
+    // 兼容旧前端误传的 id（与 path 同义）
+    id: Option<String>,
 ) -> Result<HashMap<&'static str, bool>, IpcError> {
-    // 1.0 keeps no recents file; if forgetting the open workspace, close it first.
+    let raw = path
+        .or(id)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| err(ErrorCode::NotFound, "缺少 path"))?;
+    // 尽量 canonicalize，便于与 workspace_id / recents 对齐；目录已删时退回原文。
+    let key = fs_canonicalize(&raw)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| raw.clone());
+
+    // Spec：若仍打开则先 close；不删盘。
     if let Ok(cur) = state.workspace_id() {
-        if cur == path {
+        if paths_equivalent(&cur, &key) || paths_equivalent(&cur, &raw) {
             let _ = state.close();
         }
     }
+
+    {
+        let mut data = appdata.lock().expect("appdata lock");
+        data.forget(&key);
+        if key != raw {
+            data.forget(&raw);
+        }
+    }
+    state::save_appdata(&appdata).map_err(ipc_err)?;
     refresh_tray_from_engine(&app, &state);
     let mut m = HashMap::new();
     m.insert("ok", true);
@@ -202,16 +270,19 @@ pub fn workspace_forget(
 pub fn workspace_scan_draft(path: String) -> Result<WorkspaceOpenOut, IpcError> {
     let root = fs_canonicalize(&path)?;
     let (spec, warnings) = scan_draft(&root).map_err(ipc_err)?;
+    let warning_items = scan_warnings_to_items(&warnings);
     Ok(WorkspaceOpenOut {
         workspace_id: root.to_string_lossy().into_owned(),
         spec,
         warnings,
+        warning_items,
     })
 }
 
 #[tauri::command(rename = "workspace.init")]
 pub fn workspace_init(
     state: EngineState<'_>,
+    appdata: AppDataRef<'_>,
     path: String,
     spec: supertask_core::spec::SuperTaskFile,
 ) -> Result<WorkspaceOpenOut, IpcError> {
@@ -219,27 +290,65 @@ pub fn workspace_init(
     let (warnings, _) = state.init(&root, spec).map_err(ipc_err)?;
     let spec = state.spec().map_err(ipc_err)?;
     let workspace_id = state.workspace_id().map_err(ipc_err)?;
+    {
+        let mut data = appdata.lock().expect("appdata lock");
+        data.record_open(&workspace_id);
+    }
+    let _ = state::save_appdata(&appdata);
+    let warning_items = parse_warnings_to_items(&warnings);
     Ok(WorkspaceOpenOut {
         workspace_id,
         spec,
-        warnings: warnings_to_strings(warnings),
+        warnings: warnings_to_strings(&warnings),
+        warning_items,
     })
 }
 
 /// 打开工作区目录（资源管理器）；`workspace.openExplorer` 命令与托盘菜单共用。
 pub(crate) fn open_in_explorer(workspace_id: &str, rel: Option<&str>) -> Result<(), IpcError> {
     let root = PathBuf::from(workspace_id);
+    if !root.is_dir() {
+        return Err(err(
+            ErrorCode::CwdMissing,
+            format!("工作区目录不存在或无法访问: {}", root.display()),
+        ));
+    }
     let target = match rel {
         Some(r) => sandbox_join(&root, r)?,
         None => root,
     };
+    if !target.exists() {
+        return Err(err(
+            ErrorCode::CwdMissing,
+            format!("目标路径不存在: {}", target.display()),
+        ));
+    }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("explorer").arg(&target).spawn();
+        std::process::Command::new("explorer")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| {
+                err(
+                    ErrorCode::Spawn,
+                    format!("打开资源管理器失败（{}）: {e}", target.display()),
+                )
+            })?;
     }
     #[cfg(not(windows))]
     {
-        let _ = std::process::Command::new("xdg-open").arg(&target).spawn();
+        std::process::Command::new("xdg-open")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| {
+                err(
+                    ErrorCode::Spawn,
+                    format!(
+                        "打开文件管理器失败（{}）: {e}；请确认已安装 xdg-open",
+                        target.display()
+                    ),
+                )
+            })?;
     }
     Ok(())
 }
@@ -329,7 +438,7 @@ pub fn yaml_save_text(
     Ok(YamlSaveOut {
         spec,
         hash,
-        warnings: warnings_to_strings(warnings),
+        warnings: warnings_to_strings(&warnings),
     })
 }
 
@@ -344,7 +453,7 @@ pub fn yaml_save_form(
     Ok(YamlSaveOut {
         spec,
         hash,
-        warnings: warnings_to_strings(warnings),
+        warnings: warnings_to_strings(&warnings),
     })
 }
 
@@ -1127,8 +1236,12 @@ pub fn workspace_open_ide(
     ide: String,
 ) -> Result<OpenIdeOut, IpcError> {
     require_current_workspace(&state, &workspace_id)?;
-    let parsed =
-        ide::parse_ide(&ide).ok_or_else(|| err(ErrorCode::NotFound, format!("未知 IDE: {ide}")))?;
+    let parsed = ide::parse_ide(&ide).ok_or_else(|| {
+        err(
+            ErrorCode::NotFound,
+            format!("未知 IDE: {ide}（支持 explorer|cursor|idea|code）"),
+        )
+    })?;
     let exe = ide::open(parsed, Path::new(&workspace_id)).map_err(ipc_err)?;
     Ok(OpenIdeOut {
         accepted: true,
@@ -1176,7 +1289,7 @@ pub fn workspace_scan_apply(
     Ok(YamlSaveOut {
         spec,
         hash,
-        warnings: warnings_to_strings(warnings),
+        warnings: warnings_to_strings(&warnings),
     })
 }
 
@@ -1236,7 +1349,7 @@ pub fn import_readme_apply(
     Ok(YamlSaveOut {
         spec,
         hash,
-        warnings: warnings_to_strings(warnings),
+        warnings: warnings_to_strings(&warnings),
     })
 }
 
@@ -1285,7 +1398,7 @@ pub fn import_taskfile_apply(
     Ok(YamlSaveOut {
         spec,
         hash,
-        warnings: warnings_to_strings(warnings),
+        warnings: warnings_to_strings(&warnings),
     })
 }
 
