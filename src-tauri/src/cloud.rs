@@ -86,7 +86,7 @@ impl CloudHandle {
         }
     }
 
-    fn begin_operation(&self) -> Result<OperationGuard> {
+    fn begin_operation(&self) -> Result<OperationGuard<'_>> {
         let mut busy = self.operation_gate.lock().expect("cloud operation lock");
         if *busy {
             return Err(Error::new(
