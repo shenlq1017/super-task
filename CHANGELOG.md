@@ -6,25 +6,19 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
-- Discover page revamp: single README-import entry point, clearly separated
-  stats and filter rows, and "other listening processes" folded into the
-  main table as a collapsible section sharing one header so every column
-  stays aligned.
-- Discover table: fixed column layout that never overflows its container;
-  long process names, paths, and match ids truncate with hover tooltips,
-  and ports render as the first two chips plus a hoverable "+N" chip.
-- Discover sorting: the active sort is marked in the table header, and CPU
-  ordering falls back to memory for first-cycle samples where CPU readings
-  are not yet available.
+- 发现页布局整体升级：
+  - 顶部只保留右上角一个「从 README 导入」入口，移除提示横幅内的重复按钮，说明文案并入按钮悬浮提示；进程 / 工作区匹配 / 端口冲突 / 工作区端口统计徽标与筛选行明确分行，层级更清晰。
+  - 「其他监听进程」不再单独一张卡片，而是并入主表格成为表内可折叠分组行（点击展开 / 收起，状态本地记忆）：与开发进程共用同一个吸顶表头，所有列严格对齐，彻底解决此前两表列宽错位、无表头的问题。
+  - 表格改为固定列宽布局，任何窗口宽度下都不会被长内容撑出容器产生横向滚动；进程名、工作目录、工作区匹配等长内容截断显示省略号，悬浮可查看完整内容；PID / CPU / 内存等数值列不再折行。
+  - 监听端口列最多展示前 2 个端口胶囊，其余合并为「+N」，悬浮显示全部端口号，多端口进程行高不再膨胀。
+  - 排序体验优化：当前排序列在表头以 ↓ 标记，排序按钮激活时高亮显示；CPU 降序在首个采样周期（CPU 尚无读数）自动按内存降序兜底，内存降序亦反向兜底，保证每次点击排序后行序都有可见变化。
 
 ### Fixes
 
-- Windows: CLI agents installed via npm (.cmd shims such as cursor-agent)
-  now resolve through PATH + PATHEXT before spawn instead of failing with
-  "program not found"; the cursor-cli preset program name was corrected
-  from `agent` to `cursor-agent`.
-- AI config dialog: localized "clear key" action text in all four locales
-  and unified Traditional Chinese terminology.
+- AI CLI 代理（Windows）：修复通过 npm 安装的编码 CLI（实际为 `.cmd` shim，如 `cursor-agent.cmd`）无法启动、报 "program not found" 的问题。现在 spawn 前按 PATH + PATHEXT 顺序解析真实可执行文件；解析不到时保持原名，由系统报原生错误。`.bat` / `.cmd` 由标准库安全转义后经 `cmd.exe` 执行，参数不会被拼接进 shell。
+- cursor-cli 供应商预设的程序名由 `agent` 修正为 `cursor-agent`，前端供应商预设同步更新。
+- AI 配置对话框补齐「清除 Key」按钮的四语言文案；统一繁体中文界面中 AI 相关术语（连线与认证、本地 CLI、探测等）。
+- Select 下拉组件移除列表上下的滚动箭头按钮，长列表滚动更简洁。
 
 ## [0.1.1] - 2026-09-03
 
