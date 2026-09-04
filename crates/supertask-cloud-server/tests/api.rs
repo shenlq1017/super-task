@@ -66,6 +66,9 @@ async fn health_login_refresh_and_auth_errors() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
+    assert_eq!(body["db"], "ok");
+    assert!(body["now_ms"].as_u64().unwrap() > 0);
+    assert!(body["version"].as_str().unwrap().len() > 0);
 
     let (status, body) = call(
         &mut app,
@@ -123,10 +126,14 @@ async fn entity_crud_conflict_quota_and_telemetry() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["rev"], 1);
     assert_eq!(body["type"], "workspace");
+    assert_eq!(body["name"], "one");
 
     let (status, body) = call(&mut app, put(0, json!({"name":"stale"}))).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "CLOUD_SYNC_CONFLICT");
+    assert_eq!(body["current"]["rev"], 1);
+    assert_eq!(body["current"]["data"]["name"], "one");
+    assert_eq!(body["current"]["name"], "one");
 
     let (status, body) = call(
         &mut app,
@@ -137,7 +144,11 @@ async fn entity_crud_conflict_quota_and_telemetry() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["name"], "one");
+    assert!(list[0].get("data").is_some());
+    assert_eq!(list[0]["data"]["name"], "one");
     let (status, body) = call(
         &mut app,
         Request::get("/entities/ws-1")
@@ -148,6 +159,7 @@ async fn entity_crud_conflict_quota_and_telemetry() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["name"], "one");
+    assert_eq!(body["name"], "one");
 
     let (status, body) = call(
         &mut app,
@@ -160,9 +172,24 @@ async fn entity_crud_conflict_quota_and_telemetry() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["entities"], 1);
     assert_eq!(body["bytes_max"], 100000);
+    assert!(body["by_type"].as_array().unwrap().len() >= 1);
+    assert_eq!(body["by_type"][0]["type"], "workspace");
+    assert_eq!(body["by_type"][0]["entities"], 1);
 
-    let (status, _) = call(&mut app, Request::post("/telemetry/batch").header("authorization", &auth).header("content-type", "application/json").body(Body::from(json!({"events":[{"event":"app_start"},{"event":"feature_open","feature_id":"run"}]}).to_string())).unwrap()).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = call(
+        &mut app,
+        Request::post("/telemetry/batch")
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"events":[{"event":"app_start"},{"event":"feature_open","feature_id":"run"}]})
+                    .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["accepted"], 2);
 
     let (status, _) = call(
         &mut app,
@@ -209,6 +236,8 @@ async fn unknown_entity_type_is_stored_and_filtered() {
     .await;
     assert_eq!(response.0, StatusCode::OK);
     assert_eq!(response.1["type"], "kind.python");
+    // no name/title → name falls back to id
+    assert_eq!(response.1["name"], "future-1");
 
     let (status, body) = call(
         &mut app,
@@ -220,4 +249,94 @@ async fn unknown_entity_type_is_stored_and_filtered() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["name"], "future-1");
+}
+
+#[tokio::test]
+async fn entity_name_from_title_and_device_header_updated_by() {
+    let mut app = test_app().await;
+    let token = login(&mut app).await;
+    let auth = format!("Bearer {token}");
+
+    // title used when name missing
+    let (status, body) = call(
+        &mut app,
+        Request::put("/entities/doc-1")
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .header("x-device-id", "tablet-9")
+            .body(Body::from(
+                json!({
+                    "type": "template",
+                    "data": {"title": "My Template"},
+                    "base_rev": 0
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "My Template");
+    assert_eq!(body["updated_by"], "tablet-9");
+    assert_eq!(body["data"]["title"], "My Template");
+
+    let (status, body) = call(
+        &mut app,
+        Request::get("/entities")
+            .header("authorization", &auth)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["name"], "My Template");
+    assert!(list[0].get("data").is_some());
+}
+
+#[tokio::test]
+async fn telemetry_policy_and_invalid_batch() {
+    let mut app = test_app().await;
+    let token = login(&mut app).await;
+    let auth = format!("Bearer {token}");
+
+    let (status, _) = call(
+        &mut app,
+        Request::get("/telemetry/policy")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = call(
+        &mut app,
+        Request::get("/telemetry/policy")
+            .header("authorization", &auth)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled_by_default"], false);
+    assert_eq!(body["retention"], "counts_only");
+    assert_eq!(body["max_events_per_batch"], 256);
+    assert_eq!(body["max_batch_bytes"], 262144);
+    let events = body["events"].as_array().unwrap();
+    assert!(events.iter().any(|e| e == "app_start"));
+
+    let (status, _) = call(
+        &mut app,
+        Request::post("/telemetry/batch")
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"events":[{"event":"unknown_event"}]}).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

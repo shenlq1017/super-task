@@ -5,12 +5,14 @@ use axum::{
 };
 use serde_json::json;
 
+use crate::entities::Entity;
+
 #[derive(Debug)]
 pub enum AppError {
     BadRequest(String),
     Unauthorized,
     NotFound,
-    Conflict,
+    Conflict { current: Option<Entity> },
     Quota,
     AdminForbidden,
     AdminNotConfigured,
@@ -27,7 +29,7 @@ impl AppError {
                 "认证失败".into(),
             ),
             Self::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "资源不存在".into()),
-            Self::Conflict => (
+            Self::Conflict { .. } => (
                 StatusCode::CONFLICT,
                 "CLOUD_SYNC_CONFLICT",
                 "实体修订冲突".into(),
@@ -63,16 +65,32 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, code, message) = self.details();
-        (
-            status,
-            Json(json!({
-                "error": message,
-                "code": code,
-                "message": message,
-            })),
-        )
-            .into_response()
+        match self {
+            Self::Conflict { current } => {
+                let mut body = json!({
+                    "error": "实体修订冲突",
+                    "code": "CLOUD_SYNC_CONFLICT",
+                    "message": "实体修订冲突",
+                });
+                if let Some(entity) = current {
+                    body["current"] =
+                        serde_json::to_value(entity).unwrap_or(serde_json::Value::Null);
+                }
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            other => {
+                let (status, code, message) = other.details();
+                (
+                    status,
+                    Json(json!({
+                        "error": message,
+                        "code": code,
+                        "message": message,
+                    })),
+                )
+                    .into_response()
+            }
+        }
     }
 }
 
@@ -82,7 +100,7 @@ impl std::fmt::Display for AppError {
             Self::BadRequest(message) | Self::Internal(message) => formatter.write_str(message),
             Self::Unauthorized => formatter.write_str("认证失败"),
             Self::NotFound => formatter.write_str("资源不存在"),
-            Self::Conflict => formatter.write_str("实体修订冲突"),
+            Self::Conflict { .. } => formatter.write_str("实体修订冲突"),
             Self::Quota => formatter.write_str("已超过云端配额"),
             Self::AdminForbidden => formatter.write_str("需要管理员权限"),
             Self::AdminNotConfigured => formatter.write_str("服务端未配置管理员"),

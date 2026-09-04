@@ -379,6 +379,18 @@ YAML 内容、命令行、环境变量值、密码、token 或 Authorization。�
 6. 唯一允许「指名别的账号」的入口是 `/admin/api/*`，且必须先过 `require_admin` 的角色证明；
    客户端 API 仍一律以 bearer 得到的 account id 为边界。
 
+## 9.1 客户端友好增量（参考服务）
+
+参考服务在保持既有客户端契约（列表仍为实体信封数组、`/quota` 既有字段、`CLOUD_*` 错误码）的前提下，增加了下列**可选用**字段与端点，旧客户端可忽略：
+
+- `GET /healthz`：除 `status` 外返回 `db`（`ok`/`error`）、`now_ms`、`version`；DB 探测失败时 HTTP 503 且 `status=degraded`。
+- 实体信封：顶层增加派生字段 `name`（优先 `data.name`，其次 `data.title`，否则回退为 `id`），**仍保留完整 `data`**。
+- `PUT` 修订冲突（HTTP 409 / `CLOUD_SYNC_CONFLICT`）：错误体可带 `current`（当前实体信封），便于客户端合并。
+- `updated_by`：请求体缺省或空时，回退使用 `x-device-id` 请求头（再缺省为 `server-device`）。
+- `GET /quota`：增加 `by_type: [{ type, entities, bytes }, ...]`（按 type 聚合）。
+- `GET /telemetry/policy`（需认证）：声明默认关闭、白名单事件、批次上限与 `retention: "counts_only"`（服务端只存批次计数，不存事件载荷）。
+- `POST /telemetry/batch`：成功改为 HTTP 200 + `{ "accepted": N }`（不再是 204）。
+
 ## 10. 健康检查与验收状态
 
 `GET /healthz` 不要求登录，仅用于本地启动等待和测试，返回 `{ "status": "ok" }`，不泄露账号、

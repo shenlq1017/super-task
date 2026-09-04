@@ -580,7 +580,7 @@ async fn deleting_an_account_cascades_every_child_row() {
             .unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(status, StatusCode::OK);
 
     let (status, rows) = call(
         &mut app,

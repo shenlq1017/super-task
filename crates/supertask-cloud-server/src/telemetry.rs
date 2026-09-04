@@ -1,5 +1,6 @@
 use axum::http::HeaderMap;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sqlx::SqlitePool;
 
 use crate::{auth, error::AppError};
@@ -22,11 +23,31 @@ pub enum TelemetryEvent {
     ServiceStart { kind: String },
 }
 
+/// Honest policy: server stores batch counts only, not event payloads.
+pub fn policy() -> Value {
+    json!({
+        "enabled_by_default": false,
+        "events": ["app_start", "app_stop", "feature_open", "service_start"],
+        "max_events_per_batch": MAX_EVENTS,
+        "max_batch_bytes": MAX_BATCH_BYTES,
+        "retention": "counts_only"
+    })
+}
+
+pub async fn require_auth(pool: &SqlitePool, headers: &HeaderMap) -> Result<(), AppError> {
+    let _ = auth::account_from_bearer(
+        pool,
+        headers.get("authorization").and_then(|v| v.to_str().ok()),
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn record(
     pool: &SqlitePool,
     headers: &HeaderMap,
     request: TelemetryRequest,
-) -> Result<(), AppError> {
+) -> Result<usize, AppError> {
     let account = auth::account_from_bearer(
         pool,
         headers.get("authorization").and_then(|v| v.to_str().ok()),
@@ -54,11 +75,12 @@ pub async fn record(
             return Err(AppError::BadRequest("遥测事件字段无效".into()));
         }
     }
+    let accepted = request.events.len();
     sqlx::query("INSERT INTO telemetry_batches(account_id,received_at,event_count) VALUES(?,?,?)")
         .bind(account)
         .bind(auth::now())
-        .bind(request.events.len() as i64)
+        .bind(accepted as i64)
         .execute(pool)
         .await?;
-    Ok(())
+    Ok(accepted)
 }

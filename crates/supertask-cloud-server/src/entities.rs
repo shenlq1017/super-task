@@ -13,6 +13,8 @@ pub struct Entity {
     pub id: String,
     #[serde(rename = "type")]
     pub entity_type: String,
+    /// Derived display name from `data.name` / `data.title`, else `id`. Additive for clients.
+    pub name: String,
     pub rev: u64,
     pub updated_at: u64,
     pub updated_by: String,
@@ -49,6 +51,20 @@ pub fn validate_type(entity_type: &str) -> Result<(), AppError> {
         return Err(AppError::BadRequest("实体 type 无效".into()));
     }
     Ok(())
+}
+
+/// Prefer non-empty `data.name` or `data.title`; otherwise fall back to `id`.
+pub fn derive_name(id: &str, data: &Value) -> String {
+    if let Some(obj) = data.as_object() {
+        for key in ["name", "title"] {
+            if let Some(Value::String(s)) = obj.get(key) {
+                if !s.is_empty() {
+                    return s.clone();
+                }
+            }
+        }
+    }
+    id.to_string()
 }
 
 fn auth_header(headers: &HeaderMap) -> Option<&str> {
@@ -94,6 +110,7 @@ pub async fn put(
     id: &str,
     req: PutEntity,
     config: &crate::config::Config,
+    device_id: &str,
 ) -> Result<Entity, AppError> {
     if !valid_id(id) {
         return Err(AppError::BadRequest("实体 id 无效".into()));
@@ -111,18 +128,25 @@ pub async fn put(
     }
 
     let mut tx = pool.begin().await?;
-    let row = sqlx::query("SELECT type,rev FROM entities WHERE account_id=? AND id=?")
-        .bind(&account)
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    let current: Option<u64> = row
+    let row = sqlx::query(
+        "SELECT id,type,rev,updated_at,updated_by,data FROM entities WHERE account_id=? AND id=?",
+    )
+    .bind(&account)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let current_rev: Option<u64> = row
         .as_ref()
         .map(|r| r.try_get::<i64, _>("rev").map(|v| v as u64))
         .transpose()?;
-    match current {
-        Some(rev) if rev != req.base_rev => return Err(AppError::Conflict),
-        None if req.base_rev != 0 => return Err(AppError::Conflict),
+    match current_rev {
+        Some(rev) if rev != req.base_rev => {
+            let current = row.map(row_entity).transpose()?;
+            return Err(AppError::Conflict { current });
+        }
+        None if req.base_rev != 0 => {
+            return Err(AppError::Conflict { current: None });
+        }
         _ => {}
     }
     if let Some(row) = row.as_ref() {
@@ -148,7 +172,7 @@ pub async fn put(
             .await?
             .map(|v: i64| v)
             .unwrap_or(0);
-    let new_count = count + i64::from(current.is_none());
+    let new_count = count + i64::from(current_rev.is_none());
     let new_total = total - old_bytes + bytes as i64;
     if new_count < 0
         || new_count as u64 > config.entities_max
@@ -157,12 +181,18 @@ pub async fn put(
     {
         return Err(AppError::Quota);
     }
-    let rev = current.map(|v| v + 1).unwrap_or(1);
+    let rev = current_rev.map(|v| v + 1).unwrap_or(1);
     let updated_at = auth::now();
     let updated_by = req
         .updated_by
         .filter(|v| !v.is_empty() && v.len() <= 128)
-        .unwrap_or_else(|| "server".into());
+        .unwrap_or_else(|| {
+            if !device_id.is_empty() && device_id.len() <= 128 {
+                device_id.to_string()
+            } else {
+                "server".into()
+            }
+        });
     sqlx::query("INSERT INTO entities(account_id,id,type,rev,updated_at,updated_by,data,byte_size) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(account_id,id) DO UPDATE SET type=excluded.type,rev=excluded.rev,updated_at=excluded.updated_at,updated_by=excluded.updated_by,data=excluded.data,byte_size=excluded.byte_size")
         .bind(&account)
         .bind(id)
@@ -178,6 +208,7 @@ pub async fn put(
     Ok(Entity {
         id: id.into(),
         entity_type: req.entity_type,
+        name: derive_name(id, &req.data),
         rev,
         updated_at: updated_at as u64,
         updated_by,
@@ -197,12 +228,16 @@ pub async fn delete(pool: &SqlitePool, headers: &HeaderMap, id: &str) -> Result<
 
 fn row_entity(row: sqlx::sqlite::SqliteRow) -> Result<Entity, AppError> {
     let text: String = row.try_get("data")?;
+    let id: String = row.try_get("id")?;
+    let data: Value = serde_json::from_str(&text).map_err(|e| AppError::Internal(e.to_string()))?;
+    let name = derive_name(&id, &data);
     Ok(Entity {
-        id: row.try_get("id")?,
+        id,
         entity_type: row.try_get("type")?,
+        name,
         rev: row.try_get::<i64, _>("rev")? as u64,
         updated_at: row.try_get::<i64, _>("updated_at")? as u64,
         updated_by: row.try_get("updated_by")?,
-        data: serde_json::from_str(&text).map_err(|e| AppError::Internal(e.to_string()))?,
+        data,
     })
 }

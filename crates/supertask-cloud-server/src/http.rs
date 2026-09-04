@@ -16,8 +16,29 @@ use crate::{
     telemetry,
 };
 
-pub async fn healthz() -> impl IntoResponse {
-    Json(json!({ "status": "ok" }))
+pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
+    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1")
+        .fetch_one(&state.pool)
+        .await
+        .is_ok();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let (status_code, status, db) = if db_ok {
+        (StatusCode::OK, "ok", "ok")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "degraded", "error")
+    };
+    (
+        status_code,
+        Json(json!({
+            "status": status,
+            "db": db,
+            "now_ms": now_ms,
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
+    )
 }
 
 pub async fn login(
@@ -77,8 +98,9 @@ pub async fn put_entity(
     request: Result<Json<PutEntity>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Entity>, AppError> {
     let Json(request) = request.map_err(|_| AppError::BadRequest("请求 JSON 无效".into()))?;
+    let device = device_id(&headers);
     Ok(Json(
-        entities::put(&state.pool, &headers, &id, request, &state.config).await?,
+        entities::put(&state.pool, &headers, &id, request, &state.config, &device).await?,
     ))
 }
 
@@ -103,14 +125,22 @@ pub async fn get_quota(
     ))
 }
 
+pub async fn get_telemetry_policy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    telemetry::require_auth(&state.pool, &headers).await?;
+    Ok(Json(telemetry::policy()))
+}
+
 pub async fn post_telemetry(
     State(state): State<AppState>,
     headers: HeaderMap,
     request: Result<Json<telemetry::TelemetryRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<impl IntoResponse, AppError> {
     let Json(request) = request.map_err(|_| AppError::BadRequest("请求 JSON 无效".into()))?;
-    telemetry::record(&state.pool, &headers, request).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let accepted = telemetry::record(&state.pool, &headers, request).await?;
+    Ok((StatusCode::OK, Json(json!({ "accepted": accepted }))))
 }
 
 pub(crate) fn device_id(headers: &HeaderMap) -> String {
