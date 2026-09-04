@@ -115,12 +115,21 @@ const zhTW = {
     "toggleDetails": "展開 / 收起系統與環境詳情",
     "tempOffValue": "已關閉",
     "tempModeLabel": "溫度取樣",
-    "tempUnsupportedHint": "本機未提供 CPU 溫度感測器（桌機常見），切換檔位也拿不到讀數。",
+    "tempUnsupportedHint": "本機未暴露 CPU 溫度感測器（常見於桌上型電腦），切換檔位也拿不到讀數。",
     "tempModes": {
-      "off": { "label": "關閉", "hint": "不取樣 CPU 溫度，狀態列隱藏該項。" },
-      "auto": { "label": "自動", "hint": "低頻取樣：Linux 直接讀感測器，Windows 每分鐘查一次 WMI。" },
-      "fast": { "label": "高頻", "hint": "近即時：Windows 常駐一個取樣行程持續讀數，不再每次開新行程。" }
-    }
+      "off": {
+        "label": "關閉",
+        "hint": "不採樣 CPU 溫度，狀態列隱藏該項。",
+      },
+      "auto": {
+        "label": "自動",
+        "hint": "低頻取樣：Linux 直接讀感測器，Windows 每分鐘查一次 WMI。",
+      },
+      "fast": {
+        "label": "高頻",
+        "hint": "近即時：Windows 常駐一個取樣程序持續讀數，不再每次開新程序。",
+      },
+    },
   },
   "pages": {
     "ai": {
@@ -384,6 +393,22 @@ const zhTW = {
       "wPrev": "上一步",
       "needBlock": "至少選擇一個服務塊",
       "paramRequired": "請填寫必填引數",
+      "srcAll": "全部",
+      "searchPlaceholder": "搜尋名稱、描述、技術棧…",
+      "stackFilterAria": "按技術棧篩選",
+      "stackFilterLabel": "技術棧",
+      "clearFilters": "清除篩選",
+      "countLabel": "顯示 {{n}} / {{total}} 個模板",
+      "noSearchMatch": "沒有匹配的模板",
+      "emptyHint": "內建模板會在應用安裝時可用；本地模板放入使用者模板目錄後重新整理即可。",
+      "emptyFilterHint": "試試更換來源、技術棧或清空搜尋條件。",
+      "previewCta": "預覽",
+      "useCta": "使用",
+      "comboBadge": "組合",
+      "colKind": "型別",
+      "colPort": "埠",
+      "createConfirmTitle": "確認建立工作區",
+      "createConfirmDesc": "將使用模板「{{name}}」建立到：\n{{path}}",
     },
     "discover": {
       "title": "發現",
@@ -1026,7 +1051,7 @@ const zhTW = {
         "emerald": "Emerald 翠綠",
         "amber": "Amber 琥珀",
         "rose": "Rose 玫瑰",
-        "ocean": "Ocean 海洋"
+        "ocean": "Ocean 海洋",
       },
       "language": "語言",
       "languageDesc": "切換即時生效，無需重啟",

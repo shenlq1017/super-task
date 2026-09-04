@@ -1,21 +1,76 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Eye, FolderSearch, LayoutTemplate, Loader2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  FolderSearch,
+  LayoutTemplate,
+  Loader2,
+  RefreshCw,
+  Search,
+  X,
+} from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 import { apiTemplatesCreate, apiTemplatesList, apiTemplatesPreview, type TemplatesCreateArgs } from "../ipc/api";
 import { isTauri } from "../ipc/invoke";
-import { IpcFailure, type OpState, type TemplateBlockSummary, type TemplateSource, type TemplateSummary, type TemplatesPreviewOut } from "../ipc/protocol";
+import {
+  IpcFailure,
+  type OpState,
+  type TemplateBlockSummary,
+  type TemplateSource,
+  type TemplateSummary,
+  type TemplatesPreviewOut,
+} from "../ipc/protocol";
 import { operationResultWorkspaceId, useOperations, type OperationState } from "../providers/operation-provider";
 import { opErrorLabel } from "../lib/status";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
+
+const PREFS_KEY = "st:templates:prefs";
+
+type SourceFilter = "all" | TemplateSource;
+
+type TemplatesPrefs = {
+  source: SourceFilter;
+  stacks: string[];
+};
+
+function loadPrefs(): TemplatesPrefs {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return { source: "builtin", stacks: [] };
+    const parsed = JSON.parse(raw) as Partial<TemplatesPrefs>;
+    const source = parsed.source === "all" || parsed.source === "builtin" || parsed.source === "local" ? parsed.source : "builtin";
+    const stacks = Array.isArray(parsed.stacks) ? parsed.stacks.filter((s): s is string => typeof s === "string") : [];
+    return { source, stacks };
+  } catch {
+    return { source: "builtin", stacks: [] };
+  }
+}
+
+function savePrefs(prefs: TemplatesPrefs) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // ignore quota / private mode
+  }
+}
 
 const OP_STATE_COLOR: Record<OpState, string> = {
   queued: "var(--t3,#8a8f98)",
@@ -124,9 +179,7 @@ function TemplateOperationCard({
           </span>
         ) : null}
       </div>
-      {op.message ? (
-        <div className="mt-1.5 text-[0.78rem] text-[var(--t2,#62666d)]">{op.message}</div>
-      ) : null}
+      {op.message ? <div className="mt-1.5 text-[0.78rem] text-[var(--t2,#62666d)]">{op.message}</div> : null}
       {op.progress != null ? (
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--surface-2,#f3f4f5)]">
           <div
@@ -155,7 +208,8 @@ function TemplateOperationCard({
   );
 }
 
-const SOURCE_TABS: { key: TemplateSource; labelKey: string }[] = [
+const SOURCE_TABS: { key: SourceFilter; labelKey: string }[] = [
+  { key: "all", labelKey: "pages.templates.srcAll" },
   { key: "builtin", labelKey: "pages.templates.srcBuiltin" },
   { key: "local", labelKey: "pages.templates.srcLocal" },
 ];
@@ -165,14 +219,12 @@ function SourceSegmented({
   hasLocal,
   onChange,
 }: {
-  value: TemplateSource;
+  value: SourceFilter;
   hasLocal: boolean;
-  onChange: (s: TemplateSource) => void;
+  onChange: (s: SourceFilter) => void;
 }) {
   const { t } = useTranslation();
-  // 没有 local 模板时不渲染分段，避免出现点了没内容的空 tab
-  const tabs = SOURCE_TABS.filter((tab) => tab.key === "builtin" || hasLocal);
-  if (tabs.length <= 1) return null;
+  const tabs = SOURCE_TABS.filter((tab) => tab.key !== "local" || hasLocal);
   return (
     <div
       className="inline-flex items-center gap-0.5 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface-2,#f3f4f5)] p-0.5"
@@ -182,6 +234,7 @@ function SourceSegmented({
       {tabs.map((tab) => (
         <button
           key={tab.key}
+          type="button"
           role="tab"
           aria-selected={value === tab.key}
           onClick={() => onChange(tab.key)}
@@ -203,16 +256,20 @@ function TemplateCard({
   template,
   selected,
   onSelect,
+  onPreview,
+  onCreate,
   onCompose,
 }: {
   template: TemplateSummary;
   selected: boolean;
   onSelect: () => void;
+  onPreview: () => void;
+  onCreate: () => void;
   onCompose: () => void;
 }) {
   const { t } = useTranslation();
   const [filesOpen, setFilesOpen] = useState(false);
-  // 清单损坏的本地模板：不可选不可建，仅展示原因
+
   if (template.invalid) {
     return (
       <Card className="p-4 opacity-60" aria-disabled>
@@ -233,6 +290,9 @@ function TemplateCard({
       </Card>
     );
   }
+
+  const isCombo = !!template.blocks?.length;
+
   return (
     <Card
       role="button"
@@ -241,7 +301,7 @@ function TemplateCard({
       onClick={onSelect}
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect()}
       className={cn(
-        "cursor-pointer p-4 outline-none transition-all duration-150 focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]",
+        "flex h-full cursor-pointer flex-col p-4 outline-none transition-all duration-150 focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]",
         selected
           ? "border-[var(--st-accent,#5e6ad2)] bg-[var(--st-accent-tint,#eef0fb)]"
           : "hover:-translate-y-px hover:border-[var(--line-strong,#d0d6e0)] hover:shadow-[var(--shadow-2,0_6px_20px_rgb(16_24_40_/_0.09))]",
@@ -250,15 +310,24 @@ function TemplateCard({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">{template.name}</div>
-          <div className="mt-1 text-[0.78rem] leading-relaxed text-[var(--t2,#62666d)]">{template.description}</div>
+          <div className="mt-1 line-clamp-2 text-[0.78rem] leading-relaxed text-[var(--t2,#62666d)]">{template.description}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <Badge variant="secondary" className="shrink-0" title={template.source === "builtin" ? t("pages.templates.builtinTitle") : t("pages.templates.localTitle")}>
+          <Badge
+            variant="secondary"
+            className="shrink-0"
+            title={template.source === "builtin" ? t("pages.templates.builtinTitle") : t("pages.templates.localTitle")}
+          >
             {template.source === "builtin" ? t("pages.templates.builtinShort") : t("pages.templates.srcLocal")}
           </Badge>
           <Badge variant="secondary" className="shrink-0" title={t("pages.templates.versionTitle")}>
             v{template.version}
           </Badge>
+          {isCombo ? (
+            <Badge variant="outline" className="shrink-0">
+              {t("pages.templates.comboBadge")}
+            </Badge>
+          ) : null}
         </div>
       </div>
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
@@ -269,7 +338,7 @@ function TemplateCard({
         ))}
       </div>
       <Separator className="my-3" />
-      <div className="flex items-center justify-between gap-2">
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
           aria-expanded={filesOpen}
@@ -282,19 +351,42 @@ function TemplateCard({
           {filesOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
           {t("pages.templates.filesOverview", { n: template.files.length })}
         </button>
-        {template.blocks?.length ? (
+        <div className="flex shrink-0 items-center gap-1.5">
           <Button
-            variant="soft"
+            variant="ghost"
             size="sm"
             className="gap-1"
             onClick={(e) => {
               e.stopPropagation();
-              onCompose();
+              onPreview();
             }}
           >
-            {t("pages.templates.comboCta")} <ChevronRight className="size-3.5" />
+            <Eye className="size-3.5" /> {t("pages.templates.previewCta")}
           </Button>
-        ) : null}
+          {isCombo ? (
+            <Button
+              variant="soft"
+              size="sm"
+              className="gap-1"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCompose();
+              }}
+            >
+              {t("pages.templates.comboCta")} <ChevronRight className="size-3.5" />
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCreate();
+              }}
+            >
+              {t("pages.templates.useCta")}
+            </Button>
+          )}
+        </div>
       </div>
       {filesOpen ? (
         <ul className="mt-2 max-h-40 space-y-0.5 overflow-auto font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]">
@@ -315,10 +407,14 @@ export function TemplatesPage() {
   const openWs = useOpenWorkspace();
   const { get } = useOperations();
 
+  const initialPrefs = useMemo(() => loadPrefs(), []);
   const [templates, setTemplates] = useState<TemplateSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [sourceFilter, setSourceFilter] = useState<TemplateSource>("builtin");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>(initialPrefs.source);
+  const [stackFilter, setStackFilter] = useState<Set<string>>(() => new Set(initialPrefs.stacks));
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [parentPath, setParentPath] = useState("");
   const [dirName, setDirName] = useState("");
@@ -329,28 +425,47 @@ export function TemplatesPage() {
   const [preview, setPreview] = useState<TemplatesPreviewOut | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  // 组合向导：组合模板走独立向导视图（步骤条），普通模板用快速创建表单
-  const [wizardOpen, setWizardOpen] = useState(false);
+
+  /** gallery 上的只读预览浮层；创建/组合向导是另一套 Dialog */
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [wizardMode, setWizardMode] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [confirmCreate, setConfirmCreate] = useState(false);
   const WIZARD_STEPS = [t("pages.templates.stepBlocks"), t("pages.templates.stepBasic"), t("pages.templates.stepPreview")];
 
-  const openWizard = (id: string) => {
+  const openDetail = (id: string) => {
     setSelectedId(id);
-    setWizardOpen(true);
-    setStep(1);
+    setDetailOpen(true);
   };
-  const closeWizard = () => {
-    setWizardOpen(false);
+  const openCreate = (id: string) => {
+    setSelectedId(id);
+    setWizardMode(false);
     setStep(1);
     setPreview(null);
+    setCreateOpen(true);
+    setDetailOpen(false);
+  };
+  const openWizard = (id: string) => {
+    setSelectedId(id);
+    setWizardMode(true);
+    setStep(1);
+    setPreview(null);
+    setCreateOpen(true);
+    setDetailOpen(false);
+  };
+  const closeCreate = () => {
+    setCreateOpen(false);
+    setWizardMode(false);
+    setStep(1);
+    setPreview(null);
+    setConfirmCreate(false);
   };
 
   const [activeOpId, setActiveOpId] = useState<string | null>(null);
   const op = activeOpId ? get(activeOpId) : null;
-  // 定时器回调里读最新 op，避免「事件已到、兜底又被打开」的竞态
   const opRef = useRef(op);
   opRef.current = op;
-  // 乐观反馈：点击创建立即出进度卡，不等异步事件；目标路径前端可知，作打开兜底
   const [pendingCreate, setPendingCreate] = useState(false);
   const [submittedTarget, setSubmittedTarget] = useState<string | null>(null);
   const [showFallback, setShowFallback] = useState(false);
@@ -361,6 +476,10 @@ export function TemplatesPage() {
       setShowFallback(false);
     }
   }, [op]);
+
+  useEffect(() => {
+    savePrefs({ source: sourceFilter, stacks: [...stackFilter] });
+  }, [sourceFilter, stackFilter]);
 
   const displayOp: OperationState | null =
     op ??
@@ -377,7 +496,6 @@ export function TemplatesPage() {
       : null);
   const wsIdForCard = op ? operationResultWorkspaceId(op) : null;
 
-  // 终态只处理一次；失败态保留在卡片上供用户阅读
   const handledOpRef = useRef<string | null>(null);
   useEffect(() => {
     if (!op || !activeOpId || op.state !== "succeeded" || handledOpRef.current === activeOpId) return;
@@ -386,8 +504,30 @@ export function TemplatesPage() {
     if (wsId) {
       toast(t("pages.templates.createdTo", { name: wsId.split(/[\\/]/).filter(Boolean).pop() ?? wsId }), "ok");
       void openWs(wsId);
+      closeCreate();
     }
   }, [op, activeOpId, openWs, toast, t]);
+
+  const loadTemplates = async (opts?: { soft?: boolean }) => {
+    if (!opts?.soft) {
+      setLoadError(null);
+    } else {
+      setRefreshing(true);
+    }
+    try {
+      const out = await apiTemplatesList();
+      setTemplates(out.templates);
+      setSelectedId((cur) => {
+        if (cur && out.templates.some((tpl) => tpl.id === cur)) return cur;
+        return out.templates.find((tpl) => !tpl.invalid)?.id ?? out.templates[0]?.id ?? null;
+      });
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e instanceof IpcFailure ? e.message : String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -396,7 +536,7 @@ export function TemplatesPage() {
         const out = await apiTemplatesList();
         if (!alive) return;
         setTemplates(out.templates);
-        setSelectedId((cur) => cur ?? out.templates[0]?.id ?? null);
+        setSelectedId((cur) => cur ?? out.templates.find((tpl) => !tpl.invalid)?.id ?? out.templates[0]?.id ?? null);
       } catch (e) {
         if (alive) setLoadError(e instanceof IpcFailure ? e.message : String(e));
       }
@@ -406,14 +546,15 @@ export function TemplatesPage() {
     };
   }, []);
 
-  // 切换模板时重置向导：参数、块选择（默认全选）、端口、预览
   useEffect(() => {
     setParamValues({});
     setPreview(null);
-    const blocks = templates?.find((t) => t.id === selectedId)?.blocks;
+    const blocks = templates?.find((tpl) => tpl.id === selectedId)?.blocks;
     setSelectedBlocks(blocks?.map((b) => b.id) ?? []);
     setPortValues(
-      Object.fromEntries((blocks ?? []).flatMap((b) => b.services.map((s) => [s, b.default_port])).filter(([, v]) => v != null) as [string, number][]),
+      Object.fromEntries(
+        (blocks ?? []).flatMap((b) => b.services.map((s) => [s, b.default_port])).filter(([, v]) => v != null) as [string, number][],
+      ),
     );
   }, [selectedId, templates]);
 
@@ -425,7 +566,7 @@ export function TemplatesPage() {
           setParentPath(selected);
           return;
         }
-        return; // 用户取消
+        return;
       } catch {
         // 插件不可用时降级为手动输入
       }
@@ -434,12 +575,34 @@ export function TemplatesPage() {
     if (p) setParentPath(p);
   };
 
-  const visibleTemplates = templates?.filter((tpl) => tpl.source === sourceFilter) ?? [];
+  const allStacks = useMemo(() => {
+    const set = new Set<string>();
+    for (const tpl of templates ?? []) {
+      for (const s of tpl.stacks) set.add(s);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [templates]);
+
+  const visibleTemplates = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return (templates ?? []).filter((tpl) => {
+      if (sourceFilter !== "all" && tpl.source !== sourceFilter) return false;
+      if (stackFilter.size > 0 && !tpl.stacks.some((s) => stackFilter.has(s))) return false;
+      if (q) {
+        const hay = [tpl.name, tpl.description, tpl.id, ...tpl.stacks, ...tpl.files].join("\n").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [templates, sourceFilter, stackFilter, searchQuery]);
+
   const selected = templates?.find((tpl) => tpl.id === selectedId) ?? null;
-  const wizardActive = wizardOpen && !!selected?.blocks?.length;
+  const wizardActive = createOpen && wizardMode && !!selected?.blocks?.length;
   const activeBlocks = selected?.blocks ?? [];
   const opRunning = !!op && (op.state === "queued" || op.state === "running");
   const targetDir = selected && dirName.trim() ? joinPath(parentPath, dirName.trim()) : "";
+  const hasLocal = !!templates?.some((tpl) => tpl.source === "local");
+  const hasActiveFilters = sourceFilter !== "all" || stackFilter.size > 0 || searchQuery.trim() !== "";
 
   const submit = async () => {
     if (!selected || submitting || opRunning) return;
@@ -456,6 +619,7 @@ export function TemplatesPage() {
     setSubmitting(true);
     setPendingCreate(true);
     setShowFallback(false);
+    setConfirmCreate(false);
     try {
       const args: TemplatesCreateArgs = {
         templateId: selected.id,
@@ -471,7 +635,6 @@ export function TemplatesPage() {
       const { operation_id } = await apiTemplatesCreate(args);
       handledOpRef.current = null;
       setActiveOpId(operation_id);
-      // 事件链路兜底：4s 仍无任何进度事件时提示可直接打开目标目录（路径前端已知）
       setSubmittedTarget(joinPath(parentPath.trim(), dirName.trim()));
       window.setTimeout(() => {
         if (!opRef.current) setShowFallback(true);
@@ -479,14 +642,31 @@ export function TemplatesPage() {
     } catch (e) {
       setPendingCreate(false);
       setSubmittedTarget(null);
-      // 同步校验失败（PathEscape / TARGET_NOT_EMPTY 等）：IpcFailure.message 已是中文
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     } finally {
       setSubmitting(false);
     }
   };
 
-  /** 勾/取消块：选择时自动闭合依赖；取消被依赖块时拒绝并说明。 */
+  const requestCreate = () => {
+    if (!selected || submitting || opRunning) return;
+    const invalid = validateDirectoryName(dirName);
+    setDirNameError(invalid);
+    if (invalid || !parentPath.trim()) {
+      if (!parentPath.trim()) toast(t("pages.templates.parentRequired"), "warn");
+      return;
+    }
+    if (selected.blocks?.length && !preview) {
+      toast(t("pages.templates.previewRequired"), "warn");
+      return;
+    }
+    if (selected.params?.some((p) => p.required && !paramValues[p.key]?.trim())) {
+      toast(t("pages.templates.paramRequired"), "warn");
+      return;
+    }
+    setConfirmCreate(true);
+  };
+
   const toggleBlock = (id: string) => {
     const blocks = selected?.blocks ?? [];
     setPreview(null);
@@ -510,7 +690,6 @@ export function TemplatesPage() {
     setPortValues((cur) => ({ ...cur, [svcId]: raw === "" ? NaN : Number(raw) }));
   };
 
-  // 组合向导的派生状态：选中块的服务端口视图 + 端口查重
   const wizardServices =
     selected?.blocks
       ?.filter((b) => selectedBlocks.includes(b.id))
@@ -548,7 +727,6 @@ export function TemplatesPage() {
     }
   };
 
-  /** 向导分步推进：每步做该步的校验，不通过留在当前步。 */
   const goNext = () => {
     if (!selected) return;
     if (step === 1) {
@@ -578,375 +756,260 @@ export function TemplatesPage() {
     }
   };
 
+  const toggleStack = (stack: string) => {
+    setStackFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(stack)) next.delete(stack);
+      else next.add(stack);
+      return next;
+    });
+  };
+
+  const clearFilters = () => {
+    setSourceFilter("all");
+    setStackFilter(new Set());
+    setSearchQuery("");
+  };
+
   const loading = templates === null && !loadError;
+
+  const createFormFields = selected ? (
+    <>
+      {selected.params?.length ? (
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {selected.params.map((p) => (
+            <label key={p.key} className="flex flex-col gap-1">
+              <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">
+                {p.label || p.key}
+                {p.required ? <span className="ml-0.5 text-[#DC2626]">*</span> : null}
+              </span>
+              <Input
+                value={paramValues[p.key] ?? ""}
+                onChange={(e) => {
+                  setParamValues((cur) => ({ ...cur, [p.key]: e.target.value }));
+                  setPreview(null);
+                }}
+                placeholder={p.key === "project_name" ? t("pages.templates.projectNamePlaceholder") : p.key}
+              />
+            </label>
+          ))}
+        </div>
+      ) : null}
+      <div className={cn("grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]", selected.params?.length ? "mt-3" : "")}>
+        <label className="flex flex-col gap-1">
+          <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.parentDir")}</span>
+          <Input
+            value={parentPath}
+            onChange={(e) => setParentPath(e.target.value)}
+            placeholder={t("pages.templates.parentDirPlaceholder")}
+          />
+        </label>
+        <div className="flex items-end">
+          <Button variant="outline" size="default" className="gap-1" onClick={() => void pickParentDirectory()}>
+            <FolderSearch /> {t("pages.git.pickDir")}
+          </Button>
+        </div>
+      </div>
+      <label className="mt-3 flex flex-col gap-1">
+        <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.dirName")}</span>
+        <Input
+          value={dirName}
+          onChange={(e) => {
+            setDirName(e.target.value);
+            if (dirNameError) setDirNameError(validateDirectoryName(e.target.value));
+          }}
+          aria-invalid={!!dirNameError}
+          placeholder={t("pages.templates.dirNameExample")}
+        />
+      </label>
+      {dirNameError ? (
+        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+          {t(dirNameError)}
+        </div>
+      ) : null}
+    </>
+  ) : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-auto p-6">
-        <div className="mx-auto flex max-w-4xl flex-col gap-4">
-          {/* 标题行 */}
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="mx-auto flex max-w-5xl flex-col gap-4 p-6 pb-28">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1,#222326)]">{t("nav.templates")}</h2>
-              <p className="mt-0.5 text-[0.78rem] text-[var(--t3,#8a8f98)]">
-                {t("pages.templates.pageDesc")}
-              </p>
+              <p className="mt-0.5 text-[0.78rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.pageDesc")}</p>
             </div>
             <LayoutTemplate className="size-8 shrink-0 text-[var(--line-strong,#d0d6e0)]" />
           </div>
 
+          {/* 粘性筛选栏：搜索 / 来源 / 技术栈芯片 */}
+          <div className="sticky top-0 z-10 -mx-1 space-y-3 rounded-[var(--r-md,12px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)]/95 p-3 shadow-[var(--shadow-1,0_1px_2px_rgb(16_24_40_/_0.04))] backdrop-blur-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative min-w-[12rem] flex-1">
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-[var(--t3,#8a8f98)]" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={t("pages.templates.searchPlaceholder")}
+                  className="pl-8"
+                  aria-label={t("common.search")}
+                />
+                {searchQuery ? (
+                  <button
+                    type="button"
+                    className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-[var(--t3,#8a8f98)] hover:text-[var(--t1,#222326)]"
+                    onClick={() => setSearchQuery("")}
+                    aria-label={t("common.clear")}
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                ) : null}
+              </div>
+              <SourceSegmented
+                value={hasLocal || sourceFilter !== "local" ? sourceFilter : "builtin"}
+                hasLocal={hasLocal}
+                onChange={(s) => setSourceFilter(s)}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1"
+                disabled={refreshing || loading}
+                onClick={() => void loadTemplates({ soft: true })}
+              >
+                <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+                {t("common.refresh")}
+              </Button>
+              {hasActiveFilters ? (
+                <Button variant="ghost" size="sm" onClick={clearFilters}>
+                  {t("pages.templates.clearFilters")}
+                </Button>
+              ) : null}
+            </div>
+            {allStacks.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={t("pages.templates.stackFilterAria")}>
+                <span className="mr-1 text-[0.7rem] font-medium text-[var(--t3,#8a8f98)]">{t("pages.templates.stackFilterLabel")}</span>
+                {allStacks.map((stack) => {
+                  const on = stackFilter.has(stack);
+                  return (
+                    <button
+                      key={stack}
+                      type="button"
+                      onClick={() => toggleStack(stack)}
+                      className={cn(
+                        "rounded-full border px-2.5 py-0.5 text-[0.7rem] font-semibold transition-colors",
+                        on
+                          ? "border-[var(--st-accent,#5e6ad2)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)]"
+                          : "border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                      )}
+                    >
+                      {stack}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {templates ? (
+              <div className="text-[0.7rem] text-[var(--t3,#8a8f98)]">
+                {t("pages.templates.countLabel", { n: visibleTemplates.length, total: templates.length })}
+              </div>
+            ) : null}
+          </div>
+
           {loading ? (
-            <div className="flex items-center justify-center gap-2 py-12 text-[0.8rem] text-[var(--t3,#8a8f98)]" role="status">
-              <Loader2 className="size-4 animate-spin" /> {t("pages.templates.loading")}
+            <div className="flex flex-col items-center justify-center gap-3 py-16" role="status">
+              <Loader2 className="size-6 animate-spin text-[var(--st-accent,#5e6ad2)]" />
+              <div className="text-[0.8rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.loading")}</div>
+              <div className="grid w-full grid-cols-1 gap-3 lg:grid-cols-2">
+                {[0, 1, 2, 3].map((i) => (
+                  <Card key={i} className="h-36 animate-pulse bg-[var(--surface-2,#f3f4f5)] p-4" />
+                ))}
+              </div>
             </div>
           ) : null}
 
           {loadError ? (
             <Card className="border-red-200 bg-[var(--st-danger-tint,#fdecec)] p-4 text-[0.8rem] text-[#DC2626]" role="alert">
-              {t("pages.templates.loadFailed")} {loadError}
+              <div className="font-semibold">{t("pages.templates.loadFailed")}</div>
+              <div className="mt-1 text-[var(--t2,#62666d)]">{loadError}</div>
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => void loadTemplates()}>
+                {t("common.retry")}
+              </Button>
             </Card>
           ) : null}
 
-          {/* 来源分段 + 模板卡片（向导打开时隐藏，聚焦向导） */}
-          {!wizardActive && templates && templates.length > 0 ? (
-            <>
-              <SourceSegmented
-                value={sourceFilter}
-                hasLocal={templates.some((t) => t.source === "local")}
-                onChange={(s) => {
-                  setSourceFilter(s);
-                  // 切换来源后默认选中该来源下第一个可用模板
-                  setSelectedId(templates.find((t) => t.source === s && !t.invalid)?.id ?? null);
-                }}
-              />
-              {visibleTemplates.length > 0 ? (
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                  {visibleTemplates.map((tpl) => (
-                    <TemplateCard
-                      key={tpl.id}
-                      template={tpl}
-                      selected={tpl.id === selectedId}
-                      onSelect={() => setSelectedId(tpl.id)}
-                      onCompose={() => openWizard(tpl.id)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <Card className="p-6 text-center text-[0.8rem] text-[var(--t3,#8a8f98)]">
-                  {sourceFilter === "local"
-                    ? t("pages.templates.noLocal")
-                    : t("pages.templates.noTemplates")}
-                </Card>
-              )}
-            </>
-          ) : null}
-
-          {/* 组合向导（blocks 模板）：① 选择服务块 → ② 目录与端口 → ③ 预览并创建 */}
-          {wizardActive && selected ? (
-            <Card className="p-4">
-              <div className="flex items-center justify-between gap-2">
-                <Button variant="ghost" size="sm" className="gap-1" onClick={closeWizard}>
-                  <ArrowLeft className="size-3.5" /> {t("pages.templates.wizardBack")}
-                </Button>
-                <Badge variant="secondary" className="shrink-0">
-                  {selected.source === "builtin" ? t("pages.templates.builtinShort") : t("pages.templates.srcLocal")}
-                </Badge>
-              </div>
-              <div className="mt-1">
-                <div className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{selected.name}</div>
-                <div className="mt-0.5 text-[0.78rem] leading-relaxed text-[var(--t2,#62666d)]">{selected.description}</div>
-              </div>
-              <Separator className="my-3" />
-              <Stepper steps={WIZARD_STEPS} current={step} />
-
-              {step === 1 ? (
-                <div className="mt-4">
-                  <div className="text-[0.78rem] font-semibold text-[var(--t1,#222326)]">
-                    {t("pages.templates.blocksTitle")}
-                    <span className="ml-2 font-normal text-[var(--t3,#8a8f98)]">{t("pages.templates.blocksHint")}</span>
-                  </div>
-                  <div className="mt-2 flex flex-col gap-1.5">
-                    {activeBlocks.map((b) => {
-                      const checked = selectedBlocks.includes(b.id);
-                      const lockedBy = selectedBlocks
-                        .filter((other) => other !== b.id && selected.blocks!.find((x) => x.id === other)?.requires.includes(b.id))
-                        .map((d) => selected.blocks!.find((x) => x.id === d)?.label ?? d);
-                      return (
-                        <label
-                          key={b.id}
-                          className={cn(
-                            "flex cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] px-2.5 py-1.5 transition-colors duration-150",
-                            checked ? "bg-[var(--st-accent-tint,#eef0fb)]" : "bg-[var(--surface,#fff)] hover:bg-[var(--surface-2,#f3f4f5)]",
-                            lockedBy.length > 0 && "cursor-not-allowed opacity-60",
-                          )}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={lockedBy.length > 0}
-                            onChange={() => toggleBlock(b.id)}
-                            className="accent-[var(--st-accent,#5e6ad2)]"
-                          />
-                          <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">{b.label}</span>
-                          <Badge variant="outline" className="text-[10px]">{b.kind}</Badge>
-                          {b.requires.length ? (
-                            <span className="text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.dependsOn", { deps: b.requires.join(", ") })}</span>
-                          ) : null}
-                          {lockedBy.length > 0 ? (
-                            <span className="ml-auto text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.lockedBy", { names: lockedBy.join("、") })}</span>
-                          ) : null}
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-
-              {step === 2 ? (
-                <div className="mt-4">
-                  {selected.params?.length ? (
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                      {selected.params.map((p) => (
-                        <label key={p.key} className="flex flex-col gap-1">
-                          <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">
-                            {p.label || p.key}
-                            {p.required ? <span className="ml-0.5 text-[#DC2626]">*</span> : null}
-                          </span>
-                          <Input
-                            value={paramValues[p.key] ?? ""}
-                            onChange={(e) => {
-                              setParamValues((cur) => ({ ...cur, [p.key]: e.target.value }));
-                              setPreview(null);
-                            }}
-                            placeholder={p.key === "project_name" ? t("pages.templates.projectNamePlaceholder") : p.key}
-                          />
-                        </label>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
-                    <label className="flex flex-col gap-1">
-                      <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.parentDir")}</span>
-                      <Input
-                        value={parentPath}
-                        onChange={(e) => setParentPath(e.target.value)}
-                        placeholder={t("pages.templates.parentDirPlaceholder")}
-                      />
-                    </label>
-                    <div className="flex items-end">
-                      <Button variant="outline" size="default" className="gap-1" onClick={() => void pickParentDirectory()}>
-                        <FolderSearch /> {t("pages.git.pickDir")}
-                      </Button>
-                    </div>
-                  </div>
-                  <label className="mt-3 flex flex-col gap-1">
-                    <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.dirName")}</span>
-                    <Input
-                      value={dirName}
-                      onChange={(e) => {
-                        setDirName(e.target.value);
-                        if (dirNameError) setDirNameError(validateDirectoryName(e.target.value));
-                      }}
-                      aria-invalid={!!dirNameError}
-                      placeholder={t("pages.templates.dirNameExample")}
-                    />
-                  </label>
-                  {dirNameError ? (
-                    <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
-                      {t(dirNameError)}
-                    </div>
-                  ) : null}
-                  {wizardServices.length > 0 ? (
-                    <div className="mt-3">
-                      <div className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.portAssign")}</div>
-                      <div className="mt-1.5 flex flex-wrap gap-3">
-                        {wizardServices.map(({ svcId, port }) => (
-                          <label key={svcId} className="flex items-center gap-1.5 text-[0.74rem] text-[var(--t1,#222326)]">
-                            <span className="font-mono text-[var(--t2,#62666d)]">{svcId}</span>
-                            <Input
-                              type="number"
-                              value={Number.isNaN(port) ? "" : port}
-                              onChange={(e) => changePort(svcId, e.target.value)}
-                              className="h-8 w-24 font-mono"
-                            />
-                          </label>
-                        ))}
-                      </div>
-                      {portConflict ? (
-                        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
-                          {t("pages.templates.portConflict", { port: portConflict.port, a: portConflict.a, b: portConflict.b })}
-                        </div>
-                      ) : portInvalid ? (
-                        <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
-                          {t("pages.templates.portInvalid")}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {step === 3 ? (
-                <div className="mt-4">
-                  <div className="flex items-center gap-2">
-                    <Button variant="soft" size="sm" className="gap-1" disabled={previewing || !!portConflict || portInvalid || wizardServices.length === 0} onClick={() => void runPreview()}>
-                      {previewing ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
-                      {previewing ? t("pages.templates.generating") : t("pages.templates.generatePreview")}
-                    </Button>
-                    {preview ? (
-                      <span className="text-[0.72rem] text-[var(--st-ok-deep,#1e7e35)]">
-                        {t("pages.templates.previewOk", { services: Object.keys(preview.services).length, files: preview.files.length })}
-                      </span>
-                    ) : (
-                      <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.previewNeeded")}</span>
-                    )}
-                  </div>
-                  {preview ? (
-                    <div className="mt-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-2.5">
-                      <table className="w-full text-left font-mono text-[0.7rem] text-[var(--t1,#222326)]">
-                        <thead>
-                          <tr className="text-[var(--t3,#8a8f98)]">
-                            <th className="py-0.5 pr-3 font-semibold">{t("pages.templates.colService")}</th>
-                            <th className="py-0.5 pr-3 font-semibold">kind</th>
-                            <th className="py-0.5 font-semibold">port</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {Object.entries(preview.services).map(([id, svc]) => (
-                            <tr key={id}>
-                              <td className="py-0.5 pr-3">{id}</td>
-                              <td className="py-0.5 pr-3">{String(svc.kind ?? "—")}</td>
-                              <td className="py-0.5">{String(svc.port ?? "—")}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {preview.warnings.map((w) => (
-                        <div key={w} className="mt-1 text-[0.72rem] text-[var(--st-warn-dot,#eab308)]">{w}</div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--line,#e6e6e6)] pt-3">
-                <span className="truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={targetDir}>
-                  {targetDir ? t("pages.git.target", { path: targetDir }) : ""}
-                </span>
-                <div className="flex shrink-0 items-center gap-2">
-                  {step > 1 ? (
-                    <Button variant="outline" size="sm" onClick={() => setStep((s) => (s - 1) as 1 | 2)}>
-                      {t("pages.templates.wPrev")}
-                    </Button>
-                  ) : null}
-                  {step < 3 ? (
-                    <Button size="sm" onClick={goNext}>
-                      {t("pages.templates.wNext")}
-                    </Button>
-                  ) : (
-                    <>
-                      <Button variant="soft" size="sm" className="gap-1" disabled={previewing || !!portConflict || portInvalid || wizardServices.length === 0} onClick={() => void runPreview()}>
-                        {previewing ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
-                        {previewing ? t("pages.templates.generating") : t("pages.templates.generatePreview")}
-                      </Button>
-                      <Button size="sm" disabled={!preview || submitting || opRunning} onClick={() => void submit()}>
-                        {submitting ? (
-                          <>
-                            <Loader2 className="size-3.5 animate-spin" /> {t("pages.templates.creating")}
-                          </>
-                        ) : (
-                          t("pages.templates.createWs")
-                        )}
-                      </Button>
-                    </>
-                  )}
-                </div>
-              </div>
-            </Card>
-          ) : null}
-
-          {/* 快速创建表单（非组合模板） */}
-          {selected && !wizardActive ? (
-            <Card className="p-4">
-              <div className="text-[0.85rem] font-semibold text-[var(--t1,#222326)]">{t("pages.templates.createHeading")}</div>
-              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
-                <label className="flex flex-col gap-1">
-                  <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.parentDir")}</span>
-                  <Input
-                    value={parentPath}
-                    onChange={(e) => setParentPath(e.target.value)}
-                    placeholder={t("pages.templates.parentDirPlaceholder")}
+          {!loading && !loadError && templates ? (
+            visibleTemplates.length > 0 ? (
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {visibleTemplates.map((tpl) => (
+                  <TemplateCard
+                    key={`${tpl.source}:${tpl.id}`}
+                    template={tpl}
+                    selected={tpl.id === selectedId}
+                    onSelect={() => setSelectedId(tpl.id)}
+                    onPreview={() => openDetail(tpl.id)}
+                    onCreate={() => openCreate(tpl.id)}
+                    onCompose={() => openWizard(tpl.id)}
                   />
-                </label>
-                <div className="flex items-end">
-                  <Button variant="outline" size="default" className="gap-1" onClick={() => void pickParentDirectory()}>
-                    <FolderSearch /> {t("pages.git.pickDir")}
+                ))}
+              </div>
+            ) : (
+              <Card className="flex flex-col items-center gap-2 p-10 text-center">
+                <LayoutTemplate className="size-10 text-[var(--line-strong,#d0d6e0)]" />
+                <div className="text-[0.9rem] font-semibold text-[var(--t1,#222326)]">
+                  {templates.length === 0
+                    ? t("pages.templates.noTemplates")
+                    : sourceFilter === "local" && !searchQuery && stackFilter.size === 0
+                      ? t("pages.templates.noLocal")
+                      : t("pages.templates.noSearchMatch")}
+                </div>
+                <p className="max-w-md text-[0.78rem] leading-relaxed text-[var(--t3,#8a8f98)]">
+                  {templates.length === 0 ? t("pages.templates.emptyHint") : t("pages.templates.emptyFilterHint")}
+                </p>
+                {hasActiveFilters ? (
+                  <Button variant="outline" size="sm" className="mt-2" onClick={clearFilters}>
+                    {t("pages.templates.clearFilters")}
                   </Button>
-                </div>
-              </div>
-              <label className="mt-3 flex flex-col gap-1">
-                <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.dirName")}</span>
-                <Input
-                  value={dirName}
-                  onChange={(e) => {
-                    setDirName(e.target.value);
-                    if (dirNameError) setDirNameError(validateDirectoryName(e.target.value));
-                  }}
-                  aria-invalid={!!dirNameError}
-                  placeholder={t("pages.templates.dirNameExample")}
-                />
-              </label>
-              {dirNameError ? (
-                <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
-                  {t(dirNameError)}
-                </div>
-              ) : null}
-              {/* 创建参数（模板清单 params 声明） */}
-              {selected.params?.length ? (
-                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-                  {selected.params.map((p) => (
-                    <label key={p.key} className="flex flex-col gap-1">
-                      <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">
-                        {p.label || p.key}
-                        {p.required ? <span className="ml-0.5 text-[#DC2626]">*</span> : null}
-                      </span>
-                      <Input
-                        value={paramValues[p.key] ?? ""}
-                        onChange={(e) => {
-                          setParamValues((cur) => ({ ...cur, [p.key]: e.target.value }));
-                          setPreview(null);
-                        }}
-                        placeholder={p.key === "project_name" ? t("pages.templates.projectNamePlaceholder") : p.key}
-                      />
-                    </label>
-                  ))}
-                </div>
-              ) : null}
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <span className="truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={targetDir}>
-                  {targetDir ? t("pages.git.target", { path: targetDir }) : ""}
-                </span>
-                <Button
-                  onClick={() => void submit()}
-                  disabled={submitting || opRunning || !dirName.trim() || !parentPath.trim()}
-                >
-                  {submitting ? (
-                    <>
-                      <Loader2 className="size-3.5 animate-spin" /> {t("pages.templates.creating")}
-                    </>
-                  ) : (
-                    t("pages.templates.createWs")
-                  )}
-                </Button>
-              </div>
-            </Card>
+                ) : null}
+              </Card>
+            )
           ) : null}
 
-          {/* 长操作进度 / 结果（乐观卡 + 事件驱动卡共用组件） */}
-          {displayOp ? (
-            <TemplateOperationCard op={displayOp} targetDir={targetDir} workspaceId={wsIdForCard} onOpenWorkspace={() => wsIdForCard && void openWs(wsIdForCard)} />
+          {/* 粘性操作条：选中模板后快速打开创建/预览，不推动画廊布局 */}
+          {selected && !selected.invalid && !createOpen && !detailOpen ? (
+            <div className="fixed right-6 bottom-6 z-20 flex max-w-[min(28rem,calc(100%-3rem))] items-center gap-2 rounded-xl border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-2 shadow-[var(--shadow-2,0_6px_20px_rgb(16_24_40_/_0.12))]">
+              <div className="min-w-0 flex-1 px-2">
+                <div className="truncate text-[0.8rem] font-semibold text-[var(--t1,#222326)]">{selected.name}</div>
+                <div className="truncate text-[0.68rem] text-[var(--t3,#8a8f98)]">
+                  {selected.source === "builtin" ? t("pages.templates.builtinShort") : t("pages.templates.srcLocal")} · v
+                  {selected.version}
+                </div>
+              </div>
+              <Button variant="ghost" size="sm" className="gap-1" onClick={() => openDetail(selected.id)}>
+                <Eye className="size-3.5" /> {t("pages.templates.previewCta")}
+              </Button>
+              {selected.blocks?.length ? (
+                <Button size="sm" onClick={() => openWizard(selected.id)}>
+                  {t("pages.templates.comboCta")}
+                </Button>
+              ) : (
+                <Button size="sm" onClick={() => openCreate(selected.id)}>
+                  {t("pages.templates.useCta")}
+                </Button>
+              )}
+            </div>
           ) : null}
-          {/* 事件链路兜底：提交成功但迟迟无进度事件时，目标目录可直接打开 */}
+
+          {displayOp ? (
+            <div className="fixed bottom-6 left-1/2 z-20 w-[min(36rem,calc(100%-2rem))] -translate-x-1/2">
+              <TemplateOperationCard
+                op={displayOp}
+                targetDir={targetDir || submittedTarget || ""}
+                workspaceId={wsIdForCard}
+                onOpenWorkspace={() => wsIdForCard && void openWs(wsIdForCard)}
+              />
+            </div>
+          ) : null}
           {showFallback && submittedTarget && (!op || (op.state !== "succeeded" && op.state !== "failed")) ? (
             <Card className="border-[var(--line-strong,#d0d6e0)] p-3 text-[0.76rem] text-[var(--t2,#62666d)]">
               {t("pages.templates.noEventHint")}
@@ -957,6 +1020,307 @@ export function TemplatesPage() {
           ) : null}
         </div>
       </div>
+
+      {/* 只读预览浮层：不推动画廊 */}
+      <Dialog open={detailOpen && !!selected} onOpenChange={(o) => !o && setDetailOpen(false)}>
+        <DialogContent className="sm:max-w-lg" showCloseButton>
+          {selected ? (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex flex-wrap items-center gap-2">
+                  <span>{selected.name}</span>
+                  <Badge variant="secondary">
+                    {selected.source === "builtin" ? t("pages.templates.builtinShort") : t("pages.templates.srcLocal")}
+                  </Badge>
+                  <Badge variant="secondary">v{selected.version}</Badge>
+                </DialogTitle>
+                <DialogDescription>{selected.description || t("pages.templates.pageDesc")}</DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-wrap gap-1.5">
+                {selected.stacks.map((s) => (
+                  <Badge key={s} variant="outline">
+                    {s}
+                  </Badge>
+                ))}
+              </div>
+              <div>
+                <div className="mb-1.5 text-[0.72rem] font-semibold text-[var(--t2,#62666d)]">
+                  {t("pages.templates.filesOverview", { n: selected.files.length })}
+                </div>
+                <ul className="max-h-48 space-y-0.5 overflow-auto rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-2.5 font-mono text-[0.68rem] text-[var(--t2,#62666d)]">
+                  {selected.files.map((f) => (
+                    <li key={f} className="truncate" title={f}>
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {selected.blocks?.length ? (
+                <div>
+                  <div className="mb-1.5 text-[0.72rem] font-semibold text-[var(--t2,#62666d)]">{t("pages.templates.blocksTitle")}</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {selected.blocks.map((b) => (
+                      <Badge key={b.id} variant="outline" title={b.kind}>
+                        {b.label || b.id}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDetailOpen(false)}>
+                  {t("common.close")}
+                </Button>
+                {selected.blocks?.length ? (
+                  <Button onClick={() => openWizard(selected.id)}>{t("pages.templates.comboCta")}</Button>
+                ) : (
+                  <Button onClick={() => openCreate(selected.id)}>{t("pages.templates.useCta")}</Button>
+                )}
+              </DialogFooter>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* 创建 / 组合向导浮层 */}
+      <Dialog
+        open={createOpen && !!selected && !selected.invalid}
+        onOpenChange={(o) => {
+          if (!o) closeCreate();
+        }}
+      >
+        <DialogContent className="flex max-h-[min(90vh,44rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" showCloseButton>
+          {selected ? (
+            <>
+              <div className="border-b border-[var(--line,#e6e6e6)] p-4 pr-12">
+                <DialogHeader>
+                  <DialogTitle className="flex flex-wrap items-center gap-2">
+                    {wizardActive ? t("pages.templates.comboCta") : t("pages.templates.createHeading")}
+                    <Badge variant="secondary">
+                      {selected.source === "builtin" ? t("pages.templates.builtinShort") : t("pages.templates.srcLocal")}
+                    </Badge>
+                  </DialogTitle>
+                  <DialogDescription>
+                    <span className="font-medium text-[var(--t1,#222326)]">{selected.name}</span>
+                    {selected.description ? ` — ${selected.description}` : ""}
+                  </DialogDescription>
+                </DialogHeader>
+                {wizardActive ? (
+                  <div className="mt-3">
+                    <Stepper steps={WIZARD_STEPS} current={step} />
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-auto p-4">
+                {wizardActive && step === 1 ? (
+                  <div>
+                    <div className="text-[0.78rem] font-semibold text-[var(--t1,#222326)]">
+                      {t("pages.templates.blocksTitle")}
+                      <span className="ml-2 font-normal text-[var(--t3,#8a8f98)]">{t("pages.templates.blocksHint")}</span>
+                    </div>
+                    <div className="mt-2 flex flex-col gap-1.5">
+                      {activeBlocks.map((b) => {
+                        const checked = selectedBlocks.includes(b.id);
+                        const lockedBy = selectedBlocks
+                          .filter((other) => other !== b.id && selected.blocks!.find((x) => x.id === other)?.requires.includes(b.id))
+                          .map((d) => selected.blocks!.find((x) => x.id === d)?.label ?? d);
+                        return (
+                          <label
+                            key={b.id}
+                            className={cn(
+                              "flex cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] px-2.5 py-1.5 transition-colors duration-150",
+                              checked ? "bg-[var(--st-accent-tint,#eef0fb)]" : "bg-[var(--surface,#fff)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                              lockedBy.length > 0 && "cursor-not-allowed opacity-60",
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={lockedBy.length > 0}
+                              onChange={() => toggleBlock(b.id)}
+                              className="accent-[var(--st-accent,#5e6ad2)]"
+                            />
+                            <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">{b.label}</span>
+                            <Badge variant="outline" className="text-[10px]">
+                              {b.kind}
+                            </Badge>
+                            {b.requires.length ? (
+                              <span className="text-[0.68rem] text-[var(--t3,#8a8f98)]">
+                                {t("pages.templates.dependsOn", { deps: b.requires.join(", ") })}
+                              </span>
+                            ) : null}
+                            {lockedBy.length > 0 ? (
+                              <span className="ml-auto text-[0.68rem] text-[var(--t3,#8a8f98)]">
+                                {t("pages.templates.lockedBy", { names: lockedBy.join("、") })}
+                              </span>
+                            ) : null}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+
+                {wizardActive && step === 2 ? (
+                  <div>
+                    {createFormFields}
+                    {wizardServices.length > 0 ? (
+                      <div className="mt-3">
+                        <div className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.portAssign")}</div>
+                        <div className="mt-1.5 flex flex-wrap gap-3">
+                          {wizardServices.map(({ svcId, port }) => (
+                            <label key={svcId} className="flex items-center gap-1.5 text-[0.74rem] text-[var(--t1,#222326)]">
+                              <span className="font-mono text-[var(--t2,#62666d)]">{svcId}</span>
+                              <Input
+                                type="number"
+                                value={Number.isNaN(port) ? "" : port}
+                                onChange={(e) => changePort(svcId, e.target.value)}
+                                className="h-8 w-24 font-mono"
+                              />
+                            </label>
+                          ))}
+                        </div>
+                        {portConflict ? (
+                          <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                            {t("pages.templates.portConflict", {
+                              port: portConflict.port,
+                              a: portConflict.a,
+                              b: portConflict.b,
+                            })}
+                          </div>
+                        ) : portInvalid ? (
+                          <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                            {t("pages.templates.portInvalid")}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {wizardActive && step === 3 ? (
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="soft"
+                        size="sm"
+                        className="gap-1"
+                        disabled={previewing || !!portConflict || portInvalid || wizardServices.length === 0}
+                        onClick={() => void runPreview()}
+                      >
+                        {previewing ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
+                        {previewing ? t("pages.templates.generating") : t("pages.templates.generatePreview")}
+                      </Button>
+                      {preview ? (
+                        <span className="text-[0.72rem] text-[var(--st-ok-deep,#1e7e35)]">
+                          {t("pages.templates.previewOk", {
+                            services: Object.keys(preview.services).length,
+                            files: preview.files.length,
+                          })}
+                        </span>
+                      ) : (
+                        <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.templates.previewNeeded")}</span>
+                      )}
+                    </div>
+                    {preview ? (
+                      <div className="mt-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-2.5">
+                        <table className="w-full text-left font-mono text-[0.7rem] text-[var(--t1,#222326)]">
+                          <thead>
+                            <tr className="text-[var(--t3,#8a8f98)]">
+                              <th className="py-0.5 pr-3 font-semibold">{t("pages.templates.colService")}</th>
+                              <th className="py-0.5 pr-3 font-semibold">{t("pages.templates.colKind")}</th>
+                              <th className="py-0.5 font-semibold">{t("pages.templates.colPort")}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(preview.services).map(([id, svc]) => (
+                              <tr key={id}>
+                                <td className="py-0.5 pr-3">{id}</td>
+                                <td className="py-0.5 pr-3">{String(svc.kind ?? "—")}</td>
+                                <td className="py-0.5">{String(svc.port ?? "—")}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {preview.files.length ? (
+                          <div className="mt-2 max-h-28 overflow-auto border-t border-[var(--line,#e6e6e6)] pt-2 font-mono text-[0.66rem] text-[var(--t3,#8a8f98)]">
+                            {preview.files.map((f) => (
+                              <div key={f} className="truncate" title={f}>
+                                {f}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {preview.warnings.map((w) => (
+                          <div key={w} className="mt-1 text-[0.72rem] text-[var(--st-warn-dot,#eab308)]">
+                            {w}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {targetDir ? (
+                      <div className="mt-3 truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={targetDir}>
+                        {t("pages.git.target", { path: targetDir })}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {!wizardActive ? <div>{createFormFields}</div> : null}
+              </div>
+
+              <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-3">
+                <span className="truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={targetDir}>
+                  {targetDir && !(wizardActive && step === 3) ? t("pages.git.target", { path: targetDir }) : ""}
+                </span>
+                <div className="flex shrink-0 items-center gap-2">
+                  {wizardActive && step > 1 ? (
+                    <Button variant="outline" size="sm" onClick={() => setStep((s) => (s - 1) as 1 | 2)}>
+                      {t("pages.templates.wPrev")}
+                    </Button>
+                  ) : (
+                    <Button variant="outline" size="sm" onClick={closeCreate}>
+                      {t("common.cancel")}
+                    </Button>
+                  )}
+                  {wizardActive && step < 3 ? (
+                    <Button size="sm" onClick={goNext}>
+                      {t("pages.templates.wNext")}
+                    </Button>
+                  ) : (
+                    <Button size="sm" disabled={submitting || opRunning || (wizardActive && !preview)} onClick={requestCreate}>
+                      {submitting ? (
+                        <>
+                          <Loader2 className="size-3.5 animate-spin" /> {t("pages.templates.creating")}
+                        </>
+                      ) : (
+                        t("pages.templates.createWs")
+                      )}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={confirmCreate}
+        title={t("pages.templates.createConfirmTitle")}
+        description={
+          selected
+            ? t("pages.templates.createConfirmDesc", {
+                name: selected.name,
+                path: targetDir || joinPath(parentPath, dirName.trim()),
+              })
+            : undefined
+        }
+        confirmText={t("pages.templates.createWs")}
+        onCancel={() => setConfirmCreate(false)}
+        onConfirm={() => void submit()}
+      />
     </div>
   );
 }
