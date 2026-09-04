@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import {
   ArrowDownWideNarrow,
+  ChevronDown,
   Copy,
   Cpu,
   FileInput,
@@ -111,12 +112,12 @@ function MetricCell({ value, format, placeholder }: { value: number | null; form
   const { t } = useTranslation();
   if (value == null) {
     return (
-      <span title={t("pages.discover.metricPending")} className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
+      <span title={t("pages.discover.metricPending")} className="text-[0.75rem] whitespace-nowrap text-[var(--t3,#8a8f98)]">
         {placeholder}
       </span>
     );
   }
-  return <span className="font-mono text-[0.75rem] text-[var(--t1,#222326)]">{format(value)}</span>;
+  return <span className="font-mono text-[0.75rem] whitespace-nowrap text-[var(--t1,#222326)]">{format(value)}</span>;
 }
 
 function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
@@ -338,14 +339,15 @@ export function DiscoverPage() {
       const ra = matchRank(a);
       const rb = matchRank(b);
       if (ra !== rb) return ra - rb;
+      const cpu = (s: ForeignService) => s.cpu_percent ?? -1;
+      const mem = (s: ForeignService) => s.memory_bytes ?? -1;
       if (sortBy === "cpu") {
-        const ca = a.cpu_percent ?? -1;
-        const cb = b.cpu_percent ?? -1;
-        if (cb !== ca) return cb - ca;
+        // CPU 首次采样为空时退回内存排序，保证点击后行序有可见变化
+        if (cpu(b) !== cpu(a)) return cpu(b) - cpu(a);
+        if (mem(b) !== mem(a)) return mem(b) - mem(a);
       } else if (sortBy === "memory") {
-        const ma = a.memory_bytes ?? -1;
-        const mb = b.memory_bytes ?? -1;
-        if (mb !== ma) return mb - ma;
+        if (mem(b) !== mem(a)) return mem(b) - mem(a);
+        if (cpu(b) !== cpu(a)) return cpu(b) - cpu(a);
       }
       return a.name.localeCompare(b.name) || a.pid - b.pid;
     });
@@ -522,22 +524,24 @@ export function DiscoverPage() {
               : "hover:bg-[var(--surface-2,#f3f4f5)]",
         )}
       >
-        <td className="px-4 py-2.5">
-          <span className="inline-flex items-center gap-2">
-            <span className="size-1.5 rounded-full" style={{ background: runtimeColor(s.kind) }} />
-            <span className="font-mono text-[0.78rem] font-medium text-[var(--t1,#222326)]">{s.name}</span>
+        <td className="px-3 py-2.5">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="size-1.5 shrink-0 rounded-full" style={{ background: runtimeColor(s.kind) }} />
+            <span title={s.name} className="min-w-0 truncate font-mono text-[0.78rem] font-medium text-[var(--t1,#222326)]">
+              {s.name}
+            </span>
           </span>
         </td>
-        <td className="px-4 py-2.5 font-mono text-[0.78rem] text-[var(--t2,#62666d)]">{s.pid}</td>
-        <td className="px-4 py-2.5">
+        <td className="px-3 py-2.5 font-mono text-[0.78rem] whitespace-nowrap text-[var(--t2,#62666d)]">{s.pid}</td>
+        <td className="px-3 py-2.5">
           <MetricCell value={s.cpu_percent} format={(v) => `${v.toFixed(1)}%`} placeholder="—" />
         </td>
-        <td className="px-4 py-2.5">
+        <td className="px-3 py-2.5">
           <MetricCell value={s.memory_bytes} format={formatBytes} placeholder="—" />
         </td>
-        <td className="px-4 py-2.5">
-          <span className="flex flex-wrap gap-1">
-            {s.ports.slice(0, 8).map((p) => {
+        <td className="px-3 py-2.5">
+          <span className="flex flex-wrap items-center gap-1">
+            {s.ports.slice(0, 2).map((p) => {
               const hit = matched.find((m) => m.p === p);
               return (
                 <span
@@ -555,12 +559,17 @@ export function DiscoverPage() {
                 </span>
               );
             })}
-            {s.ports.length > 8 ? (
-              <span className="font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]">+{s.ports.length - 8}</span>
+            {s.ports.length > 2 ? (
+              <span
+                title={s.ports.join(", ")}
+                className="inline-flex h-5 cursor-help items-center rounded-full bg-[var(--surface-2,#f3f4f5)] px-1.5 font-mono text-[0.68rem] leading-none text-[var(--t3,#8a8f98)]"
+              >
+                +{s.ports.length - 2}
+              </span>
             ) : null}
           </span>
         </td>
-        <td className="max-w-[220px] px-4 py-2.5">
+        <td className="px-3 py-2.5">
           {s.cwd ? (
             <span title={s.cmd_line ?? undefined} className="block truncate font-mono text-[0.72rem] text-[var(--t2,#62666d)]">
               {s.cwd}
@@ -569,23 +578,23 @@ export function DiscoverPage() {
             <span className="text-[0.75rem] text-[var(--t3,#8a8f98)]">—</span>
           )}
         </td>
-        <td className="px-4 py-2.5">
+        <td className="px-3 py-2.5">
           {owned.length > 0 ? (
-            <span className="inline-flex items-center gap-1.5">
+            <span className="flex min-w-0 items-center gap-1.5">
               <Badge variant="soon" className="shrink-0">{t("pages.discover.matchedBadge")}</Badge>
-              <span className="truncate text-[0.75rem] text-[var(--st-accent-hover,#4f5ac8)]">
+              <span className="min-w-0 truncate text-[0.75rem] text-[var(--st-accent-hover,#4f5ac8)]">
                 {owned.map((m) => m.id).join(", ")}
               </span>
             </span>
           ) : conflicted.length > 0 ? (
             <span
-              className="inline-flex items-center gap-1.5"
+              className="flex min-w-0 items-center gap-1.5"
               title={t("pages.discover.portConflictTitle", { id: conflicted.map((m) => m.id).join(", "), name: s.name })}
             >
               <Badge variant="outline" className="shrink-0 border-red-200 bg-[var(--st-danger-tint,#fdecec)] text-[#DC2626]">
                 {t("pages.discover.portConflictBadge")}
               </Badge>
-              <span className="truncate text-[0.75rem] text-[#DC2626]">{conflicted.map((m) => m.id).join(", ")}</span>
+              <span className="min-w-0 truncate text-[0.75rem] text-[#DC2626]">{conflicted.map((m) => m.id).join(", ")}</span>
             </span>
           ) : (
             <span className="text-[0.75rem] text-[var(--t3,#8a8f98)]">—</span>
@@ -631,6 +640,10 @@ export function DiscoverPage() {
       : sortBy === "memory"
         ? t("pages.discover.sortMemory")
         : t("pages.discover.sortMatch");
+
+  // 表头排序标记：当前排序落在哪一列一目了然
+  const sortMark = (col: SortBy) =>
+    sortBy === col ? <span className="ml-0.5 font-mono text-[var(--st-accent,#5e6ad2)]">↓</span> : null;
 
   const listBody = () => {
     if (loading && items.length === 0) {
@@ -683,52 +696,51 @@ export function DiscoverPage() {
       );
     }
     return (
-      <>
-        <Card className="overflow-hidden p-0">
-          <div className="max-h-[min(62vh,720px)] overflow-auto">
-            <table className="w-full border-collapse text-left">
-              <thead className="sticky top-0 z-[1]">
-                <tr className="border-b border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
-                  <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colProcess")}</th>
-                  <th className="px-4 py-2.5 font-semibold">PID</th>
-                  <th className="px-4 py-2.5 font-semibold">CPU</th>
-                  <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colMemory")}</th>
-                  <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colPorts")}</th>
-                  <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colCwd")}</th>
-                  <th className="px-4 py-2.5 font-semibold">{t("pages.discover.colMatch")}</th>
-                  <th className="px-2 py-2.5" />
+      <Card className="overflow-hidden p-0">
+        <div className="max-h-[min(62vh,720px)] overflow-auto">
+          <table className="w-full min-w-[860px] table-fixed border-collapse text-left">
+            <thead className="sticky top-0 z-[1]">
+              <tr className="border-b border-[var(--line,#e6e6e6)] bg-[var(--surface-2,#f3f4f5)] text-[11px] font-semibold uppercase tracking-wider text-[var(--t3,#8a8f98)]">
+                <th className="w-[15%] px-3 py-2.5 font-semibold">{t("pages.discover.colProcess")}</th>
+                <th className="w-[68px] px-3 py-2.5 font-semibold">PID</th>
+                <th className="w-[60px] px-3 py-2.5 font-semibold">CPU{sortMark("cpu")}</th>
+                <th className="w-[88px] px-3 py-2.5 font-semibold">{t("pages.discover.colMemory")}{sortMark("memory")}</th>
+                <th className="w-[136px] px-3 py-2.5 font-semibold">{t("pages.discover.colPorts")}</th>
+                <th className="px-3 py-2.5 font-semibold">{t("pages.discover.colCwd")}</th>
+                <th className="w-[18%] px-3 py-2.5 font-semibold">{t("pages.discover.colMatch")}{sortMark("match")}</th>
+                <th className="w-[92px] px-2 py-2.5" />
+              </tr>
+            </thead>
+            <tbody>
+              {known.map(renderRow)}
+              {others.length > 0 ? (
+                <tr className="bg-[var(--surface-2,#f3f4f5)]">
+                  <td colSpan={8} className="p-0">
+                    <button
+                      type="button"
+                      onClick={() => setShowOther((v) => !v)}
+                      aria-expanded={showOther}
+                      title={showOther ? t("common.collapse") : t("common.expand")}
+                      className="flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-2 text-left transition-colors duration-150 hover:bg-[rgb(0_0_0_/_0.04)]"
+                    >
+                      <span className="inline-flex min-w-0 items-center gap-1.5 text-[0.78rem] font-medium text-[var(--t1,#222326)]">
+                        <ChevronDown
+                          className={cn("size-3.5 shrink-0 text-[var(--t3,#8a8f98)] transition-transform duration-150", !showOther && "-rotate-90")}
+                        />
+                        <span className="truncate">{t("pages.discover.others", { n: others.length })}</span>
+                      </span>
+                      <span className="shrink-0 whitespace-nowrap text-[0.72rem] text-[var(--t3,#8a8f98)]">
+                        {showOther ? t("common.collapse") : t("common.expand")} · {t("pages.discover.othersHint")}
+                      </span>
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>{known.map(renderRow)}</tbody>
-            </table>
-          </div>
-        </Card>
-
-        {others.length > 0 ? (
-          <Card className="p-0">
-            <button
-              type="button"
-              onClick={() => setShowOther((v) => !v)}
-              aria-expanded={showOther}
-              className="flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors duration-150 hover:bg-[var(--surface-2,#f3f4f5)]"
-            >
-              <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">
-                {t("pages.discover.others", { n: others.length })}
-              </span>
-              <span className="text-[0.72rem] text-[var(--t3,#8a8f98)]">
-                {showOther ? t("common.collapse") : t("common.expand")} · {t("pages.discover.othersHint")}
-              </span>
-            </button>
-            {showOther ? (
-              <div className="max-h-[240px] overflow-auto border-t border-[var(--line,#e6e6e6)]">
-                <table className="w-full border-collapse text-left">
-                  <tbody>{others.map(renderRow)}</tbody>
-                </table>
-              </div>
-            ) : null}
-          </Card>
-        ) : null}
-      </>
+              ) : null}
+              {showOther ? others.map(renderRow) : null}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     );
   };
 
@@ -736,7 +748,7 @@ export function DiscoverPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="sticky top-0 z-10 border-b border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)]/95 px-6 py-3 backdrop-blur-sm">
-          <div className="mx-auto flex max-w-5xl flex-col gap-3">
+          <div className="mx-auto flex max-w-7xl flex-col gap-2.5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1,#222326)]">{t("pages.discover.title")}</h2>
@@ -774,16 +786,6 @@ export function DiscoverPage() {
                 </Button>
               </div>
             </div>
-
-            {ws.state.workspaceId ? (
-              <div className="flex flex-wrap items-center gap-2 rounded-[var(--r-md,12px)] border border-[rgb(94_106_210_/_0.2)] bg-[rgb(94_106_210_/_0.04)] px-3 py-2">
-                <FileInput className="size-3.5 shrink-0 text-[var(--st-accent,#5e6ad2)]" />
-                <span className="min-w-0 flex-1 text-[0.74rem] text-[var(--t2,#62666d)]">{t("pages.discover.readmeBanner")}</span>
-                <Button variant="soft" size="xs" className="gap-1" onClick={() => void openReadmeImport()} disabled={readmeLoading}>
-                  {readmeLoading ? t("pages.discover.readmeImporting") : t("pages.discover.readmeImport")}
-                </Button>
-              </div>
-            ) : null}
 
             <div className="flex flex-wrap items-center gap-2">
               <SummaryChip label={t("pages.discover.chipTotal")} value={summary.total} />
@@ -862,7 +864,7 @@ export function DiscoverPage() {
                 variant={sortBy === "match" ? "ghost" : "soft"}
                 size="xs"
                 onClick={cycleSort}
-                className="gap-1"
+                className={cn("gap-1", sortBy !== "match" && "text-[var(--st-accent,#5e6ad2)]")}
                 title={t("pages.discover.sortHint")}
               >
                 {sortBy === "cpu" ? <Cpu className="size-3" /> : sortBy === "memory" ? <HardDrive className="size-3" /> : <ArrowDownWideNarrow className="size-3" />}
@@ -877,7 +879,7 @@ export function DiscoverPage() {
           </div>
         </div>
 
-        <div className="mx-auto flex max-w-5xl flex-col gap-4 px-6 py-4">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-4">
           {listBody()}
           <p className="text-[0.72rem] leading-relaxed text-[var(--t3,#8a8f98)]">{t("pages.discover.footnote")}</p>
         </div>
