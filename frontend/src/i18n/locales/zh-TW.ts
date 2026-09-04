@@ -115,12 +115,21 @@ const zhTW = {
     "toggleDetails": "展開 / 收起系統與環境詳情",
     "tempOffValue": "已關閉",
     "tempModeLabel": "溫度取樣",
-    "tempUnsupportedHint": "本機未提供 CPU 溫度感測器（桌機常見），切換檔位也拿不到讀數。",
+    "tempUnsupportedHint": "本機未暴露 CPU 溫度感測器（常見於桌上型電腦），切換檔位也拿不到讀數。",
     "tempModes": {
-      "off": { "label": "關閉", "hint": "不取樣 CPU 溫度，狀態列隱藏該項。" },
-      "auto": { "label": "自動", "hint": "低頻取樣：Linux 直接讀感測器，Windows 每分鐘查一次 WMI。" },
-      "fast": { "label": "高頻", "hint": "近即時：Windows 常駐一個取樣行程持續讀數，不再每次開新行程。" }
-    }
+      "off": {
+        "label": "關閉",
+        "hint": "不採樣 CPU 溫度，狀態列隱藏該項。",
+      },
+      "auto": {
+        "label": "自動",
+        "hint": "低頻取樣：Linux 直接讀感測器，Windows 每分鐘查一次 WMI。",
+      },
+      "fast": {
+        "label": "高頻",
+        "hint": "近即時：Windows 常駐一個取樣程序持續讀數，不再每次開新程序。",
+      },
+    },
   },
   "pages": {
     "ai": {
@@ -644,6 +653,7 @@ const zhTW = {
       "pkgLabel": "工作區包",
       "emptyTitle": "沒有開啟的工作區",
       "emptyDesc": "選擇一個專案目錄即可開始，沒有 supertask.yaml 時會自動掃描生成草稿。",
+      "emptyHint": "也可稍後從側欄工作區切換器開啟。",
       "pickDir": "選擇目錄…",
       "headerDesc": "同時只打開一個工作區；切換時已啟動的服務轉入後臺繼續執行，切回時自動接管。",
       "currentLabel": "當前",
@@ -653,11 +663,21 @@ const zhTW = {
       "explorer": "資源管理器",
       "closeWorkspace": "關閉工作區",
       "recentUsed": "最近使用",
+      "searchPlaceholder": "搜尋最近工作區…",
+      "sortRecent": "最近",
+      "sortName": "名稱",
+      "sortPath": "路徑",
+      "noMatch": "沒有匹配的最近工作區",
+      "open": "開啟",
+      "forget": "忘記",
+      "switching": "正在切換工作區…",
       "switchTo": "切換到 {{path}}",
       "removeAria": "移除 {{name}}",
       "removeRecentTitle": "從最近移除",
       "switch": "切換",
+      "confirmCloseTitle": "關閉工作區",
       "confirmClose": "關閉工作區「{{name}}」？執行中的服務將被停止。",
+      "confirmRemoveTitle": "從最近移除",
       "confirmRemoveRecent": "從最近列表移除「{{name}}」？（不影響磁碟上的檔案）",
     },
     "run": {
@@ -1026,7 +1046,7 @@ const zhTW = {
         "emerald": "Emerald 翠綠",
         "amber": "Amber 琥珀",
         "rose": "Rose 玫瑰",
-        "ocean": "Ocean 海洋"
+        "ocean": "Ocean 海洋",
       },
       "language": "語言",
       "languageDesc": "切換即時生效，無需重啟",
@@ -1106,6 +1126,9 @@ const zhTW = {
     "recent": "最近",
     "noRecent": "暫無最近工作區",
     "openOther": "開啟其他目錄…",
+    "searchRecent": "搜尋最近…",
+    "noSearchMatch": "無匹配最近工作區",
+    "managePage": "管理工作區",
   },
   "opStates": {
     "queued": "排隊中",
