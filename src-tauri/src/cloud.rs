@@ -15,16 +15,49 @@ use supertask_core::cloud::http::HttpCloudProvider;
 use supertask_core::cloud::migrate::{self, RestorePlan, ToolchainGap};
 use supertask_core::cloud::sync::{load_state, save_state, LocalBinding, ResolveChoice, SyncState};
 use supertask_core::cloud::telemetry::TelemetryBuffer;
-use supertask_core::cloud::{CloudProvider, EntityData, EntityType, LoginTokens};
+use supertask_core::cloud::{CloudProvider, EntityData, EntityType, Healthz, LoginTokens};
 use supertask_core::error::{Error, ErrorCode, Result};
 
 /// 壳层云运行时：可动态切换的 provider/端点 + 遥测缓冲。
 ///
 /// provider 与 endpoint 总是成对替换，读请求只在调用期间持有读锁，保证
 /// `cloud.endpoint.set` 生效后后续请求不会继续使用旧 provider。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CloudRuntime {
+    pub phase: String,
+    pub last_attempt_ms: Option<u64>,
+    pub last_success_ms: Option<u64>,
+    pub last_error: Option<String>,
+    pub last_result: Option<CloudRuntimeResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CloudRuntimeResult {
+    pub pushed: usize,
+    pub pulled: usize,
+    pub pending: usize,
+    pub skipped: usize,
+    pub conflicts: usize,
+}
+
 pub struct CloudHandle {
     client: RwLock<CloudClient>,
     pub telemetry: Mutex<TelemetryBuffer>,
+    runtime: Mutex<CloudRuntime>,
+    operation_gate: Mutex<bool>,
+}
+
+struct OperationGuard<'a> {
+    handle: &'a CloudHandle,
+}
+impl Drop for OperationGuard<'_> {
+    fn drop(&mut self) {
+        *self
+            .handle
+            .operation_gate
+            .lock()
+            .expect("cloud operation lock") = false;
+    }
 }
 
 struct CloudClient {
@@ -45,6 +78,46 @@ impl CloudHandle {
                 endpoint,
             }),
             telemetry: Mutex::new(TelemetryBuffer::new(app.cloud_telemetry)),
+            runtime: Mutex::new(CloudRuntime {
+                phase: "idle".into(),
+                ..Default::default()
+            }),
+            operation_gate: Mutex::new(false),
+        }
+    }
+
+    fn begin_operation(&self) -> Result<OperationGuard<'_>> {
+        let mut busy = self.operation_gate.lock().expect("cloud operation lock");
+        if *busy {
+            return Err(Error::new(
+                ErrorCode::CloudProtocolError,
+                "云端同步或迁移正在进行中",
+            ));
+        }
+        *busy = true;
+        let mut runtime = self.runtime.lock().expect("cloud runtime lock");
+        runtime.phase = "syncing".into();
+        runtime.last_attempt_ms = Some(now_ms());
+        runtime.last_error = None;
+        Ok(OperationGuard { handle: self })
+    }
+
+    fn finish_operation(&self, result: &Result<SyncOut>) {
+        let mut runtime = self.runtime.lock().expect("cloud runtime lock");
+        runtime.phase = "idle".into();
+        match result {
+            Ok(out) => {
+                runtime.last_success_ms = Some(now_ms());
+                runtime.last_error = None;
+                runtime.last_result = Some(CloudRuntimeResult {
+                    pushed: out.pushed,
+                    pulled: out.pulled,
+                    pending: out.pending.len(),
+                    skipped: out.skipped.len(),
+                    conflicts: out.conflicts.len(),
+                });
+            }
+            Err(error) => runtime.last_error = Some(error.message().to_string()),
         }
     }
 
@@ -54,6 +127,11 @@ impl CloudHandle {
             .expect("cloud client lock")
             .endpoint
             .clone()
+    }
+
+    /// 无认证探活当前端点（不经 CloudProvider trait，避免要求登录）。
+    pub fn probe_healthz(&self) -> Result<Healthz> {
+        HttpCloudProvider::new(self.endpoint()).healthz()
     }
 
     /// 严格校验并切换端点。调用方应先持久化 AppData，成功后再调用本方法。
@@ -420,6 +498,30 @@ pub struct CloudStatusOut {
     pub conflict_ids: Vec<String>,
     pub telemetry_enabled: bool,
     pub quota: Option<supertask_core::cloud::QuotaUsage>,
+    pub connection: String,
+    pub health_detail: Option<String>,
+    pub tracked: TrackedCounts,
+    pub conflict_details: Vec<ConflictDetail>,
+    pub telemetry_pending: usize,
+    pub runtime: CloudRuntime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrackedCounts {
+    pub total: usize,
+    pub settings: usize,
+    pub templates: usize,
+    pub workspaces: usize,
+    pub mapped_workspaces: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConflictDetail {
+    pub id: String,
+    pub entity_type: String,
+    pub server_rev: u64,
+    pub has_local: bool,
+    pub has_server: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -461,18 +563,87 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn tracked_counts(state: &SyncState) -> TrackedCounts {
+    let mut c = TrackedCounts {
+        total: state.entities.len(),
+        settings: 0,
+        templates: 0,
+        workspaces: 0,
+        mapped_workspaces: 0,
+    };
+    for tracked in state.entities.values() {
+        match tracked.entity_type {
+            EntityType::Settings => c.settings += 1,
+            EntityType::Template => c.templates += 1,
+            EntityType::Workspace => {
+                c.workspaces += 1;
+                if tracked.local_path.is_some() {
+                    c.mapped_workspaces += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    c
+}
+
+fn conflict_details(state: &SyncState) -> Vec<ConflictDetail> {
+    state
+        .conflicts
+        .iter()
+        .map(|(id, c)| ConflictDetail {
+            id: id.clone(),
+            entity_type: c.entity_type.as_str().into(),
+            server_rev: c.server_rev,
+            has_local: c.local.is_some(),
+            has_server: c.server.is_some(),
+        })
+        .collect()
+}
+
 pub fn cloud_status(handle: &CloudHandle) -> Result<CloudStatusOut> {
     let state = load_state();
     let logged_in = handle.session().is_ok();
+    let mut health_detail = None;
     let quota = if logged_in {
-        handle
-            .authenticated(|provider, token| provider.quota(token))
-            .ok()
+        // 先探活：失败/降级只标 offline，不当作认证失败。
+        match handle.probe_healthz() {
+            Err(error) => {
+                health_detail = Some(format!("healthz: {}", error.message()));
+                None
+            }
+            Ok(health) if health.is_unhealthy() => {
+                health_detail = Some(format!(
+                    "healthz degraded (status={}, db={})",
+                    health.status,
+                    health.db.as_deref().unwrap_or("-")
+                ));
+                None
+            }
+            Ok(_) => handle
+                .authenticated(|provider, token| provider.quota(token))
+                .map_err(|error| {
+                    health_detail = Some(error.message().to_string());
+                    error
+                })
+                .ok(),
+        }
     } else {
         None
     };
     // A failed refresh clears the session; reflect that in the same status response.
     let session = handle.session().ok();
+    let connection = if session.is_none() {
+        "auth_required"
+    } else if quota.is_some() {
+        "online"
+    } else {
+        "offline"
+    };
+    let tracked = tracked_counts(&state);
+    let conflict_details = conflict_details(&state);
+    let telemetry_pending = handle.telemetry.lock().expect("telemetry lock").pending();
+    let runtime = handle.runtime.lock().expect("cloud runtime lock").clone();
     Ok(CloudStatusOut {
         logged_in: session.is_some(),
         email: session.as_ref().map(|t| t.email.clone()),
@@ -487,6 +658,12 @@ pub fn cloud_status(handle: &CloudHandle) -> Result<CloudStatusOut> {
             .expect("telemetry lock")
             .is_enabled(),
         quota,
+        connection: connection.into(),
+        health_detail,
+        tracked,
+        conflict_details,
+        telemetry_pending,
+        runtime,
     })
 }
 
@@ -547,6 +724,13 @@ pub fn cloud_telemetry_set(
 }
 
 pub fn cloud_sync(handle: &CloudHandle) -> Result<SyncOut> {
+    let _gate = handle.begin_operation()?;
+    let result = cloud_sync_inner(handle);
+    handle.finish_operation(&result);
+    result
+}
+
+fn cloud_sync_inner(handle: &CloudHandle) -> Result<SyncOut> {
     let mut state = load_state();
     let outcome = {
         let mut sb = SettingsBinding;
@@ -623,12 +807,44 @@ pub struct MigrateWorkspace {
 
 /// 迁移 apply：选定落盘目录 → 走一次 sync（pull 落盘，目标已有 yaml 挂起）。
 /// 工具链安装由前端逐项调用既有 toolchain.install（复用 operation 事件桥与取消）。
+fn validate_migration_workspaces(workspaces: &[MigrateWorkspace]) -> Result<()> {
+    let mut ids = std::collections::HashSet::new();
+    for w in workspaces {
+        if w.entity_id.trim().is_empty() || !ids.insert(w.entity_id.clone()) {
+            return Err(Error::new(
+                ErrorCode::CloudProtocolError,
+                "迁移工作区实体 ID 为空或重复",
+            ));
+        }
+        if w.dir.trim().is_empty() || !std::path::Path::new(&w.dir).is_absolute() {
+            return Err(Error::new(
+                ErrorCode::CloudProtocolError,
+                "迁移工作区目录必须是非空绝对路径",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn cloud_migrate_apply(
     handle: &CloudHandle,
     workspaces: Vec<MigrateWorkspace>,
-    _include_templates: Option<bool>,
-    _include_settings: Option<bool>,
+    include_templates: Option<bool>,
+    include_settings: Option<bool>,
 ) -> Result<SyncOut> {
+    let _gate = handle.begin_operation()?;
+    let result = cloud_migrate_apply_inner(handle, workspaces, include_templates, include_settings);
+    handle.finish_operation(&result);
+    result
+}
+
+fn cloud_migrate_apply_inner(
+    handle: &CloudHandle,
+    workspaces: Vec<MigrateWorkspace>,
+    include_templates: Option<bool>,
+    include_settings: Option<bool>,
+) -> Result<SyncOut> {
+    validate_migration_workspaces(&workspaces)?;
     let mut state = load_state();
     for w in &workspaces {
         let tracked = state
@@ -645,7 +861,16 @@ pub fn cloud_migrate_apply(
     let mut sb = SettingsBinding;
     let mut tb = TemplateBinding;
     let mut wb = WorkspaceBinding;
-    let mut b: [&mut dyn LocalBinding; 3] = [&mut sb, &mut tb, &mut wb];
+    let mut b: Vec<&mut dyn LocalBinding> = Vec::new();
+    if include_settings.unwrap_or(true) {
+        b.push(&mut sb);
+    }
+    if include_templates.unwrap_or(true) {
+        b.push(&mut tb);
+    }
+    if !workspaces.is_empty() {
+        b.push(&mut wb);
+    }
     let outcome = handle.authenticated(|provider, token| {
         supertask_core::cloud::sync::sync(
             provider,
@@ -667,8 +892,32 @@ pub fn cloud_migrate_apply(
 }
 
 pub fn cloud_migrate_plan(handle: &CloudHandle) -> Result<RestorePlan> {
-    let entities = handle
-        .authenticated(|provider, token| provider.list(token, Some(EntityType::Workspace)))?;
+    let entities = handle.authenticated(|provider, token| provider.list(token, None))?;
+    let summaries: Vec<supertask_core::cloud::migrate::EntitySummary> = entities
+        .iter()
+        .map(|e| {
+            let name = e
+                .name
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| match &e.data {
+                    EntityData::Plain(v) => v
+                        .get("name")
+                        .or_else(|| v.get("title"))
+                        .and_then(|x| x.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or(&e.id)
+                        .to_string(),
+                    EntityData::Encrypted { .. } => e.id.clone(),
+                });
+            supertask_core::cloud::migrate::EntitySummary {
+                id: e.id.clone(),
+                entity_type: e.entity_type.as_str().into(),
+                name,
+            }
+        })
+        .collect();
     let mut gaps: Vec<ToolchainGap> = Vec::new();
     for e in &entities {
         if let EntityData::Plain(v) = &e.data {
@@ -688,6 +937,7 @@ pub fn cloud_migrate_plan(handle: &CloudHandle) -> Result<RestorePlan> {
         }
     }
     Ok(RestorePlan {
+        entities: summaries,
         toolchain_gaps: gaps,
     })
 }

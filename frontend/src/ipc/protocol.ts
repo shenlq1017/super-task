@@ -928,6 +928,12 @@ export type CloudStatusOut = {
   /** Additive field; older engines may omit it. */
   conflict_ids?: string[];
   quota?: { entities: number; entities_max: number; bytes: number; bytes_max: number } | null;
+  connection?: "online" | "offline" | "auth_required" | "unknown";
+  health_detail?: string | null;
+  tracked?: { total: number; settings: number; templates: number; workspaces: number; mapped_workspaces: number };
+  conflict_details?: { id: string; entity_type: string; server_rev: number; has_local: boolean; has_server: boolean }[];
+  telemetry_pending?: number;
+  runtime?: { phase: "idle" | "syncing"; last_attempt_ms?: number | null; last_success_ms?: number | null; last_error?: string | null; last_result?: { pushed: number; pulled: number; pending: number; skipped: number; conflicts: number } | null };
   telemetry_enabled?: boolean;
 };
 

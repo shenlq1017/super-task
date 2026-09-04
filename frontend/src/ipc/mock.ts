@@ -2422,6 +2422,26 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         ? { entities: 3, entities_max: 100, bytes: 4096, bytes_max: 10000000 }
         : null,
       telemetry_enabled: mockCloud.telemetryEnabled,
+      connection: mockCloud.loggedIn ? "online" : "auth_required",
+      health_detail: null,
+      tracked: { total: 3, settings: 1, templates: 1, workspaces: 1, mapped_workspaces: mockCloud.loggedIn ? 1 : 0 },
+      conflict_details: mockCloud.conflicts.map((id) => ({
+        id,
+        entity_type: "workspace",
+        server_rev: 2,
+        has_local: true,
+        has_server: true,
+      })),
+      telemetry_pending: 0,
+      runtime: {
+        phase: "idle",
+        last_attempt_ms: mockCloud.lastSyncedMs,
+        last_success_ms: mockCloud.lastSyncedMs,
+        last_error: null,
+        last_result: mockCloud.lastSyncedMs
+          ? { pushed: 1, pulled: 0, pending: 0, skipped: 0, conflicts: mockCloud.conflicts.length }
+          : null,
+      },
     };
     return out;
   }
