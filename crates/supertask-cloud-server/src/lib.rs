@@ -48,6 +48,7 @@ fn client_api(state: AppState) -> Router {
                 .delete(http::delete_entity),
         )
         .route("/quota", get(http::get_quota))
+        .route("/telemetry/policy", get(http::get_telemetry_policy))
         .route("/telemetry/batch", post(http::post_telemetry))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
