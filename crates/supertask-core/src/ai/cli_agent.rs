@@ -79,7 +79,8 @@ impl Drop for IsolatedCwd {
 impl CliRunner for ProcessCliRunner {
     fn run(&self, invocation: &CliInvocation) -> Result<CliOutput> {
         let workdir = IsolatedCwd::create()?;
-        let mut command = Command::new(&invocation.program);
+        let program = resolve_for_spawn(&invocation.program);
+        let mut command = Command::new(&program);
         command
             .args(&invocation.args)
             .current_dir(workdir.path())
@@ -215,6 +216,67 @@ pub fn resolve_program(cli_path: Option<&str>, default_program: &str) -> String 
         }
         None => default_program.to_string(),
     }
+}
+
+/// spawn 前的程序名解析：非 Windows 原样返回。
+fn resolve_for_spawn(program: &str) -> String {
+    #[cfg(windows)]
+    {
+        resolve_windows_executable(program)
+    }
+    #[cfg(not(windows))]
+    {
+        program.to_string()
+    }
+}
+
+/// Windows 的 `Command::new` 只会给裸程序名补 `.exe`，不解析 `PATHEXT`；npm 等方式
+/// 安装的 CLI 通常是 `.cmd` shim（如 `cursor-agent.cmd`），裸名会直接 "program not
+/// found"。这里按 PATH + PATHEXT 找到真实文件再 spawn；解析失败保持原样，交给系统
+/// 报原来的错。解析出的 `.bat`/`.cmd` 绝对路径由 std 自动经 `cmd.exe` 安全转义执行，
+/// 参数不会被拼接进 shell。
+#[cfg(windows)]
+fn resolve_windows_executable(program: &str) -> String {
+    let path = std::path::Path::new(program);
+    // 已带扩展名：按原样交给系统（含 .exe / .cmd / .bat）
+    if path.extension().is_some() {
+        return program.to_string();
+    }
+    let exts: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .map(str::trim)
+        .filter(|s| s.starts_with('.'))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    // 带目录（绝对或相对）：只在该目录下补扩展名
+    if program.contains('\\') || program.contains('/') {
+        if let Some(dir) = path.parent() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            for ext in &exts {
+                let candidate = dir.join(format!("{name}{ext}"));
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+        return program.to_string();
+    }
+    // 裸程序名：逐个 PATH 目录按 PATHEXT 顺序找
+    if let Ok(path_env) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_env) {
+            for ext in &exts {
+                let candidate = dir.join(format!("{program}{ext}"));
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+    program.to_string()
 }
 
 pub fn build_env(env: &BTreeMap<String, String>) -> Result<Vec<(String, String)>> {
@@ -565,5 +627,31 @@ mod tests {
         };
         let err = run_error("claude", &timed_out);
         assert!(err.message().contains("超时"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_resolution_finds_bare_names_via_pathext() {
+        // cmd.exe 一定在 System32 且在 PATH 上：裸名应解析到真实文件
+        let resolved = resolve_windows_executable("cmd");
+        assert!(
+            resolved.to_ascii_lowercase().ends_with("cmd.exe"),
+            "{resolved}"
+        );
+        assert!(std::path::Path::new(&resolved).is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_resolution_keeps_unknown_and_extended_names() {
+        // 找不到的裸名原样返回（系统报原生错误）；带扩展名的名字不做解析
+        assert_eq!(
+            resolve_windows_executable("definitely-not-a-real-cli"),
+            "definitely-not-a-real-cli"
+        );
+        assert_eq!(
+            resolve_windows_executable("definitely-not-a-real-cli.exe"),
+            "definitely-not-a-real-cli.exe"
+        );
     }
 }

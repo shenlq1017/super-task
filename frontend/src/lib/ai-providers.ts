@@ -67,7 +67,7 @@ export const AI_PROVIDER_PRESETS: Record<AiProviderKey, AiProviderPreset> = {
   },
   "cursor-cli": {
     label: "Cursor CLI", group: "cli", endpoint: "", model: "default",
-    icon: "cursor", cliProgram: "agent", cliArgs: ["--print", "--output-format", "text"],
+    icon: "cursor", cliProgram: "cursor-agent", cliArgs: ["--print", "--output-format", "text"],
   },
   "codebuddy-cli": {
     label: "CodeBuddy Code", group: "cli", endpoint: "", model: "default",

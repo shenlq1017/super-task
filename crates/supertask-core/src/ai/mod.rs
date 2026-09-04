@@ -259,7 +259,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
     ),
     local_cli(
         "cursor-cli",
-        "agent",
+        "cursor-agent",
         &["--print", "--output-format", "text"],
         &["default"],
     ),

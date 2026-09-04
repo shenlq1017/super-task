@@ -410,6 +410,7 @@ const enUS = {
       deleteTemplateDesc: "Delete template \"{{name}}\"?",
       keySet: "Key saved",
       keyNotSet: "Key not set",
+      clearKey: "Clear key",
       baseUrl: "Endpoint base_url (OpenAI-compatible)",
       model: "Model",
       apiKey: "API Key",
@@ -1095,7 +1096,6 @@ const enUS = {
       sortCpu: "CPU desc",
       sortMemory: "Memory desc",
       sortHint: "Cycle sort: match first → CPU → memory",
-      readmeBanner: "Workspace open: parse start/build commands from README into service and script drafts (nothing is written until you confirm).",
       readmeImportEmptyCta: "Import draft from README",
     },
     config: {

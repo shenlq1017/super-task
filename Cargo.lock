@@ -4889,7 +4889,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "supertask"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "indexmap 2.14.1",
  "serde",
@@ -4907,7 +4907,7 @@ dependencies = [
 
 [[package]]
 name = "supertask-cli"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "clap",
  "ctrlc",
@@ -4919,7 +4919,7 @@ dependencies = [
 
 [[package]]
 name = "supertask-cloud-server"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "argon2",
  "axum",
@@ -4937,7 +4937,7 @@ dependencies = [
 
 [[package]]
 name = "supertask-core"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "argon2",
  "chacha20poly1305",

@@ -195,6 +195,7 @@ const zhCN = {
       deleteTemplateDesc: "确定删除模板「{{name}}」？",
       keySet: "Key 已保存",
       keyNotSet: "Key 未设置",
+      clearKey: "清除 Key",
       baseUrl: "端点 base_url（OpenAI 兼容）",
       model: "模型",
       apiKey: "API Key",
@@ -552,7 +553,6 @@ const zhCN = {
       sortCpu: "CPU 降序",
       sortMemory: "内存降序",
       sortHint: "切换排序：匹配优先 → CPU → 内存",
-      readmeBanner: "已打开工作区：可从 README 解析启动/构建命令，合并为服务与脚本草稿（确认后写盘）。",
       readmeImportEmptyCta: "从 README 导入草稿",
     },
     git: {
