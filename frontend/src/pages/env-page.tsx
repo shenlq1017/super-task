@@ -1,6 +1,30 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Lock, RefreshCw, XCircle, KeyRound, ArrowUpFromLine, Download } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Lock,
+  Network,
+  RefreshCw,
+  Search,
+  XCircle,
+  KeyRound,
+  ArrowUpFromLine,
+  Download,
+  Settings2,
+} from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +41,60 @@ import { errorDisplayText } from "@/lib/error-messages";
 import { cn } from "@/lib/utils";
 
 type ToolKey = "java" | "maven" | "node" | "npm" | "pnpm" | "yarn" | "bun" | "python" | "go";
+type ManagerPick = "auto" | "mise" | "winget";
+type ActionDialog = { tool: ToolKey; verb: "install" | "upgrade" } | null;
+
+const LS_MANAGER = "st:env.managerPick";
+const LS_NETWORK_COLLAPSED = "st:env.networkCollapsed";
+
+function versionMatches(want: string | null | undefined, have: string | null | undefined): boolean {
+  if (!want || !have) return false;
+  if (want === have) return true;
+  return have.startsWith(want + ".");
+}
+
+function loadManagerPick(): ManagerPick {
+  try {
+    const v = localStorage.getItem(LS_MANAGER);
+    if (v === "auto" || v === "mise" || v === "winget") return v;
+  } catch {
+    /* ignore */
+  }
+  return "auto";
+}
+
+function saveManagerPick(m: ManagerPick) {
+  try {
+    localStorage.setItem(LS_MANAGER, m);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadNetworkCollapsed(): boolean {
+  try {
+    return localStorage.getItem(LS_NETWORK_COLLAPSED) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function saveNetworkCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(LS_NETWORK_COLLAPSED, collapsed ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function fmtProbeTime(ts: number | null): string {
+  if (ts == null) return "\u2014";
+  return new Date(ts).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
 
 /** 客户端镜像后端 manifest 默认版本（§4.3 版本来源第 3 级）。 */
 const DEFAULT_VERSION: Record<ToolKey, string> = {
@@ -58,6 +136,134 @@ const INSTALL_SOURCE_KEYS: Record<DiscoveredInstall["source"], string> = {
   nvm_dir: "pages.env.srcNvmDir",
 };
 
+
+/** Searchable floating version list (avoids native select crowding the card). */
+function VersionCombobox(props: {
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+  ariaLabel: string;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return props.options;
+    return props.options.filter((o) => o.toLowerCase().includes(q));
+  }, [props.options, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative min-w-0 flex-1">
+      <button
+        type="button"
+        disabled={props.disabled}
+        aria-label={props.ariaLabel}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex h-9 w-full items-center gap-1.5 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-2.5 font-mono text-[0.8rem] text-[var(--t1,#222326)]",
+          "hover:border-[var(--st-accent,#5e6ad2)] focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+        )}
+      >
+        <span className="min-w-0 flex-1 truncate text-left">{props.value || "\u2014"}</span>
+        <ChevronDown className={cn("size-3.5 shrink-0 text-[var(--t3,#8a8f98)] transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          className="absolute left-0 right-0 z-50 mt-1 overflow-hidden rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] shadow-lg ring-1 ring-black/5"
+        >
+          <div className="flex items-center gap-1.5 border-b border-[var(--line,#e6e6e6)] px-2 py-1.5">
+            <Search className="size-3.5 shrink-0 text-[var(--t3,#8a8f98)]" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t("pages.env.versionSearch")}
+              className="min-w-0 flex-1 bg-transparent text-[0.78rem] text-[var(--t1,#222326)] outline-none placeholder:text-[var(--t3,#8a8f98)]"
+              aria-label={t("pages.env.versionSearch")}
+            />
+          </div>
+          <ul className="max-h-48 overflow-auto py-1">
+            {filtered.length === 0 ? (
+              <li className="px-3 py-2 text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.env.versionEmpty")}</li>
+            ) : (
+              filtered.map((v) => {
+                const selected = v === props.value;
+                return (
+                  <li key={v}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      className={cn(
+                        "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[0.78rem] hover:bg-[var(--surface-2,#f3f4f5)]",
+                        selected && "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]",
+                      )}
+                      onClick={() => {
+                        props.onChange(v);
+                        setOpen(false);
+                      }}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{v}</span>
+                      {selected && <Check className="size-3.5 shrink-0" />}
+                    </button>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolSkeleton() {
+  return (
+    <Card className="flex flex-col gap-3 p-3">
+      <div className="flex items-center gap-3">
+        <div className="size-9 animate-pulse rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)]" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="h-3.5 w-20 animate-pulse rounded bg-[var(--surface-2,#f3f4f5)]" />
+          <div className="h-2.5 w-40 animate-pulse rounded bg-[var(--surface-2,#f3f4f5)]" />
+        </div>
+      </div>
+      <div className="h-8 animate-pulse rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)]" />
+    </Card>
+  );
+}
+
 export function EnvPage() {
   const { state: session } = useSession();
   const ws = useWorkspace();
@@ -73,21 +279,39 @@ export function EnvPage() {
   /** S1：每工具可选版本（后端白名单 ∪ mise ls-remote）；拉取失败降级为仅默认版本。 */
   const [versions, setVersions] = useState<Record<string, string[]> | null>(null);
   const [versionDraft, setVersionDraft] = useState<Partial<Record<ToolKey, string>>>({});
-  const [managerPick, setManagerPick] = useState<"auto" | "mise" | "winget">("auto");
-  const [pending, setPending] = useState<Partial<Record<ToolKey, PendingOp>>>({});
+  const [managerPick, setManagerPickState] = useState<ManagerPick>(loadManagerPick);
+  const [pending, setPending] = useState<Partial<Record<ToolKey, PendingOp | null>>>({});
+  const [lastProbeAt, setLastProbeAt] = useState<number | null>(() => (session.app?.probe ? Date.now() : null));
+  const [probeError, setProbeError] = useState<string | null>(null);
+  const [actionDialog, setActionDialog] = useState<ActionDialog>(null);
+  const [installsDialogTool, setInstallsDialogTool] = useState<ToolKey | null>(null);
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
   const handledOps = useRef(new Set<string>());
+  const refreshGen = useRef(0);
+
+  const setManagerPick = (m: ManagerPick) => {
+    setManagerPickState(m);
+    saveManagerPick(m);
+  };
 
   // D1：后端会话内 TTL 缓存——进页走缓存，手动「重新探测」才强制
   const refresh = async (force = false) => {
+    const gen = ++refreshGen.current;
     setProbing(true);
     try {
-      setProbe(await apiToolchainProbe(force));
+      const next = await apiToolchainProbe(force);
+      if (gen !== refreshGen.current) return;
+      setProbe(next);
+      setProbeError(null);
+      setLastProbeAt(Date.now());
     } catch (e) {
-      toast(e instanceof IpcFailure ? e.message : String(e), "err");
+      if (gen !== refreshGen.current) return;
+      const msg = e instanceof IpcFailure ? e.message : String(e);
+      setProbeError(msg);
+      toast(msg, "err");
     } finally {
-      setProbing(false);
+      if (gen === refreshGen.current) setProbing(false);
     }
   };
 
@@ -117,7 +341,7 @@ export function EnvPage() {
       const { verb } = entry[1] as PendingOp;
       setPending((prev) => ({ ...prev, [tool]: null }));
       if (op.state === "succeeded") {
-        void refresh();
+        void refresh(true);
         if (verb === "pin") void yaml.actions.reload();
         toast(t("pages.env.opDone", { tool, verb: t(`pages.env.verb_${verb}`) }), "ok");
       } else {
@@ -164,17 +388,18 @@ export function EnvPage() {
     try {
       await apiYamlSaveForm(next, hash);
       await yaml.actions.reload();
-      void refresh(); // active 标记可能随钉扎变化
+      void refresh(true); // active 标记可能随钉扎变化
       toast(t("pages.env.pinInstalled", { version }), "ok");
     } catch (e) {
       toast(e instanceof IpcFailure ? errorDisplayText(e.code, e.message) : String(e), "err");
     }
   };
 
-  const startOp = async (key: ToolKey, verb: PendingOp["verb"]) => {
+  const startOp = async (key: ToolKey, verb: PendingOp["verb"], overrideVersion?: string) => {
     if (pending[key]) return; // 禁止重复安装同一个工具（§15.1）
     const required = requiredVersion(key);
-    const version = (verb === "pin" ? null : versionDraft[key]?.trim()) || required || undefined;
+    const version =
+      (verb === "pin" ? null : (overrideVersion ?? versionDraft[key])?.trim()) || required || undefined;
     const opts = {
       version: verb === "pin" ? probe?.[key]?.version ?? undefined : version,
       manager: managerPick,
@@ -185,6 +410,7 @@ export function EnvPage() {
       const out = verb === "upgrade" ? await apiToolchainUpgrade(key, opts) : await apiToolchainInstall(key, opts);
       handledOps.current.delete(out.operation_id);
       setPending((prev) => ({ ...prev, [key]: { opId: out.operation_id, verb } }));
+      setActionDialog(null);
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel((e as IpcFailure).code) : String(e), "err");
     }
@@ -199,57 +425,160 @@ export function EnvPage() {
 
   const tools = [...CORE_TOOLS, ...(needsPkg ? PKG_TOOLS : [])];
 
+  const health = useMemo(() => {
+    let found = 0;
+    let total = 0;
+    for (const tool of tools) {
+      total += 1;
+      if (probe?.[tool.key]?.found) found += 1;
+    }
+    return { found, total };
+  }, [tools, probe]);
+
+  const showSkeletons = probing && probe == null;
+  const canPinWs = ws.state.workspaceId != null && yaml.state.hash !== "";
+
+  const actionTool = actionDialog?.tool ?? null;
+  const actionMeta = actionTool ? tools.find((x) => x.key === actionTool) : null;
+  const actionRequired = actionTool ? requiredVersion(actionTool) : null;
+  const actionVersion =
+    actionTool != null
+      ? versionDraft[actionTool] || actionRequired || DEFAULT_VERSION[actionTool]
+      : "";
+  const installsForDialog =
+    installsDialogTool != null
+      ? (probe?.installs ?? []).filter((i) => i.tool === installsDialogTool)
+      : [];
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <h2 className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{t("pages.env.title")}</h2>
-          <span className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.env.subtitle")}</span>
-          <div className="ml-auto flex items-center gap-2">
-            {managers && (
-              <>
-                <Badge variant={managers.mise ? "default" : "outline"}>
-                  mise {managers.mise ? t("pages.env.available") : t("pages.env.notInstalled")}
-                </Badge>
-                <Badge variant={managers.winget ? "default" : "outline"}>
-                  winget {managers.winget ? t("pages.env.available") : t("pages.env.notInstalled")}
-                </Badge>
-              </>
-            )}
-            {wsTc?.manager && wsTc.manager !== "auto" && (
-              <Badge variant="secondary">{t("pages.env.workspaceManager", { manager: wsTc.manager })}</Badge>
-            )}
-            <Button variant="soft" size="sm" onClick={() => void refresh()} disabled={probing}>
+        <Card className="mb-3 p-3 sm:p-4">
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-[0.95rem] font-semibold text-[var(--t1,#222326)]">{t("pages.env.title")}</h2>
+                <span className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.env.subtitle")}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-[0.72rem] font-semibold",
+                    probe == null
+                      ? "bg-[var(--surface-2,#f3f4f5)] text-[var(--t3,#8a8f98)]"
+                      : health.found === health.total
+                        ? "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]"
+                        : "bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)]",
+                  )}
+                  title={t("pages.env.healthTitle")}
+                >
+                  <span
+                    aria-hidden
+                    className="size-1.5 rounded-full"
+                    style={{
+                      background:
+                        probe == null
+                          ? "var(--t3)"
+                          : health.found === health.total
+                            ? "var(--st-ok)"
+                            : "var(--st-warn)",
+                    }}
+                  />
+                  {probe == null
+                    ? t("pages.env.probing")
+                    : t("pages.env.healthSummary", { found: health.found, total: health.total })}
+                </span>
+                {managers && (
+                  <>
+                    <Badge variant={managers.mise ? "default" : "outline"}>
+                      mise {managers.mise ? t("pages.env.available") : t("pages.env.notInstalled")}
+                    </Badge>
+                    <Badge variant={managers.winget ? "default" : "outline"}>
+                      winget {managers.winget ? t("pages.env.available") : t("pages.env.notInstalled")}
+                    </Badge>
+                  </>
+                )}
+                {wsTc?.manager && wsTc.manager !== "auto" && (
+                  <Badge variant="secondary">{t("pages.env.workspaceManager", { manager: wsTc.manager })}</Badge>
+                )}
+                <span className="font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]">
+                  {t("pages.env.lastProbe", { time: fmtProbeTime(lastProbeAt) })}
+                </span>
+              </div>
+            </div>
+            <Button
+              variant="soft"
+              size="sm"
+              className="shrink-0 gap-1"
+              onClick={() => void refresh(true)}
+              disabled={probing}
+              title={t("pages.env.forceRefreshTitle")}
+            >
               {probing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               {t("pages.env.reprobe")}
             </Button>
           </div>
-        </div>
+        </Card>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {tools.map((tool) => (
-            <ToolCard
-              key={tool.key}
-              meta={tool}
-              found={probe?.[tool.key] ?? null}
-              installs={(probe?.installs ?? []).filter((i) => i.tool === tool.key)}
-              required={requiredVersion(tool.key)}
-              versionOptions={versionOptionsFor(tool.key, requiredVersion(tool.key))}
-              defaultVersion={DEFAULT_VERSION[tool.key]}
-              versionDraft={versionDraft[tool.key] ?? ""}
-              onVersionDraft={(v) => setVersionDraft((prev) => ({ ...prev, [tool.key]: v }))}
-              managerPick={managerPick}
-              managers={managers}
-              onManagerPick={setManagerPick}
-              pending={pending[tool.key] ?? null}
-              opState={pending[tool.key] ? ops.get(pending[tool.key]!.opId) : null}
-              canPin={ws.state.workspaceId != null && yaml.state.hash !== ""}
-              onPinInstall={(v) => void pinInstall(tool.key, v)}
-              onInstall={() => void startOp(tool.key, "install")}
-              onUpgrade={() => void startOp(tool.key, "upgrade")}
-              onPin={() => void startOp(tool.key, "pin")}
-            />
-          ))}
+        {probeError && probe == null && !probing && (
+          <Card className="mb-3 flex flex-col items-start gap-2 border-[rgb(192_53_53_/_0.25)] bg-[var(--st-danger-tint,#fdeeee)] p-4">
+            <div className="flex items-center gap-2 text-[0.875rem] font-semibold text-[var(--st-danger,#c03535)]">
+              <XCircle className="size-4 shrink-0" />
+              {t("pages.env.probeFailedTitle")}
+            </div>
+            <p className="text-[0.78rem] leading-relaxed text-[var(--t2,#62666d)]">{probeError}</p>
+            <p className="text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.env.probeFailedHint")}</p>
+            <Button variant="soft" size="sm" className="gap-1" onClick={() => void refresh(true)}>
+              <RefreshCw className="size-3.5" /> {t("common.retry")}
+            </Button>
+          </Card>
+        )}
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {showSkeletons
+            ? tools.map((tool) => <ToolSkeleton key={tool.key} />)
+            : tools.map((tool) => (
+                <ToolCard
+                  key={tool.key}
+                  meta={tool}
+                  found={probe?.[tool.key] ?? null}
+                  installs={(probe?.installs ?? []).filter((i) => i.tool === tool.key)}
+                  required={requiredVersion(tool.key)}
+                  defaultVersion={DEFAULT_VERSION[tool.key]}
+                  pending={pending[tool.key] ?? null}
+                  opState={pending[tool.key] ? ops.get(pending[tool.key]!.opId) : null}
+                  canPin={canPinWs}
+                  probing={probing && probe == null}
+                  onOpenInstall={() => {
+                    if (!versionDraft[tool.key]) {
+                      setVersionDraft((prev) => ({
+                        ...prev,
+                        [tool.key]: requiredVersion(tool.key) || DEFAULT_VERSION[tool.key],
+                      }));
+                    }
+                    setActionDialog({ tool: tool.key, verb: "install" });
+                  }}
+                  onOpenUpgrade={() => {
+                    if (!versionDraft[tool.key]) {
+                      setVersionDraft((prev) => ({
+                        ...prev,
+                        [tool.key]:
+                          requiredVersion(tool.key) ||
+                          probe?.[tool.key]?.version ||
+                          DEFAULT_VERSION[tool.key],
+                      }));
+                    }
+                    setActionDialog({ tool: tool.key, verb: "upgrade" });
+                  }}
+                  onOpenInstalls={() => setInstallsDialogTool(tool.key)}
+                  onPin={() => void startOp(tool.key, "pin")}
+                  onPinDetected={() => {
+                    const v = probe?.[tool.key]?.version;
+                    if (v && (tool.key === "java" || tool.key === "node")) void pinInstall(tool.key, v);
+                    else void startOp(tool.key, "pin");
+                  }}
+                />
+              ))}
         </div>
 
         {/* 1.4 §11.2：Gradle 仅信息展示（wrapper 是唯一推荐执行方式），不提供安装 */}
@@ -280,6 +609,159 @@ export function EnvPage() {
         {/* 1.7 §7：网络（代理 + 镜像）——写入 workspace network 段，启动时注入 env */}
         <NetworkCard />
       </div>
+
+      <Dialog open={actionDialog != null} onOpenChange={(o) => !o && setActionDialog(null)}>
+        <DialogContent className="sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>
+              {actionDialog?.verb === "upgrade"
+                ? t("pages.env.dialogUpgradeTitle", { tool: actionMeta?.label ?? actionTool })
+                : t("pages.env.dialogInstallTitle", { tool: actionMeta?.label ?? actionTool })}
+            </DialogTitle>
+            <DialogDescription>
+              {actionDialog?.verb === "upgrade" ? t("pages.env.dialogUpgradeDesc") : t("pages.env.dialogInstallDesc")}
+            </DialogDescription>
+          </DialogHeader>
+          {actionTool && (
+            <div className="space-y-3">
+              <div>
+                <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.env.versionLabel")}</label>
+                <div className="mt-1">
+                  <VersionCombobox
+                    value={actionVersion}
+                    options={versionOptionsFor(actionTool, actionRequired)}
+                    onChange={(v) => setVersionDraft((prev) => ({ ...prev, [actionTool]: v }))}
+                    ariaLabel={t("pages.env.versionAria", { tool: actionMeta?.label ?? actionTool })}
+                  />
+                </div>
+                <p className="mt-1 text-[0.7rem] text-[var(--t3,#8a8f98)]">
+                  {actionRequired
+                    ? t("pages.env.sourceRequired", { version: actionRequired })
+                    : t("pages.env.sourceDefault", { version: DEFAULT_VERSION[actionTool] })}
+                </p>
+              </div>
+              <div>
+                <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.env.managerAria")}</label>
+                <select
+                  className="mt-1 h-9 w-full cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-2 text-[0.8rem] text-[var(--t1,#222326)]"
+                  value={managerPick}
+                  onChange={(e) => setManagerPick(e.target.value as ManagerPick)}
+                  aria-label={t("pages.env.managerAria")}
+                >
+                  <option value="auto">{t("pages.env.managerAuto")}</option>
+                  <option value="mise" disabled={managers != null && !managers.mise}>
+                    mise{managers && !managers.mise ? t("pages.env.notInstalledSuffix") : ""}
+                  </option>
+                  <option value="winget" disabled={managers != null && !managers.winget}>
+                    winget{managers && !managers.winget ? t("pages.env.notInstalledSuffix") : ""}
+                  </option>
+                </select>
+                <p className="mt-1 text-[0.7rem] text-[var(--t3,#8a8f98)]">{t("pages.env.managerRemember")}</p>
+              </div>
+              {managers && !managers.mise && !managers.winget && (
+                <div className="rounded-[var(--r-sm,8px)] bg-[var(--st-warn-tint,#fff8e1)] px-2.5 py-2 text-[0.75rem] leading-relaxed text-[var(--st-warn,#9a6700)]">
+                  {t("pages.env.noManagerHint")}
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button variant="outline" size="sm" onClick={() => setActionDialog(null)}>
+              {t("common.cancel")}
+            </Button>
+            {actionDialog?.verb === "install" && canPinWs && actionRequired && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1"
+                disabled={managers != null && !managers.mise && !managers.winget}
+                onClick={() => void startOp(actionTool!, "pin")}
+                title={t("pages.env.installPinTitle", { version: actionRequired })}
+              >
+                <Lock className="size-3.5" /> {t("pages.env.installPin")}
+              </Button>
+            )}
+            <Button
+              variant={actionDialog?.verb === "upgrade" ? "warn" : "default"}
+              size="sm"
+              className="gap-1"
+              disabled={
+                !actionTool ||
+                !!pending[actionTool] ||
+                (managers != null && !managers.mise && !managers.winget)
+              }
+              onClick={() => {
+                if (!actionDialog) return;
+                void startOp(actionDialog.tool, actionDialog.verb, actionVersion);
+              }}
+            >
+              {actionDialog?.verb === "upgrade" ? (
+                <>
+                  <ArrowUpFromLine className="size-3.5" /> {t("pages.env.upgrade")}
+                </>
+              ) : (
+                <>
+                  <Download className="size-3.5" /> {t("pages.env.install")}
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={installsDialogTool != null} onOpenChange={(o) => !o && setInstallsDialogTool(null)}>
+        <DialogContent className="sm:max-w-lg" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>
+              {t("pages.env.installsDialogTitle", {
+                tool: tools.find((x) => x.key === installsDialogTool)?.label ?? installsDialogTool,
+                count: installsForDialog.length,
+              })}
+            </DialogTitle>
+            <DialogDescription>{t("pages.env.installsDialogDesc")}</DialogDescription>
+          </DialogHeader>
+          <ul className="max-h-72 space-y-1 overflow-auto">
+            {installsForDialog.map((i) => {
+              const selected = versionMatches(requiredVersion(installsDialogTool!), i.version);
+              return (
+                <li
+                  key={`${i.version}-${i.home}`}
+                  className={cn(
+                    "flex flex-wrap items-center gap-1.5 rounded-[var(--r-sm,8px)] border border-[var(--line,#e6e6e6)] px-2.5 py-2",
+                    selected && "border-[rgb(39_166_68_/_0.35)] bg-[var(--st-ok-tint,#e9f7ed)]",
+                  )}
+                >
+                  <span className="shrink-0 font-mono text-[0.8rem] font-semibold text-[var(--t1,#222326)]">{i.version}</span>
+                  {i.active && <Badge variant="default">{t("pages.env.installActive")}</Badge>}
+                  {selected && (
+                    <Badge className="border-[rgb(39_166_68_/_0.3)] bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]">
+                      {t("pages.env.selectedVersion")}
+                    </Badge>
+                  )}
+                  <Badge variant="outline">{t(INSTALL_SOURCE_KEYS[i.source])}</Badge>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={i.home}>
+                    {i.home}
+                  </span>
+                  {canPinWs && (
+                    <Button
+                      variant={selected ? "ghost" : "soft"}
+                      size="sm"
+                      className="h-7 shrink-0 px-2 text-[0.7rem]"
+                      onClick={() => {
+                        void pinInstall(installsDialogTool!, i.version);
+                        setInstallsDialogTool(null);
+                      }}
+                      title={t("pages.env.installSelectTitle")}
+                    >
+                      {t("pages.env.installSelect")}
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -296,6 +778,7 @@ function NetworkCard() {
   // no_proxy 是数组，文本态单独存草稿（逗号分隔），避免逐键输入被数组规整吃掉
   const [noProxyText, setNoProxyText] = useState(() => (net?.proxy?.no_proxy ?? []).join(", "));
   const [busy, setBusy] = useState(false);
+  const [collapsed, setCollapsed] = useState(loadNetworkCollapsed);
 
   useEffect(() => {
     setDraft(net ?? {});
@@ -303,6 +786,14 @@ function NetworkCard() {
   }, [ws.state.workspaceId, yaml.state.hash]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (patch: NetworkSpec) => setDraft((prev) => ({ ...prev, ...patch }));
+
+  const toggleCollapsed = () => {
+    setCollapsed((c) => {
+      const next = !c;
+      saveNetworkCollapsed(next);
+      return next;
+    });
+  };
 
   const save = async (): Promise<boolean> => {
     if (!spec || !ws.state.workspaceId) return false;
@@ -338,13 +829,20 @@ function NetworkCard() {
   const proxy = draft.proxy ?? {};
   const inputCls = "mt-1 w-full rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-2 py-1 font-mono text-[0.75rem] text-[var(--t1,#222326)] focus-visible:outline-2 focus-visible:outline-[var(--st-accent,#5e6ad2)]";
   return (
-    <Card className="mt-3 p-4">
+    <Card className="mt-3 overflow-hidden p-4" data-env-network="1">
       <div className="mb-3 flex items-center gap-2">
+        <button type="button" className="inline-flex items-center gap-1 text-[var(--t2,#62666d)]" aria-expanded={!collapsed} onClick={toggleCollapsed}>
+          {collapsed ? <ChevronRight className="size-4" /> : <ChevronDown className="size-4" />}
+          <Network className="size-4" />
+        </button>
         <h3 className="text-[0.875rem] font-semibold text-[var(--t1,#222326)]">{t("pages.env.networkTitle")}</h3>
-        <Button variant="success" size="sm" className="ml-auto gap-1" onClick={() => void save()} disabled={busy || !hasWs}>
+        <Badge variant="soon">{t("pages.env.advanced")}</Badge>
+        <Button variant="success" size="sm" className="ml-auto gap-1" onClick={() => void save()} disabled={busy || !hasWs || collapsed}>
           {t("common.save")}
         </Button>
       </div>
+      {!collapsed && (
+      <>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">
           {t("pages.env.proxyMode")}
@@ -425,6 +923,8 @@ function NetworkCard() {
         </label>
       </div>
       <p className="mt-2 text-[0.72rem] text-[var(--t3,#8a8f98)]">{t("pages.env.networkHint")}</p>
+      </>
+      )}
     </Card>
   );
 }
@@ -432,144 +932,134 @@ function NetworkCard() {
 type ToolCardProps = {
   meta: { key: ToolKey; label: string; rec?: string; recKey?: string };
   found: ToolProbe | null;
-  /** P1：本机已装安装枚举（java 多版本注册表/目录扫描 + nvm 目录布局），已按工具过滤。 */
   installs: DiscoveredInstall[];
   required: string | null;
-  /** S1：可选版本下拉数据（钉扎版本置顶；后端白名单 ∪ mise ls-remote）。 */
-  versionOptions: string[];
   defaultVersion: string;
-  versionDraft: string;
-  onVersionDraft: (v: string) => void;
-  managerPick: "auto" | "mise" | "winget";
-  managers: ManagerAvailability | null;
-  onManagerPick: (m: "auto" | "mise" | "winget") => void;
   pending: PendingOp | null;
   opState: ReturnType<ReturnType<typeof useOperations>["get"]>;
   canPin: boolean;
-  onPinInstall: (version: string) => void;
-  onInstall: () => void;
-  onUpgrade: () => void;
+  probing: boolean;
+  onOpenInstall: () => void;
+  onOpenUpgrade: () => void;
+  onOpenInstalls: () => void;
   onPin: () => void;
+  onPinDetected: () => void;
 };
 
 function ToolCard(p: ToolCardProps) {
   const { t } = useTranslation();
   const isFound = p.found?.found === true;
   const busy = p.pending != null;
-  // P1：多安装枚举默认折叠；只装一个时无信息增量，不显示。
-  const [installsOpen, setInstallsOpen] = useState(false);
-  const showInstalls = p.installs.length > 1;
-  // P2：镜像后端 launcher::version_matches——钉扎前缀匹配已装全版本（17 ↔ 17.0.7）
-  const versionMatches = (want: string | null, have: string): boolean => {
-    if (!want) return false;
-    if (want === have) return true;
-    return have.startsWith(want + ".");
-  };
-  const versionSource = p.required
-    ? t("pages.env.sourceRequired", { version: p.required })
-    : t("pages.env.sourceDefault", { version: p.defaultVersion });
+  const detected = p.found?.version ?? null;
+  const mismatch = Boolean(p.required && isFound && detected && !versionMatches(p.required, detected));
+  const activeInstall = p.installs.find((i) => i.active) ?? p.installs[0] ?? null;
+  const canDirectPin = p.meta.key === "java" || p.meta.key === "node";
+  const recLabel =
+    p.meta.recKey === "withNode" ? t("pages.env.recWithNode") : p.meta.recKey ?? p.meta.rec ?? p.defaultVersion;
+
   return (
-    <Card className="flex flex-col gap-2 p-3 transition-colors duration-150 hover:border-[var(--line-strong,#d0d6e0)]">
-      <div className="flex items-center gap-3">
+    <Card className="flex flex-col gap-2.5 p-3 transition-colors duration-150 hover:border-[var(--line-strong,#d0d6e0)]">
+      <div className="flex items-start gap-3">
         <div
           className={cn(
-            "flex size-9 items-center justify-center rounded-[var(--r-sm,8px)]",
+            "flex size-9 shrink-0 items-center justify-center rounded-[var(--r-sm,8px)]",
             p.found == null
               ? "bg-[var(--surface-2,#f3f4f5)] text-[var(--t3,#8a8f98)]"
               : isFound
-                ? "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]"
+                ? mismatch
+                  ? "bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)]"
+                  : "bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]"
                 : "bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)]",
           )}
         >
           {p.found == null ? (
             <KeyRound className="size-5" />
           ) : isFound ? (
-            <CheckCircle2 className="size-5" />
+            mismatch ? <AlertTriangle className="size-5" /> : <CheckCircle2 className="size-5" />
           ) : (
             <XCircle className="size-5" />
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-semibold text-[var(--t1,#222326)]">{p.meta.label}</span>
+            {p.found == null ? (
+              <Badge variant="outline">{t("pages.env.probing")}</Badge>
+            ) : isFound ? (
+              <Badge
+                className={
+                  mismatch
+                    ? "border-[rgb(154_103_0_/_0.25)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)]"
+                    : "border-[rgb(39_166_68_/_0.25)] bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]"
+                }
+              >
+                {t("pages.env.statusFound")}
+              </Badge>
+            ) : (
+              <Badge variant="outline">{t("pages.env.statusMissing")}</Badge>
+            )}
             {p.required && <Badge variant="secondary">{t("pages.env.requiredBadge", { version: p.required })}</Badge>}
+            {activeInstall && <Badge variant="outline">{t(INSTALL_SOURCE_KEYS[activeInstall.source])}</Badge>}
           </div>
-          <div className="truncate font-mono text-[0.66rem] text-[var(--t3,#8a8f98)]">
+          <div className="mt-1 truncate font-mono text-[0.68rem] text-[var(--t3,#8a8f98)]" title={p.found?.path ?? undefined}>
             {p.found == null
               ? t("pages.env.probing")
               : isFound
-                ? `${p.found.version ?? t("pages.env.installed")} · ${p.found.path ?? ""}`
-                : `${t("pages.env.missing")} · ${t("pages.env.recommended", { version: p.meta.recKey === "withNode" ? t("pages.env.recWithNode") : p.meta.recKey })}`}
+                ? `${detected ?? t("pages.env.installed")}${p.found.path ? ` · ${p.found.path}` : ""}`
+                : `${t("pages.env.missing")} · ${t("pages.env.recommended", { version: recLabel })}`}
           </div>
+          {p.required && isFound && (
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[0.7rem]">
+              <span className="text-[var(--t3,#8a8f98)]">{t("pages.env.pinVsDetected")}</span>
+              <Badge variant="secondary">{t("pages.env.pinnedLabel", { version: p.required })}</Badge>
+              <span className="text-[var(--t3,#8a8f98)]">{"\u2192"}</span>
+              <Badge
+                className={
+                  mismatch
+                    ? "border-[rgb(154_103_0_/_0.25)] bg-[var(--st-warn-tint,#fff8e1)] text-[var(--st-warn,#9a6700)]"
+                    : "border-[rgb(39_166_68_/_0.25)] bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]"
+                }
+              >
+                {t("pages.env.detectedLabel", { version: detected ?? "\u2014" })}
+              </Badge>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="text-[0.7rem] text-[var(--t3,#8a8f98)]">{t("pages.env.versionSource")} {versionSource}</div>
-
-      {/* P1：本机已装多版本枚举（只读展示；生效切换走 env_delta，随 P2 接线） */}
-      {showInstalls && (
-        <div className="rounded-[var(--r-sm,8px)] border border-[var(--line,#e6e6e6)]">
-          <button
-            type="button"
-            className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[0.72rem] text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]"
-            aria-expanded={installsOpen}
-            onClick={() => setInstallsOpen((v) => !v)}
-          >
-            {installsOpen ? (
-              <ChevronDown className="size-3.5 shrink-0" />
-            ) : (
-              <ChevronRight className="size-3.5 shrink-0" />
-            )}
-            <span>{t("pages.env.installsTitle", { count: p.installs.length })}</span>
-          </button>
-          {installsOpen && (
-            <ul className="border-t border-[var(--line,#e6e6e6)]">
-              {p.installs.map((i) => {
-                const selected = versionMatches(p.required, i.version);
-                return (
-                  <li
-                    key={`${i.version}-${i.home}`}
-                    className={cn(
-                      "flex items-center gap-1.5 px-2 py-1",
-                      selected && "bg-[var(--st-ok-tint,#e9f7ed)]",
-                    )}
-                  >
-                    <span className="shrink-0 font-mono text-[0.72rem] font-medium text-[var(--t1,#222326)]">
-                      {i.version}
-                    </span>
-                    {i.active && <Badge variant="default">{t("pages.env.installActive")}</Badge>}
-                    {selected && (
-                      <Badge className="border-[rgb(39_166_68_/_0.3)] bg-[var(--st-ok-tint,#e9f7ed)] text-[var(--st-ok-deep,#1e7e35)]">
-                        {t("pages.env.selectedVersion")}
-                      </Badge>
-                    )}
-                    <Badge variant="outline">{t(INSTALL_SOURCE_KEYS[i.source])}</Badge>
-                    <span
-                      className="min-w-0 flex-1 truncate text-right font-mono text-[0.64rem] text-[var(--t3,#8a8f98)]"
-                      title={i.home}
-                    >
-                      {i.home}
-                    </span>
-                    {p.canPin && (
-                      <Button
-                        variant={selected ? "ghost" : "soft"}
-                        size="sm"
-                        className="h-6 shrink-0 px-2 text-[0.68rem]"
-                        onClick={() => p.onPinInstall(i.version)}
-                        title={t("pages.env.installSelectTitle")}
-                      >
-                        {t("pages.env.installSelect")}
-                      </Button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+      {mismatch && (
+        <div className="flex flex-wrap items-center gap-2 rounded-[var(--r-sm,8px)] bg-[var(--st-warn-tint,#fff8e1)] px-2.5 py-2 text-[0.72rem] leading-relaxed text-[var(--st-warn,#9a6700)]">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{t("pages.env.mismatchHint", { pinned: p.required, detected })}</span>
+          {p.canPin && canDirectPin && detected && (
+            <Button
+              variant="soft"
+              size="sm"
+              className="h-7 shrink-0 gap-1 px-2 text-[0.7rem]"
+              onClick={p.onPinDetected}
+              title={t("pages.env.pinDetectedTitle", { version: detected })}
+            >
+              <Lock className="size-3" /> {t("pages.env.pinDetected", { version: detected })}
+            </Button>
           )}
+          <Button variant="outline" size="sm" className="h-7 shrink-0 px-2 text-[0.7rem]" onClick={p.onOpenInstall}>
+            {t("pages.env.installRequired")}
+          </Button>
         </div>
       )}
 
-      {/* 操作区：安装（缺失）/ 升级 + 固定（已装）；运行中显示 operation 状态并禁用同工具按钮 */}
+      {p.installs.length > 1 && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 justify-start gap-1 px-2 text-[0.72rem] text-[var(--t2,#62666d)]"
+          onClick={p.onOpenInstalls}
+        >
+          <Settings2 className="size-3.5" />
+          {t("pages.env.installsTitle", { count: p.installs.length })}
+        </Button>
+      )}
+
       {busy ? (
         <div className="flex items-center gap-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] px-2 py-1.5 text-[0.75rem] text-[var(--t2,#62666d)]">
           <Loader2 className="size-3.5 animate-spin" />
@@ -580,71 +1070,36 @@ function ToolCard(p: ToolCardProps) {
           </span>
         </div>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="mt-auto flex flex-wrap items-center gap-2">
           {isFound ? (
             <>
-              <Button variant="warn" size="sm" onClick={p.onUpgrade} disabled={!p.managers || (!p.managers.mise && !p.managers.winget)}>
+              <Button variant="warn" size="sm" className="gap-1" onClick={p.onOpenUpgrade}>
                 <ArrowUpFromLine className="size-3.5" /> {t("pages.env.upgrade")}
               </Button>
               {p.canPin && (
-                <Button variant="outline" size="sm" onClick={p.onPin} title={t("pages.env.pinCurrentTitle")}>
+                <Button variant="outline" size="sm" className="gap-1" onClick={p.onPin} title={t("pages.env.pinCurrentTitle")}>
                   <Lock className="size-3.5" /> {t("pages.env.pinCurrent")}
                 </Button>
               )}
             </>
           ) : (
-            <>
-              <select
-                className="h-8 cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-1.5 font-mono text-[0.75rem] text-[var(--t1,#222326)]"
-                value={p.versionDraft || p.required || p.defaultVersion}
-                onChange={(e) => p.onVersionDraft(e.target.value)}
-                aria-label={t("pages.env.versionAria", { tool: p.meta.label })}
-              >
-                {p.versionOptions.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="h-8 cursor-pointer rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] bg-[var(--surface,#fff)] px-1.5 text-[0.75rem] text-[var(--t1,#222326)]"
-                value={p.managerPick}
-                onChange={(e) => p.onManagerPick(e.target.value as "auto" | "mise" | "winget")}
-                aria-label={t("pages.env.managerAria")}
-              >
-                <option value="auto">{t("pages.env.managerAuto")}</option>
-                <option value="mise" disabled={p.managers != null && !p.managers.mise}>
-                  mise{p.managers && !p.managers.mise ? t("pages.env.notInstalledSuffix") : ""}
-                </option>
-                <option value="winget" disabled={p.managers != null && !p.managers.winget}>
-                  winget{p.managers && !p.managers.winget ? t("pages.env.notInstalledSuffix") : ""}
-                </option>
-              </select>
-              <Button variant="default" size="sm" onClick={p.onInstall} disabled={p.managers != null && !p.managers.mise && !p.managers.winget}>
-                <Download className="size-3.5" /> {t("pages.env.install")}
-              </Button>
-              {p.canPin && p.required && (
-                <Button variant="ghost" size="sm" onClick={p.onPin} title={t("pages.env.installPinTitle", { version: p.required })}>
-                  <Lock className="size-3.5" /> {t("pages.env.installPin")}
-                </Button>
-              )}
-            </>
+            <Button variant="default" size="sm" className="gap-1" onClick={p.onOpenInstall} disabled={p.probing}>
+              <Download className="size-3.5" /> {t("pages.env.install")}
+            </Button>
           )}
         </div>
       )}
 
-      {/* F9：两个管理器都缺 → 安装按钮禁用不再是终点，给出下一步指引 */}
-      {!busy && p.managers && !p.managers.mise && !p.managers.winget && (
-        <div className="rounded-[var(--r-sm,8px)] bg-[var(--st-warn-tint,#fff8e1)] px-2 py-1.5 text-[0.72rem] leading-relaxed text-[var(--st-warn,#9a6700)]">
-          {t("pages.env.noManagerHint")}
-        </div>
-      )}
-
-      {/* 失败的下一步提示（§15.1：权限/版本/网络/PATH 显示具体动作） */}
       {p.opState?.state === "failed" && (
-        <div className="rounded-[var(--r-sm,8px)] bg-[var(--st-danger-tint,#fdeeee)] px-2 py-1.5 text-[0.72rem] leading-relaxed text-[var(--st-danger,#c03535)]">
-          {opErrorLabel(p.opState.error_code)}
+        <div className="rounded-[var(--r-sm,8px)] bg-[var(--st-danger-tint,#fdeeee)] px-2.5 py-2 text-[0.72rem] leading-relaxed text-[var(--st-danger,#c03535)]">
+          <div className="font-semibold">{opErrorLabel(p.opState.error_code)}</div>
           {p.opState.message ? <div className="mt-0.5 text-[var(--t3,#8a8f98)]">{p.opState.message}</div> : null}
+          <div className="mt-1.5 text-[var(--t2,#62666d)]">{t("pages.env.failureNextSteps")}</div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            <Button variant="soft" size="sm" className="h-7 px-2 text-[0.7rem]" onClick={p.onOpenInstall}>
+              {t("pages.env.retryAction")}
+            </Button>
+          </div>
         </div>
       )}
     </Card>
