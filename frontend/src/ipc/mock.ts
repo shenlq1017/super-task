@@ -282,7 +282,7 @@ const mockCloud = {
 /** 2.1 AI mock（确定性回文；命名多配置 + 模板/全局指令；key 只存布尔，绝不回显）。 */
 let mockAiSeq = 0;
 const mockAi = {
-  configs: [] as { id: string; name: string; isDefault: boolean; provider: string; model: string; baseUrl: string; timeoutSecs: number; maxTokens: number; authMethod: string; proxyEnabled: boolean; proxyUrl: string | null; contextWindow: number | null; maxRetries: number }[],
+  configs: [] as { id: string; name: string; isDefault: boolean; provider: string; model: string; baseUrl: string; timeoutSecs: number; maxTokens: number; authMethod: string; proxyEnabled: boolean; proxyUrl: string | null; contextWindow: number | null; maxRetries: number; cliPath: string | null; cliArgs: string[]; cliEnv: Record<string, string> }[],
   templates: [] as { id: string; name: string; content: string; enabled: boolean }[],
   instructions: "" as string,
   keySet: false,
@@ -2496,8 +2496,21 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     if (dupe) {
       throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: `配置名 ${name} 已存在`, retryable: false };
     }
-    if (input.baseUrl != null && !/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(baseUrl)) {
+    const savingProvider = String(input.provider ?? "openai-compatible");
+    const savingCli = savingProvider.endsWith("-cli");
+    if (!savingCli && input.baseUrl != null && !/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(baseUrl)) {
       throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "base_url 无效", retryable: false };
+    }
+    const cliPath = input.cliPath ? String(input.cliPath) : null;
+    if (cliPath && /["';|&<>`$\n]/.test(cliPath)) {
+      throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "CLI 路径只能填可执行文件路径", retryable: false };
+    }
+    const cliArgs = Array.isArray(input.cliArgs) ? input.cliArgs.map(String) : [];
+    const cliEnv = (input.cliEnv ?? {}) as Record<string, string>;
+    for (const name of Object.keys(cliEnv)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: `环境变量名无效: ${name}`, retryable: false };
+      }
     }
     if (!model) {
       throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "model 不能为空", retryable: false };
@@ -2506,7 +2519,18 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     if (id && mockAi.configs.some((c) => c.id === id)) {
       mockAi.configs = mockAi.configs.map((c) =>
         c.id === id
-          ? { ...c, name, baseUrl, model, provider: String(input.provider ?? c.provider) }
+          ? {
+              ...c, name, baseUrl, model,
+              provider: savingProvider,
+              timeoutSecs: Number(input.timeoutSecs ?? c.timeoutSecs) || c.timeoutSecs,
+              maxTokens: Number(input.maxTokens ?? c.maxTokens) || c.maxTokens,
+              authMethod: String(input.authMethod ?? c.authMethod),
+              proxyEnabled: input.proxyEnabled != null ? !!input.proxyEnabled : c.proxyEnabled,
+              proxyUrl: input.proxyUrl ? String(input.proxyUrl) : null,
+              contextWindow: input.contextWindow != null ? Number(input.contextWindow) : null,
+              maxRetries: input.maxRetries != null ? Number(input.maxRetries) : c.maxRetries,
+              cliPath, cliArgs, cliEnv,
+            }
           : c,
       );
     } else {
@@ -2515,7 +2539,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         id,
         name,
         isDefault: mockAi.configs.length === 0,
-        provider: String(input.provider ?? "openai-compatible"),
+        provider: savingProvider,
         model,
         baseUrl,
         timeoutSecs: Number(input.timeoutSecs ?? 30) || 30,
@@ -2525,6 +2549,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         proxyUrl: input.proxyUrl ? String(input.proxyUrl) : null,
         contextWindow: input.contextWindow != null ? Number(input.contextWindow) : null,
         maxRetries: Number(input.maxRetries ?? 2),
+        cliPath, cliArgs, cliEnv,
       });
     }
     if (typeof input.apiKey === "string") mockAi.keySet = input.apiKey.length > 0;
@@ -2543,6 +2568,9 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
       proxy_url: saved.proxyUrl,
       context_window: saved.contextWindow,
       max_retries: saved.maxRetries,
+      cli_path: saved.cliPath,
+      cli_args: saved.cliArgs,
+      cli_env: saved.cliEnv,
     };
     return out;
   }
@@ -2609,6 +2637,16 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         provider: c.provider,
         model: c.model,
         base_url: c.baseUrl,
+        timeout_secs: c.timeoutSecs,
+        max_tokens: c.maxTokens,
+        auth_method: c.authMethod === "bearer" ? "bearer" : "api_key",
+        proxy_enabled: c.proxyEnabled,
+        proxy_url: c.proxyUrl,
+        context_window: c.contextWindow,
+        max_retries: c.maxRetries,
+        cli_path: c.cliPath,
+        cli_args: c.cliArgs,
+        cli_env: c.cliEnv,
       })),
       default_id: def?.id ?? null,
       templates: [...mockAi.templates],
@@ -2619,17 +2657,31 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     return out;
   }
   if (command === cmd.AI_MODELS) {
-    if (!mockAiDefault()) {
+    const modelsFor = mockAiDefault();
+    if (!modelsFor) {
       throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "AI 未配置，请先在 /ai 页新增配置", retryable: false };
     }
+    // CLI provider 没有 /models 端点：与真链路一致，返回预置项
+    if (modelsFor.provider.endsWith("-cli")) return ["default", "sonnet", "opus"];
     return ["demo-model", "demo-model-mini", "qwen2.5:7b"];
+  }
+  if (command === cmd.AI_CLI_PROBE) {
+    const provider = String(args?.provider ?? "");
+    const path = args?.cliPath ? String(args.cliPath) : "";
+    const program = path || provider.replace(/-cli$/, "");
+    // Mock 数据：路径含 "missing" 时演示未找到分支，其余演示已找到
+    if (/missing|notfound/i.test(program)) {
+      return { program, found: false, version: null, detail: "command not found（mock 数据）" };
+    }
+    return { program, found: true, version: `${program} 0.0.0-mock`, detail: null };
   }
   if (command === cmd.AI_COMPLETE) {
     const def = mockAiDefault();
     if (!def) {
       throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "AI 未配置，请先在 /ai 页新增配置", retryable: false };
     }
-    if (!mockAi.keySet && def.provider !== "ollama") {
+    // CLI provider 的凭据由 CLI 自己管，和 ollama 一样不需要 key
+    if (!mockAi.keySet && def.provider !== "ollama" && !def.provider.endsWith("-cli")) {
       throw { protocol: PROTOCOL, code: "AI_NOT_CONFIGURED", message: "AI key 未设置，请先在 /ai 页保存密钥", retryable: false };
     }
     const task = String(args?.task ?? "") as AiTask;

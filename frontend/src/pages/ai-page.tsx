@@ -1,18 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, PlugZap, Plus, RefreshCw, Sparkles } from "lucide-react";
+import { Bot, PlugZap, Plus, RefreshCw, Sparkles, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
 import {
   apiAiComplete,
@@ -26,7 +19,6 @@ import {
   apiAiTemplateSave,
 } from "../ipc/api";
 import type {
-  AiAuthMethod,
   AiConfigSummary,
   AiProviderKey,
   AiStatusOut,
@@ -34,57 +26,18 @@ import type {
 } from "../ipc/protocol";
 import { IpcFailure } from "../ipc/protocol";
 import { errorDisplayText } from "@/lib/error-messages";
+import { AiProviderLogo } from "@/components/ai-provider-logo";
+import { AI_PROVIDER_PRESETS, isCliProvider } from "@/lib/ai-providers";
+import {
+  AiConfigDialog,
+  emptyConfigForm,
+  formatCliEnv,
+  parseCliArgs,
+  parseCliEnv,
+  type ConfigForm,
+} from "@/components/ai-config-dialog";
 
 type Action = "status" | "save" | "test" | "instructions" | "template" | null;
-
-/** provider 预设（与 core PROVIDER_PRESETS 同源；CLI provider 不做，见调研文档 reject 结论）。 */
-const AI_PROVIDER_PRESETS: Record<
-  AiProviderKey,
-  { label: string; endpoint: string; model: string; keyOptional?: boolean }
-> = {
-  "openai-compatible": { label: "OpenAI Compatible", endpoint: "https://api.openai.com/v1", model: "gpt-4o-mini" },
-  claude: { label: "Claude (Anthropic)", endpoint: "https://api.anthropic.com", model: "claude-sonnet-4-5" },
-  deepseek: { label: "DeepSeek", endpoint: "https://api.deepseek.com", model: "deepseek-chat" },
-  qwen: { label: "Qwen", endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
-  minimax: { label: "MiniMax", endpoint: "https://api.minimaxi.com/v1", model: "MiniMax-Text-01" },
-  gemini: { label: "Gemini (OpenAI 兼容)", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.0-flash" },
-  ollama: { label: "Ollama", endpoint: "http://localhost:11434/v1", model: "qwen2.5:7b", keyOptional: true },
-  custom: { label: "Custom", endpoint: "", model: "" },
-};
-
-type ConfigForm = {
-  id: string | null;
-  name: string;
-  provider: AiProviderKey;
-  authMethod: AiAuthMethod;
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-  contextWindow: string;
-  timeoutSecs: string;
-  maxTokens: string;
-  proxyEnabled: boolean;
-  proxyUrl: string;
-  maxRetries: string;
-};
-
-function emptyForm(): ConfigForm {
-  return {
-    id: null,
-    name: "",
-    provider: "openai-compatible",
-    authMethod: "api_key",
-    apiKey: "",
-    baseUrl: "",
-    model: "",
-    contextWindow: "",
-    timeoutSecs: "120",
-    maxTokens: "8192",
-    proxyEnabled: false,
-    proxyUrl: "",
-    maxRetries: "2",
-  };
-}
 
 function aiError(error: unknown): string {
   return error instanceof IpcFailure
@@ -146,26 +99,32 @@ export function AiPage() {
   const startCreate = () => {
     setFormError(null);
     setModels([]);
-    setForm(emptyForm());
+    setForm(emptyConfigForm());
   };
 
   const startEdit = (c: AiConfigSummary) => {
     setFormError(null);
     setModels([]);
+    const provider = (c.provider as AiProviderKey) in AI_PROVIDER_PRESETS
+      ? (c.provider as AiProviderKey)
+      : "custom";
     setForm({
       id: c.id,
       name: c.name,
-      provider: (c.provider as AiProviderKey) in AI_PROVIDER_PRESETS ? (c.provider as AiProviderKey) : "custom",
-      authMethod: "api_key",
+      provider,
+      authMethod: c.auth_method,
       apiKey: "",
       baseUrl: c.base_url,
       model: c.model,
-      contextWindow: "",
-      timeoutSecs: "120",
-      maxTokens: "8192",
-      proxyEnabled: false,
-      proxyUrl: "",
-      maxRetries: "2",
+      contextWindow: c.context_window?.toString() ?? "",
+      timeoutSecs: c.timeout_secs.toString(),
+      maxTokens: c.max_tokens.toString(),
+      proxyEnabled: c.proxy_enabled,
+      proxyUrl: c.proxy_url ?? "",
+      maxRetries: c.max_retries.toString(),
+      cliPath: c.cli_path ?? "",
+      cliArgs: c.cli_args.join("\n"),
+      cliEnv: formatCliEnv(c.cli_env),
     });
   };
 
@@ -176,14 +135,20 @@ export function AiPage() {
       const preset = AI_PROVIDER_PRESETS[provider];
       const baseUrl = !f.baseUrl || f.baseUrl === prevPreset.endpoint ? preset.endpoint : f.baseUrl;
       const model = !f.model || f.model === prevPreset.model ? preset.model : f.model;
-      return { ...f, provider, baseUrl, model };
+      const cliArgs =
+        !f.cliArgs || f.cliArgs === (prevPreset.cliArgs ?? []).join("\n")
+          ? (preset.cliArgs ?? []).join("\n")
+          : f.cliArgs;
+      return { ...f, provider, baseUrl, model, cliArgs, cliPath: "" };
     });
   };
 
   const fetchModels = async () => {
     setAction("template");
     try {
-      const list = await apiAiModels(form?.id ?? undefined);
+      const list = form && isCliProvider(form.provider) && !form.id
+        ? ["default"]
+        : await apiAiModels(form?.id ?? undefined);
       setModels(list);
       toast(t("pages.ai.modelsFetched", { n: list.length }), "ok");
     } catch (error) {
@@ -199,9 +164,14 @@ export function AiPage() {
     const name = form.name.trim();
     const baseUrl = form.baseUrl.trim().replace(/\/$/, "");
     const model = form.model.trim();
+    const cli = isCliProvider(form.provider);
     if (!name) return setFormError(t("pages.ai.nameRequired"));
-    if (!/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(baseUrl)) return setFormError(t("pages.ai.baseUrlInvalid"));
+    if (!cli && !/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(baseUrl)) return setFormError(t("pages.ai.baseUrlInvalid"));
     if (!model) return setFormError(t("pages.ai.modelRequired"));
+    const cliEnv = parseCliEnv(form.cliEnv);
+    if (cli && Object.keys(cliEnv).some((key) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))) {
+      return setFormError(t("pages.ai.cliEnvInvalid"));
+    }
     setFormError(null);
     setAction("save");
     try {
@@ -218,8 +188,11 @@ export function AiPage() {
         proxyEnabled: form.proxyEnabled,
         proxyUrl: form.proxyUrl.trim() || undefined,
         maxRetries: form.maxRetries === "" ? undefined : Number(form.maxRetries),
+        cliPath: cli ? form.cliPath.trim() || undefined : undefined,
+        cliArgs: cli ? parseCliArgs(form.cliArgs) : [],
+        cliEnv: cli ? cliEnv : {},
         // 输入框留空 = 不改动已存 key（api_key 缺省）；「清除 Key」按钮才发空串
-        apiKey: form.apiKey || undefined,
+        apiKey: cli ? undefined : form.apiKey || undefined,
       });
       setForm(null);
       await refresh(true);
@@ -384,10 +357,19 @@ export function AiPage() {
                     key={c.id}
                     className="flex flex-wrap items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] px-3 py-2"
                   >
-                    <span className="font-mono text-[0.8rem] font-semibold text-[var(--t1,#222326)]">{c.name}</span>
-                    <Badge variant="secondary" className="text-[10px]">{providerLabel(c.provider)}</Badge>
-                    <span className="min-w-0 truncate font-mono text-[0.72rem] text-[var(--t3,#8a8f98)]" title={`${c.base_url} · ${c.model}`}>
-                      {c.model}
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)]">
+                      <AiProviderLogo provider={(c.provider as AiProviderKey) in AI_PROVIDER_PRESETS ? c.provider as AiProviderKey : "custom"} className="size-4.5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-1.5">
+                        <span className="font-mono text-[0.8rem] font-semibold text-[var(--t1,#222326)]">{c.name}</span>
+                        {isCliProvider((c.provider as AiProviderKey) in AI_PROVIDER_PRESETS ? c.provider as AiProviderKey : "custom") ? (
+                          <Badge variant="secondary" className="gap-1 text-[9px]"><Terminal className="size-2.5" />CLI</Badge>
+                        ) : null}
+                      </span>
+                      <span className="block truncate font-mono text-[0.7rem] text-[var(--t3,#8a8f98)]" title={[c.base_url, c.model].filter(Boolean).join(" · ")}>
+                        {providerLabel(c.provider)} · {c.model}
+                      </span>
                     </span>
                     {c.is_default ? <Badge variant="default" className="text-[10px]">{t("pages.ai.defaultBadge")}</Badge> : null}
                     <span className="ml-auto flex shrink-0 gap-1">
@@ -450,114 +432,6 @@ export function AiPage() {
             ) : null}
             <p className="mt-3 text-[0.72rem] leading-relaxed text-[var(--t3,#8a8f98)]">{t("pages.ai.privacyNote")}</p>
           </Card>
-
-          {/* 配置表单（新增/编辑） */}
-          {form ? (
-            <Card className="border-[rgb(94_106_210_/_0.35)] p-4">
-              <h3 className="mb-3 text-[0.875rem] font-semibold text-[var(--t1,#222326)]">
-                {form.id ? t("pages.ai.editConfigTitle", { name: form.name }) : t("pages.ai.addConfigTitle")}
-              </h3>
-              <form onSubmit={(event) => void saveConfig(event)} noValidate>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div>
-                    <label htmlFor="ai-name" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.configName")}</label>
-                    <Input id="ai-name" className="mt-1" value={form.name} onChange={(e) => patch({ name: e.target.value })} placeholder={t("pages.ai.configNamePlaceholder")} />
-                  </div>
-                  <div>
-                    <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.provider")}</label>
-                    <Select value={form.provider} onValueChange={(v) => applyPreset(v as AiProviderKey)}>
-                      <SelectTrigger size="sm" className="mt-1 h-9 w-full cursor-pointer border-[var(--line-strong,#d0d6e0)]" aria-label={t("pages.ai.provider")}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(Object.keys(AI_PROVIDER_PRESETS) as AiProviderKey[]).map((k) => (
-                          <SelectItem key={k} value={k} className="cursor-pointer">
-                            {AI_PROVIDER_PRESETS[k].label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.auth")}</label>
-                    <Select value={form.authMethod} onValueChange={(v) => patch({ authMethod: v as AiAuthMethod })}>
-                      <SelectTrigger size="sm" className="mt-1 h-9 w-full cursor-pointer border-[var(--line-strong,#d0d6e0)]" aria-label={t("pages.ai.auth")}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="api_key" className="cursor-pointer">API Key</SelectItem>
-                        <SelectItem value="bearer" className="cursor-pointer">Bearer</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label htmlFor="ai-api-key" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.apiKey")}</label>
-                    <Input id="ai-api-key" className="mt-1" type="password" value={form.apiKey} onChange={(e) => patch({ apiKey: e.target.value })} placeholder={t("pages.ai.apiKeyPlaceholder")} autoComplete="off" />
-                  </div>
-                  <div className="sm:col-span-2">
-                    <label htmlFor="ai-base-url" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.baseUrl")}</label>
-                    <Input id="ai-base-url" className="mt-1 font-mono" value={form.baseUrl} onChange={(e) => patch({ baseUrl: e.target.value })} type="url" inputMode="url" placeholder="https://api.openai.com/v1" />
-                  </div>
-                  <div>
-                    <label htmlFor="ai-model" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.model")}</label>
-                    <div className="mt-1 flex gap-1">
-                      <Input id="ai-model" className="flex-1 font-mono" value={form.model} onChange={(e) => patch({ model: e.target.value })} list="ai-models-datalist" />
-                      <Button variant="soft" size="sm" type="button" onClick={() => void fetchModels()} disabled={busy} title={t("pages.ai.fetchModels")}>
-                        {t("pages.ai.fetchModels")}
-                      </Button>
-                    </div>
-                    <datalist id="ai-models-datalist">
-                      {models.map((m) => (
-                        <option key={m} value={m} />
-                      ))}
-                    </datalist>
-                  </div>
-                  <div>
-                    <label htmlFor="ai-context-window" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.contextWindow")}</label>
-                    <Input id="ai-context-window" className="mt-1 font-mono" type="number" min={0} value={form.contextWindow} onChange={(e) => patch({ contextWindow: e.target.value })} placeholder="128000" />
-                    <p className="mt-1 text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.contextWindowHint")}</p>
-                  </div>
-                  <div>
-                    <label htmlFor="ai-timeout" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.timeout")}</label>
-                    <Input id="ai-timeout" className="mt-1 font-mono" type="number" min={1} max={600} value={form.timeoutSecs} onChange={(e) => patch({ timeoutSecs: e.target.value })} />
-                  </div>
-                  <div>
-                    <label htmlFor="ai-max-tokens" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.maxTokens")}</label>
-                    <Input id="ai-max-tokens" className="mt-1 font-mono" type="number" min={1} max={32768} value={form.maxTokens} onChange={(e) => patch({ maxTokens: e.target.value })} />
-                  </div>
-                  <div>
-                    <label htmlFor="ai-max-retries" className="text-[0.75rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.maxRetries")}</label>
-                    <Input id="ai-max-retries" className="mt-1 font-mono" type="number" min={0} max={10} value={form.maxRetries} onChange={(e) => patch({ maxRetries: e.target.value })} />
-                    <p className="mt-1 text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.maxRetriesHint")}</p>
-                  </div>
-                  <div className="sm:col-span-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] p-3">
-                    <label className="flex cursor-pointer items-center gap-2 text-[0.78rem] text-[var(--t1,#222326)]">
-                      <input type="checkbox" checked={form.proxyEnabled} onChange={(e) => patch({ proxyEnabled: e.target.checked })} />
-                      {t("pages.ai.proxy")}
-                    </label>
-                    {form.proxyEnabled ? (
-                      <Input className="mt-2 font-mono" value={form.proxyUrl} onChange={(e) => patch({ proxyUrl: e.target.value })} placeholder="127.0.0.1:7890" aria-label={t("pages.ai.proxyUrl")} />
-                    ) : null}
-                    <p className="mt-1 text-[0.68rem] text-[var(--t3,#8a8f98)]">{t("pages.ai.proxyHint")}</p>
-                  </div>
-                </div>
-                {formError ? <p className="mt-3 rounded-[var(--r-sm,8px)] border border-red-200 bg-[var(--st-danger-tint,#fdecec)] px-3 py-2 text-[0.75rem] text-[#DC2626]" role="alert">{formError}</p> : null}
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Button variant="success" size="sm" type="submit" disabled={busy}>
-                    {action === "save" ? t("common.saving") : t("common.save")}
-                  </Button>
-                  <Button variant="outline" size="sm" type="button" onClick={() => setForm(null)} disabled={busy}>
-                    {t("common.cancel")}
-                  </Button>
-                  {status?.key_set ? (
-                    <Button variant="ghost" size="sm" type="button" className="text-[var(--st-danger,#dc2626)] hover:bg-[#FDECEC]" onClick={() => void clearKey()} disabled={busy}>
-                      {t("pages.ai.clearKey")}
-                    </Button>
-                  ) : null}
-                </div>
-              </form>
-            </Card>
-          ) : null}
 
           {/* 全局自定义指令 */}
           <Card className="p-4">
@@ -672,6 +546,20 @@ export function AiPage() {
         </div>
       </div>
 
+      <AiConfigDialog
+        form={form}
+        keySet={!!status?.key_set}
+        busy={busy}
+        saving={action === "save"}
+        error={formError}
+        models={models}
+        onPatch={patch}
+        onProviderChange={applyPreset}
+        onFetchModels={() => void fetchModels()}
+        onClearKey={() => void clearKey()}
+        onSubmit={(event) => void saveConfig(event)}
+        onClose={() => setForm(null)}
+      />
       <ConfirmDialog
         open={deleting != null}
         title={t("pages.ai.deleteConfigTitle")}

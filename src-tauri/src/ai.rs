@@ -67,6 +67,9 @@ pub struct AiConfigOut {
     pub proxy_url: Option<String>,
     pub context_window: Option<u64>,
     pub max_retries: u32,
+    pub cli_path: Option<String>,
+    pub cli_args: Vec<String>,
+    pub cli_env: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +80,16 @@ pub struct AiConfigSummaryOut {
     pub provider: String,
     pub model: String,
     pub base_url: String,
+    pub timeout_secs: u64,
+    pub max_tokens: u32,
+    pub auth_method: ai::AuthMethod,
+    pub proxy_enabled: bool,
+    pub proxy_url: Option<String>,
+    pub context_window: Option<u64>,
+    pub max_retries: u32,
+    pub cli_path: Option<String>,
+    pub cli_args: Vec<String>,
+    pub cli_env: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,6 +126,9 @@ impl From<&NamedAiConfig> for AiConfigOut {
             proxy_url: c.config.proxy_url.clone(),
             context_window: c.config.context_window,
             max_retries: c.config.max_retries,
+            cli_path: c.config.cli_path.clone(),
+            cli_args: c.config.effective_cli_args(),
+            cli_env: c.config.cli_env.clone(),
         }
     }
 }
@@ -143,6 +159,12 @@ pub struct AiConfigSaveIn {
     #[serde(default)]
     pub context_window: Option<u64>,
     pub max_retries: Option<u32>,
+    #[serde(default)]
+    pub cli_path: Option<String>,
+    #[serde(default)]
+    pub cli_args: Vec<String>,
+    #[serde(default)]
+    pub cli_env: std::collections::BTreeMap<String, String>,
     /// None 不动；Some("") 清除；Some(非空) 覆盖（仅对该配置写入全局单 key 槽位）。
     #[serde(default)]
     pub api_key: Option<String>,
@@ -167,6 +189,9 @@ pub fn ai_config_save(appdata: &AppDataHandle, input: AiConfigSaveIn) -> Result<
             proxy_url: input.proxy_url,
             context_window: input.context_window,
             max_retries: input.max_retries,
+            cli_path: input.cli_path,
+            cli_args: input.cli_args,
+            cli_env: input.cli_env,
         },
     )?;
     if let Some(key) = &input.api_key {
@@ -282,6 +307,16 @@ pub fn ai_status(appdata: &AppDataHandle) -> Result<AiStatusOut> {
                 provider: c.config.provider.clone(),
                 model: c.config.model.clone(),
                 base_url: c.config.base_url.clone(),
+                timeout_secs: c.config.timeout_secs,
+                max_tokens: c.config.max_tokens,
+                auth_method: c.config.auth_method,
+                proxy_enabled: c.config.proxy_enabled,
+                proxy_url: c.config.proxy_url.clone(),
+                context_window: c.config.context_window,
+                max_retries: c.config.max_retries,
+                cli_path: c.config.cli_path.clone(),
+                cli_args: c.config.effective_cli_args(),
+                cli_env: c.config.cli_env.clone(),
             })
             .collect(),
         default_id,
@@ -315,6 +350,33 @@ pub fn ai_models(appdata: &AppDataHandle, config_id: Option<&str>) -> Result<Vec
     let snapshot = appdata.lock().expect("appdata lock").clone();
     let key = ai::read_key().unwrap_or(None);
     ai::models(&UreqAiHttp, &snapshot, key.as_deref(), config_id)
+}
+
+/// 探测本地 CLI provider：直接执行 `--version`，不保存配置、不发网络请求。
+pub fn ai_cli_probe(
+    provider: &str,
+    cli_path: Option<&str>,
+    cli_env: &std::collections::BTreeMap<String, String>,
+) -> Result<ai::cli_agent::CliProbeOut> {
+    let preset = ai::provider_preset(provider).ok_or_else(|| {
+        supertask_core::error::Error::new(
+            supertask_core::error::ErrorCode::AiNotConfigured,
+            format!("未知 provider: {provider}"),
+        )
+    })?;
+    if preset.kind != ai::ProviderKind::LocalCli {
+        return Err(supertask_core::error::Error::new(
+            supertask_core::error::ErrorCode::AiNotConfigured,
+            "只有本地 CLI provider 可以探测可执行文件",
+        ));
+    }
+    let path = ai::cli_agent::validate_cli_path(cli_path.unwrap_or_default())?;
+    ai::cli_agent::probe(
+        &ai::cli_agent::ProcessCliRunner,
+        path.as_deref(),
+        preset.cli_program,
+        cli_env,
+    )
 }
 
 /// 当前工作区 secret 值（仅用于进 prompt 前的掩码，不进任何返回值/日志）。

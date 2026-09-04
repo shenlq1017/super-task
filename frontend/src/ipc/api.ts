@@ -63,6 +63,7 @@ import {
   type CloudTelemetryOut,
   type CloudEndpointSetOut,
   type AiTask,
+  type AiCliProbeOut,
   type AiConfigOut,
   type AiConfigSaveIn,
   type AiStatusOut,
@@ -564,6 +565,13 @@ export const apiAiConfigDelete = (id: string) =>
 
 export const apiAiConfigDefault = (id: string) =>
   invoke<{ ok: boolean }>(cmd.AI_CONFIG_DEFAULT, { id });
+
+/** 探测本机编码 CLI（--version），不保存配置。 */
+export const apiAiCliProbe = (
+  provider: string,
+  cliPath?: string | null,
+  cliEnv?: Record<string, string>,
+) => invoke<AiCliProbeOut>(cmd.AI_CLI_PROBE, { provider, cliPath, cliEnv });
 
 /** 全局自定义指令（trim；空串清除；≤8000 字符）。 */
 export const apiAiInstructionsSave = (text: string) =>

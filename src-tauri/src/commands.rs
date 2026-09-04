@@ -2298,6 +2298,21 @@ pub async fn ai_models(
     .map_err(ipc_err)
 }
 
+/// `ai.cli.probe`：本机 CLI 可执行文件探测（`--version`，不保存配置）。
+#[tauri::command(rename = "ai.cli.probe")]
+pub async fn ai_cli_probe(
+    provider: String,
+    cli_path: Option<String>,
+    cli_env: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<supertask_core::ai::cli_agent::CliProbeOut, IpcError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai::ai_cli_probe(&provider, cli_path.as_deref(), &cli_env.unwrap_or_default())
+    })
+    .await
+    .map_err(|e| err(ErrorCode::Spawn, format!("AI CLI probe 后台任务异常: {e}")))?
+    .map_err(ipc_err)
+}
+
 /// `ai.complete`：仅用户显式触发；task ∈ explain_logs | config_suggest | enrich_draft | test_connection。
 #[tauri::command(rename = "ai.complete")]
 pub async fn ai_complete(
