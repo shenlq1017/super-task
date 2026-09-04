@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use super::{sha256_hex, CloudProvider, Entity, EntityData, EntityType};
+use super::{conflict_current_entity, sha256_hex, CloudProvider, Entity, EntityData, EntityType};
 use crate::error::{Error, ErrorCode, Result};
 
 /// 单个实体的本地同步状态（state.json 一行）。
@@ -233,6 +233,7 @@ pub fn sync(
             let entity = Entity {
                 id: id.clone(),
                 entity_type: binding.entity_type(),
+                name: None,
                 rev: if base_rev == 0 { 0 } else { base_rev + 1 },
                 updated_at: now_ms(),
                 updated_by: device.to_string(),
@@ -252,13 +253,30 @@ pub fn sync(
                     outcome.pushed += 1;
                 }
                 Err(e) if e.code() == ErrorCode::CloudSyncConflict => {
-                    let server_rev = provider.get(token, &id).map(|s| s.rev).unwrap_or(0);
-                    let server_data = provider.get(token, &id).ok().map(|s| match s.data {
-                        EntityData::Plain(v) => v,
-                        EntityData::Encrypted { blob, salt } => {
-                            serde_json::json!({"blob": blob, "salt": salt})
-                        }
-                    });
+                    let (server_rev, server_data) =
+                        if let Some(server) = conflict_current_entity(&e) {
+                            let data = match server.data {
+                                EntityData::Plain(v) => Some(v),
+                                EntityData::Encrypted { blob, salt } => {
+                                    Some(serde_json::json!({"blob": blob, "salt": salt}))
+                                }
+                            };
+                            (server.rev, data)
+                        } else {
+                            // 旧服务端无 current：回退一次 GET。
+                            match provider.get(token, &id) {
+                                Ok(s) => {
+                                    let data = match s.data {
+                                        EntityData::Plain(v) => Some(v),
+                                        EntityData::Encrypted { blob, salt } => {
+                                            Some(serde_json::json!({"blob": blob, "salt": salt}))
+                                        }
+                                    };
+                                    (s.rev, data)
+                                }
+                                Err(_) => (0, None),
+                            }
+                        };
                     state.conflicts.insert(
                         id.clone(),
                         ConflictPair {
@@ -319,6 +337,7 @@ pub fn resolve(
             let entity = Entity {
                 id: entity_id.to_string(),
                 entity_type: pair.entity_type,
+                name: None,
                 rev: pair.server_rev + 1,
                 updated_at: now_ms(),
                 updated_by: device.to_string(),
@@ -367,6 +386,7 @@ pub fn resolve(
             let copy = Entity {
                 id: copy_id.clone(),
                 entity_type: pair.entity_type,
+                name: None,
                 rev: 0,
                 updated_at: now_ms(),
                 updated_by: device.to_string(),
@@ -407,6 +427,7 @@ pub fn resolve(
 mod tests {
     use super::*;
     use crate::cloud::fake::{FakeCloudProvider, FakeKnob};
+    use crate::cloud::LoginTokens;
     use std::collections::BTreeMap;
     use std::sync::RwLock;
 
@@ -462,6 +483,7 @@ mod tests {
         Entity {
             id: id.into(),
             entity_type: EntityType::Workspace,
+            name: Some(name.into()),
             rev,
             updated_at: 0,
             updated_by: "other-device".into(),
@@ -639,5 +661,79 @@ mod tests {
             run_sync(&provider, "t", &mut stores, &mut state, "dev1").unwrap()
         };
         assert_eq!(out2.pulled, 1);
+    }
+
+    /// 409 响应体含 `current` 时，冲突填充不触发 GET。
+    struct ConflictBodyProvider {
+        current: Entity,
+        get_calls: std::sync::atomic::AtomicUsize,
+    }
+    impl CloudProvider for ConflictBodyProvider {
+        fn login(&self, _: &str, _: &str) -> Result<LoginTokens> {
+            unreachable!()
+        }
+        fn refresh(&self, _: &str) -> Result<LoginTokens> {
+            unreachable!()
+        }
+        fn list(&self, _: &str, _: Option<EntityType>) -> Result<Vec<Entity>> {
+            Ok(vec![])
+        }
+        fn get(&self, _: &str, _: &str) -> Result<Entity> {
+            self.get_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(Error::new(ErrorCode::NotFound, "should not get"))
+        }
+        fn put(&self, _: &str, _: &Entity, _: u64) -> Result<Entity> {
+            let body = serde_json::json!({
+                "code": "CLOUD_SYNC_CONFLICT",
+                "message": "实体修订冲突",
+                "current": self.current,
+            })
+            .to_string();
+            Err(Error::new(ErrorCode::CloudSyncConflict, body))
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn telemetry_batch(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn quota(&self, _: &str) -> Result<crate::cloud::QuotaUsage> {
+            Ok(crate::cloud::QuotaUsage::default())
+        }
+    }
+
+    #[test]
+    fn push_conflict_uses_current_without_get() {
+        let current = ws_entity("w1", "server-side", 9);
+        let provider = ConflictBodyProvider {
+            current: current.clone(),
+            get_calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let mut state = SyncState::default();
+        let mut store = MemStore::new(EntityType::Workspace);
+        store.put("w1", serde_json::json!({"name": "local", "yaml": "l"}));
+        // 标记已追踪但 dirty，避免 pull 路径
+        state.entities.insert(
+            "w1".into(),
+            TrackedEntity {
+                entity_type: EntityType::Workspace,
+                base_rev: 1,
+                last_synced_hash: content_hash(&serde_json::json!({"name": "old"})),
+                local_path: None,
+            },
+        );
+        {
+            let mut stores: [&mut dyn LocalBinding; 1] = [&mut store];
+            sync(&provider, "t", &mut stores, &mut state, "dev1").unwrap();
+        }
+        assert_eq!(
+            provider.get_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        let pair = state.conflicts.get("w1").expect("conflict");
+        assert_eq!(pair.server_rev, 9);
+        assert_eq!(pair.server.as_ref().unwrap()["name"], "server-side");
+        assert_eq!(pair.local.as_ref().unwrap()["name"], "local");
     }
 }

@@ -104,12 +104,15 @@ impl<'de> Deserialize<'de> for EntityData {
     }
 }
 
-/// 实体信封（spec §10）：`{id, type, rev, updated_at, updated_by, data}`。
+/// 实体信封（spec §10）：`{id, type, rev, updated_at, updated_by, data}` + 可选 `name`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entity {
     pub id: String,
     #[serde(rename = "type")]
     pub entity_type: EntityType,
+    /// 服务端派生展示名（旧服务端可能缺省）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub rev: u64,
     #[serde(default)]
     pub updated_at: u64,
@@ -149,13 +152,65 @@ pub trait CloudProvider: Send + Sync {
     fn quota(&self, token: &str) -> Result<QuotaUsage>;
 }
 
+/// 按类型的配额分项（服务端 additive；旧服务端缺省为空）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuotaTypeUsage {
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub entities: u64,
+    pub bytes: u64,
+}
+
 /// 配额用量（spec §10：按实体数 + 总字节数）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct QuotaUsage {
     pub entities: u64,
     pub entities_max: u64,
     pub bytes: u64,
     pub bytes_max: u64,
+    #[serde(default)]
+    pub by_type: Vec<QuotaTypeUsage>,
+}
+
+/// `GET /healthz` 探活响应（字段均可选，兼容 `{status:ok}`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Healthz {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub db: Option<String>,
+    #[serde(default)]
+    pub now_ms: Option<u64>,
+    #[serde(default)]
+    pub server_time: Option<serde_json::Value>,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+impl Healthz {
+    /// 是否视为不健康（degraded / db error）。
+    pub fn is_unhealthy(&self) -> bool {
+        let status_bad = self.status.eq_ignore_ascii_case("degraded")
+            || self.status.eq_ignore_ascii_case("error");
+        let db_bad = self
+            .db
+            .as_deref()
+            .is_some_and(|d| d.eq_ignore_ascii_case("error"));
+        status_bad || db_bad
+    }
+}
+
+/// 从 `CLOUD_SYNC_CONFLICT` 错误消息中解析 409 响应体里的 `current` 实体。
+pub fn conflict_current_entity(err: &Error) -> Option<Entity> {
+    if err.code() != ErrorCode::CloudSyncConflict {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(err.message()).ok()?;
+    let current = value.get("current")?.clone();
+    if current.is_null() {
+        return None;
+    }
+    serde_json::from_value(current).ok()
 }
 
 /// HTTP → CLOUD_* 错误码映射（spec §10 表）。
@@ -204,6 +259,7 @@ mod tests {
         let e = Entity {
             id: "e1".into(),
             entity_type: EntityType::Workspace,
+            name: Some("a".into()),
             rev: 3,
             updated_at: 42,
             updated_by: "dev".into(),
@@ -259,5 +315,72 @@ mod tests {
             data,
             EntityData::Plain(serde_json::json!({ "blob": "ordinary" }))
         );
+    }
+
+    #[test]
+    fn entity_name_optional_roundtrip_and_default() {
+        let without = r#"{"id":"e","type":"workspace","rev":1,"data":{}}"#;
+        let e: Entity = serde_json::from_str(without).unwrap();
+        assert_eq!(e.name, None);
+        let wire = serde_json::to_value(&e).unwrap();
+        assert!(wire.get("name").is_none());
+
+        let with = r#"{"id":"e","type":"workspace","name":"N","rev":1,"data":{}}"#;
+        let e2: Entity = serde_json::from_str(with).unwrap();
+        assert_eq!(e2.name.as_deref(), Some("N"));
+    }
+
+    #[test]
+    fn conflict_current_entity_parses_409_body() {
+        let current = Entity {
+            id: "w1".into(),
+            entity_type: EntityType::Workspace,
+            name: Some("remote".into()),
+            rev: 7,
+            updated_at: 1,
+            updated_by: "other".into(),
+            data: EntityData::Plain(serde_json::json!({"name": "remote"})),
+        };
+        let body = serde_json::json!({
+            "code": "CLOUD_SYNC_CONFLICT",
+            "message": "实体修订冲突",
+            "current": current,
+        })
+        .to_string();
+        let err = Error::new(ErrorCode::CloudSyncConflict, body.clone());
+        let got = conflict_current_entity(&err).expect("current");
+        assert_eq!(got.id, "w1");
+        assert_eq!(got.rev, 7);
+        assert_eq!(got.name.as_deref(), Some("remote"));
+
+        let plain = Error::new(ErrorCode::CloudSyncConflict, "rev 冲突");
+        assert!(conflict_current_entity(&plain).is_none());
+        let wrong_code = Error::new(ErrorCode::CloudOffline, body);
+        assert!(conflict_current_entity(&wrong_code).is_none());
+    }
+
+    #[test]
+    fn quota_by_type_defaults_empty() {
+        let q: QuotaUsage =
+            serde_json::from_str(r#"{"entities":1,"entities_max":10,"bytes":2,"bytes_max":100}"#)
+                .unwrap();
+        assert!(q.by_type.is_empty());
+        let q2: QuotaUsage = serde_json::from_str(
+            r#"{"entities":1,"entities_max":10,"bytes":2,"bytes_max":100,"by_type":[{"type":"workspace","entities":1,"bytes":2}]}"#,
+        )
+        .unwrap();
+        assert_eq!(q2.by_type.len(), 1);
+        assert_eq!(q2.by_type[0].entity_type, "workspace");
+    }
+
+    #[test]
+    fn healthz_minimal_and_degraded() {
+        let ok: Healthz = serde_json::from_str(r#"{"status":"ok"}"#).unwrap();
+        assert!(!ok.is_unhealthy());
+        let deg: Healthz = serde_json::from_str(
+            r#"{"status":"degraded","db":"error","now_ms":1,"version":"0.1.0"}"#,
+        )
+        .unwrap();
+        assert!(deg.is_unhealthy());
     }
 }

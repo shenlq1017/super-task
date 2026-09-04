@@ -15,7 +15,7 @@ use supertask_core::cloud::http::HttpCloudProvider;
 use supertask_core::cloud::migrate::{self, RestorePlan, ToolchainGap};
 use supertask_core::cloud::sync::{load_state, save_state, LocalBinding, ResolveChoice, SyncState};
 use supertask_core::cloud::telemetry::TelemetryBuffer;
-use supertask_core::cloud::{CloudProvider, EntityData, EntityType, LoginTokens};
+use supertask_core::cloud::{CloudProvider, EntityData, EntityType, Healthz, LoginTokens};
 use supertask_core::error::{Error, ErrorCode, Result};
 
 /// 壳层云运行时：可动态切换的 provider/端点 + 遥测缓冲。
@@ -127,6 +127,11 @@ impl CloudHandle {
             .expect("cloud client lock")
             .endpoint
             .clone()
+    }
+
+    /// 无认证探活当前端点（不经 CloudProvider trait，避免要求登录）。
+    pub fn probe_healthz(&self) -> Result<Healthz> {
+        HttpCloudProvider::new(self.endpoint()).healthz()
     }
 
     /// 严格校验并切换端点。调用方应先持久化 AppData，成功后再调用本方法。
@@ -601,13 +606,28 @@ pub fn cloud_status(handle: &CloudHandle) -> Result<CloudStatusOut> {
     let logged_in = handle.session().is_ok();
     let mut health_detail = None;
     let quota = if logged_in {
-        handle
-            .authenticated(|provider, token| provider.quota(token))
-            .map_err(|error| {
-                health_detail = Some(error.message().to_string());
-                error
-            })
-            .ok()
+        // 先探活：失败/降级只标 offline，不当作认证失败。
+        match handle.probe_healthz() {
+            Err(error) => {
+                health_detail = Some(format!("healthz: {}", error.message()));
+                None
+            }
+            Ok(health) if health.is_unhealthy() => {
+                health_detail = Some(format!(
+                    "healthz degraded (status={}, db={})",
+                    health.status,
+                    health.db.as_deref().unwrap_or("-")
+                ));
+                None
+            }
+            Ok(_) => handle
+                .authenticated(|provider, token| provider.quota(token))
+                .map_err(|error| {
+                    health_detail = Some(error.message().to_string());
+                    error
+                })
+                .ok(),
+        }
     } else {
         None
     };
@@ -876,16 +896,21 @@ pub fn cloud_migrate_plan(handle: &CloudHandle) -> Result<RestorePlan> {
     let summaries: Vec<supertask_core::cloud::migrate::EntitySummary> = entities
         .iter()
         .map(|e| {
-            let name = match &e.data {
-                EntityData::Plain(v) => v
-                    .get("name")
-                    .or_else(|| v.get("title"))
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or(&e.id)
-                    .to_string(),
-                EntityData::Encrypted { .. } => e.id.clone(),
-            };
+            let name = e
+                .name
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| match &e.data {
+                    EntityData::Plain(v) => v
+                        .get("name")
+                        .or_else(|| v.get("title"))
+                        .and_then(|x| x.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or(&e.id)
+                        .to_string(),
+                    EntityData::Encrypted { .. } => e.id.clone(),
+                });
             supertask_core::cloud::migrate::EntitySummary {
                 id: e.id.clone(),
                 entity_type: e.entity_type.as_str().into(),

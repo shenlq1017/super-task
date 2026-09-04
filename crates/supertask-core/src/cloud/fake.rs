@@ -155,15 +155,21 @@ impl CloudProvider for FakeCloudProvider {
             .push(serde_json::to_string(entity).unwrap_or_default());
         if let Some(e) = g.entities.iter_mut().find(|e| e.id == entity.id) {
             if e.rev != base_rev {
-                return Err(Error::new(
-                    ErrorCode::CloudSyncConflict,
-                    format!("rev 冲突：服务端 {} != base {base_rev}", e.rev),
-                ));
+                let body = serde_json::json!({
+                    "code": "CLOUD_SYNC_CONFLICT",
+                    "message": "实体修订冲突",
+                    "current": e.clone(),
+                })
+                .to_string();
+                return Err(Error::new(ErrorCode::CloudSyncConflict, body));
             }
             e.rev += 1;
             e.updated_at = entity.updated_at;
             e.updated_by = entity.updated_by.clone();
             e.data = entity.data.clone();
+            if entity.name.is_some() {
+                e.name = entity.name.clone();
+            }
             return Ok(e.clone());
         }
         // 新建
@@ -171,6 +177,7 @@ impl CloudProvider for FakeCloudProvider {
         let created = Entity {
             id: id.clone(),
             entity_type: entity.entity_type,
+            name: entity.name.clone(),
             rev: 1,
             updated_at: entity.updated_at,
             updated_by: entity.updated_by.clone(),
@@ -203,6 +210,7 @@ impl CloudProvider for FakeCloudProvider {
             entities_max: 100,
             bytes: g.entities.iter().map(|e| entity_size(e) as u64).sum(),
             bytes_max: 10_000_000,
+            by_type: vec![],
         })
     }
 }

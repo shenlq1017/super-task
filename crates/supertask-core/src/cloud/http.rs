@@ -4,9 +4,11 @@
 //! 本地 fake executor 单测，**不访问外网**；生产 executor 为 [`UreqExecutor`]。
 //! 端点可配置（自托管，spec §2.5）：默认官方占位端点，Phase 0.4 拍板后替换。
 
+use std::time::Duration;
+
 use super::{
-    map_status, parse_entity, CloudProvider, Entity, EntityType, HttpResponse, LoginTokens,
-    QuotaUsage,
+    map_status, parse_entity, CloudProvider, Entity, EntityType, Healthz, HttpResponse,
+    LoginTokens, QuotaUsage,
 };
 use crate::error::{Error, ErrorCode, Result};
 
@@ -63,7 +65,20 @@ pub trait HttpExecutor: Send + Sync {
     ) -> Result<HttpResponse>;
 }
 
-pub struct UreqExecutor;
+pub struct UreqExecutor {
+    agent: ureq::Agent,
+}
+
+impl Default for UreqExecutor {
+    fn default() -> Self {
+        Self {
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(10))
+                .timeout_read(Duration::from_secs(30))
+                .build(),
+        }
+    }
+}
 
 impl HttpExecutor for UreqExecutor {
     fn execute(
@@ -73,7 +88,7 @@ impl HttpExecutor for UreqExecutor {
         bearer: Option<&str>,
         body: Option<&str>,
     ) -> Result<HttpResponse> {
-        let mut req = ureq::request(method, url);
+        let mut req = self.agent.request(method, url);
         if let Some(t) = bearer {
             req = req.set("Authorization", &format!("Bearer {t}"));
         }
@@ -110,7 +125,7 @@ impl HttpCloudProvider {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
-            executor: Box::new(UreqExecutor),
+            executor: Box::new(UreqExecutor::default()),
         }
     }
 
@@ -168,6 +183,24 @@ impl HttpCloudProvider {
         save(&refreshed)?;
         *tokens = refreshed;
         self.map(call(self.executor.as_ref(), &tokens.access_token)?)
+    }
+
+    /// `GET /healthz` — 无认证。兼容旧服务端 `{status:ok}` 与新字段。
+    pub fn healthz(&self) -> Result<Healthz> {
+        let r = self
+            .executor
+            .execute("GET", &self.url("/healthz"), None, None)?;
+        match serde_json::from_str::<Healthz>(&r.body) {
+            Ok(h) => Ok(h),
+            Err(e) if (200..300).contains(&r.status) => Err(Error::new(
+                ErrorCode::CloudProtocolError,
+                format!("healthz 解析失败: {e}"),
+            )),
+            Err(_) => Err(Error::new(
+                map_status(r.status),
+                format!("healthz 响应 {}", r.status),
+            )),
+        }
     }
 }
 
@@ -238,6 +271,10 @@ impl CloudProvider for HttpCloudProvider {
             Some(token),
             Some(&body),
         )?;
+        if r.status == 409 {
+            // 保留原始 JSON（可含 `current`），供 sync 避免二次 GET。
+            return Err(Error::new(ErrorCode::CloudSyncConflict, r.body));
+        }
         parse_entity(&self.map(r)?)
     }
 
@@ -437,4 +474,89 @@ mod tests {
         }
     }
     impl<T> Pipe for T {}
+
+    struct BodyHttp {
+        status: u16,
+        body: String,
+        calls: Mutex<Vec<(String, String)>>,
+    }
+    impl HttpExecutor for BodyHttp {
+        fn execute(
+            &self,
+            method: &str,
+            url: &str,
+            _b: Option<&str>,
+            _body: Option<&str>,
+        ) -> Result<HttpResponse> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((method.to_string(), url.to_string()));
+            Ok(HttpResponse {
+                status: self.status,
+                body: self.body.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn put_409_preserves_raw_body_with_current() {
+        let current = serde_json::json!({
+            "id": "w1",
+            "type": "workspace",
+            "name": "server",
+            "rev": 5,
+            "data": {"name": "server"}
+        });
+        let body = serde_json::json!({
+            "code": "CLOUD_SYNC_CONFLICT",
+            "message": "实体修订冲突",
+            "current": current,
+        })
+        .to_string();
+        let exec = BodyHttp {
+            status: 409,
+            body: body.clone(),
+            calls: Mutex::new(vec![]),
+        };
+        let p = HttpCloudProvider::with_executor("https://x", Box::new(exec));
+        let entity = Entity {
+            id: "w1".into(),
+            entity_type: EntityType::Workspace,
+            name: None,
+            rev: 1,
+            updated_at: 0,
+            updated_by: "dev".into(),
+            data: crate::cloud::EntityData::Plain(serde_json::json!({"name": "local"})),
+        };
+        let err = p.put("t", &entity, 0).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::CloudSyncConflict);
+        assert_eq!(err.message(), body);
+        let got = crate::cloud::conflict_current_entity(&err).unwrap();
+        assert_eq!(got.rev, 5);
+        assert_eq!(got.name.as_deref(), Some("server"));
+    }
+
+    #[test]
+    fn healthz_parses_minimal_and_enriched() {
+        let exec = BodyHttp {
+            status: 200,
+            body: r#"{"status":"ok"}"#.into(),
+            calls: Mutex::new(vec![]),
+        };
+        let p = HttpCloudProvider::with_executor("https://x", Box::new(exec));
+        let h = p.healthz().unwrap();
+        assert_eq!(h.status, "ok");
+        assert!(!h.is_unhealthy());
+
+        let exec2 = BodyHttp {
+            status: 503,
+            body: r#"{"status":"degraded","db":"error","now_ms":9,"version":"1.0"}"#.into(),
+            calls: Mutex::new(vec![]),
+        };
+        let p2 = HttpCloudProvider::with_executor("https://x", Box::new(exec2));
+        let h2 = p2.healthz().unwrap();
+        assert!(h2.is_unhealthy());
+        assert_eq!(h2.db.as_deref(), Some("error"));
+    }
 }
