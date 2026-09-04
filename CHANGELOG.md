@@ -2,6 +2,30 @@
 
 All notable changes to SuperTask are documented here.
 
+## [0.1.3] - 2026-09-04
+
+### Features
+
+- Discover page revamp: single README-import entry point, clearly separated
+  stats and filter rows, and "other listening processes" folded into the
+  main table as a collapsible section sharing one header so every column
+  stays aligned.
+- Discover table: fixed column layout that never overflows its container;
+  long process names, paths, and match ids truncate with hover tooltips,
+  and ports render as the first two chips plus a hoverable "+N" chip.
+- Discover sorting: the active sort is marked in the table header, and CPU
+  ordering falls back to memory for first-cycle samples where CPU readings
+  are not yet available.
+
+### Fixes
+
+- Windows: CLI agents installed via npm (.cmd shims such as cursor-agent)
+  now resolve through PATH + PATHEXT before spawn instead of failing with
+  "program not found"; the cursor-cli preset program name was corrected
+  from `agent` to `cursor-agent`.
+- AI config dialog: localized "clear key" action text in all four locales
+  and unified Traditional Chinese terminology.
+
 ## [0.1.1] - 2026-09-03
 
 ### Features
