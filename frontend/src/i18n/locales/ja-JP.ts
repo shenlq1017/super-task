@@ -410,6 +410,7 @@ const jaJP = {
       deleteTemplateDesc: "テンプレート「{{name}}」を削除しますか？",
       keySet: "キー保存済み",
       keyNotSet: "キー未設定",
+      clearKey: "キーをクリア",
       baseUrl: "エンドポイント base_url（OpenAI 互換）",
       model: "モデル",
       apiKey: "API キー",
@@ -1095,7 +1096,6 @@ const jaJP = {
       sortCpu: "CPU 降順",
       sortMemory: "メモリ降順",
       sortHint: "並び替え切替：一致優先 → CPU → メモリ",
-      readmeBanner: "ワークスペースを開いています。README から起動・ビルドコマンドを解析し、サービスとスクリプトの下書きにマージできます（確定まで書き込みません）。",
       readmeImportEmptyCta: "README から下書きを取り込む",
     },
     config: {
