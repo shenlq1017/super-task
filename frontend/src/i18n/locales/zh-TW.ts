@@ -115,12 +115,21 @@ const zhTW = {
     "toggleDetails": "展開 / 收起系統與環境詳情",
     "tempOffValue": "已關閉",
     "tempModeLabel": "溫度取樣",
-    "tempUnsupportedHint": "本機未提供 CPU 溫度感測器（桌機常見），切換檔位也拿不到讀數。",
+    "tempUnsupportedHint": "本機未暴露 CPU 溫度感測器（常見於桌上型電腦），切換檔位也拿不到讀數。",
     "tempModes": {
-      "off": { "label": "關閉", "hint": "不取樣 CPU 溫度，狀態列隱藏該項。" },
-      "auto": { "label": "自動", "hint": "低頻取樣：Linux 直接讀感測器，Windows 每分鐘查一次 WMI。" },
-      "fast": { "label": "高頻", "hint": "近即時：Windows 常駐一個取樣行程持續讀數，不再每次開新行程。" }
-    }
+      "off": {
+        "label": "關閉",
+        "hint": "不採樣 CPU 溫度，狀態列隱藏該項。",
+      },
+      "auto": {
+        "label": "自動",
+        "hint": "低頻取樣：Linux 直接讀感測器，Windows 每分鐘查一次 WMI。",
+      },
+      "fast": {
+        "label": "高頻",
+        "hint": "近即時：Windows 常駐一個取樣程序持續讀數，不再每次開新程序。",
+      },
+    },
   },
   "pages": {
     "ai": {
@@ -450,6 +459,30 @@ const zhTW = {
       "kindOther": "其他",
       "filterNoMatchTitle": "沒有匹配的程序",
       "filterNoMatchDesc": "當前篩選條件下無結果。",
+      "copyFailed": "複製失敗，請手動選擇文本",
+      "copyPorts": "複製埠",
+      "labelPorts": " 埠",
+      "clearPort": "清除埠篩選",
+      "refreshedAt": "重新整理於 {{time}}",
+      "refreshPaused": "對話方塊開啟時已暫停自動重新整理",
+      "loadingTitle": "正在掃描本機監聽程序…",
+      "loadingDesc": "讀取系統 TCP 表與程序資訊，稍候即可。",
+      "loadFailedTitle": "發現查詢失敗",
+      "loadFailedDesc": "無法讀取本機監聽程序。可手動重試，或等待自動重新整理。",
+      "retry": "重試",
+      "chipTotal": "程序",
+      "chipMatched": "工作區匹配",
+      "chipMatchedHint": "埠與當前工作區服務重合，且歸屬本工作區",
+      "chipConflict": "埠衝突",
+      "chipConflictHint": "埠與工作區服務重合，但程序歸屬外部",
+      "chipWsPorts": "工作區埠",
+      "chipWsPortsHint": "當前工作區 supertask.yaml 中宣告的服務埠數",
+      "sortMatch": "匹配優先",
+      "sortCpu": "CPU 降序",
+      "sortMemory": "記憶體降序",
+      "sortHint": "切換排序：匹配優先 → CPU → 記憶體",
+      "readmeBanner": "已開啟工作區：可從 README 解析啟動/構建命令，合併為服務與指令碼草稿（確認後寫盤）。",
+      "readmeImportEmptyCta": "從 README 匯入草稿",
     },
     "git": {
       "op_queued": "排隊中",
@@ -1026,7 +1059,7 @@ const zhTW = {
         "emerald": "Emerald 翠綠",
         "amber": "Amber 琥珀",
         "rose": "Rose 玫瑰",
-        "ocean": "Ocean 海洋"
+        "ocean": "Ocean 海洋",
       },
       "language": "語言",
       "languageDesc": "切換即時生效，無需重啟",
