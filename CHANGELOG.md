@@ -6,6 +6,16 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### needs 安装并钉扎写回（方向三·环境供给）
+
+- 环境页 needs 卡片 installable 行新增「安装并钉扎」：与「安装」同一 `toolchain.install`
+  长操作链路（`persist: true` + `base_hash`），安装成功后把安装版本写回
+  `toolchain.*`（npm/pnpm/yarn 写 `package_manager`），重新 resolve 即翻转为
+  「已存在」——「声明式需求」收敛为显式钉扎，与 /env 版本选择器同一落点。
+- 显式选择：默认「安装」不写 yaml，行为与此前完全一致；`YAML_CONFLICT` 时安装
+  结果保留、仅写回失败（§4.3 既有语义）。复用既有 persist 机制，零后端改动、
+  零新增错误码。
+
 #### Procfile 导入（方向二·纳管任意来源）
 
 - 配置页新增「导入 Procfile」：读取工作区根 `Procfile`（Foreman / Overmind / Heroku
