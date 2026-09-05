@@ -6,6 +6,49 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 网关三形态路由（方向四·网络与身份）
+
+- 路由从「单一代理」扩展为**三形态恰选其一**：代理（原语义不变）、**重定向**
+  （`redirect: /new` 或完整 URL，`redirect_status` 支持 301/302/307/308，缺省 302）、
+  **静态站点**（`static_dir: dist` 相对工作区根，`path` 固定为 `/`，目录索引
+  index.html；拒绝绝对路径与 `..` 越界）。渲染覆盖 nginx / caddy / apache 三引擎
+  （`root`+`try_files` / `root *`+`file_server` / `DocumentRoot`+`<Directory>`）。
+- **WebSocket 三引擎一致**：nginx 升级头透传与 caddy `reverse_proxy` 原生支持不变，
+  apache 由「简化集不转发」补齐为 `ProxyPass … upgrade=websocket`（需 Apache ≥ 2.4.47，
+  XAMPP / 官方 zip 均满足；旧版本在本机校验阶段即报 `GATEWAY_CONFIG_INVALID` 带 stderr）。
+- **多域名别名**：`host` 支持逗号分隔多域名（`host: "api.localhost, admin.localhost"`），
+  同一域名集合归入同一 server/站点/虚拟主机（nginx `server_name` 空格列表、
+  caddy 逗号站点地址、apache `ServerName`+`ServerAlias`），重复判定按规范化集合比较。
+- **route 级 CORS**：`cors.origins`（`*` 或 `http(s)://host[:port]`，`*` 不与其他混用）、
+  可选 `methods`/`headers`/`max_age_secs`/`credentials`（`*`+credentials 拒绝）。语义为
+  **白名单回显**：请求 Origin 命中才回显并附带 allow 头，未命中零 CORS 头；
+  preflight OPTIONS 命中白名单时网关本地 204 应答、不转发上游。三引擎实现：
+  nginx `map $http_origin` + `add_header … always`、caddy `header_regexp` matcher +
+  嵌套 handle `respond 204`、apache `<Location>` + `SetEnvIf` 白名单 + `mod_rewrite`
+  preflight 204（模块集新增 setenvif/rewrite/dir）。
+- **strip_prefix**：代理路由可选剥除 path 前缀后转发（nginx 尾斜杠 proxy_pass、
+  caddy `uri strip_prefix`、apache 尾斜杠 worker），缺省保持前缀透传不变。
+- 网关页路由编辑器重做为形态切换（代理/重定向/静态）+ CORS 子表单（四语言）；
+  `gateway.status` 的 routes 视图携带全部新字段（ipc.md §10.10）。
+- 配置规格见 `docs/spec/yaml.md` §7.1；golden 测试锁定三引擎字节级输出
+  （11 份：nginx 5 / caddy 3 / apache 3，含 CORS 通配与显式白名单、多域名、
+  redirect、静态站点、strip_prefix 组合场景）。
+
+#### 隧道纳管模板（方向四·网络与身份）
+
+- 新增 3 个内置模板（stacks: `tunnel`），把成熟隧道工具以 `kind: generic` 服务纳管，
+  **不自研隧道协议**：统一启停、进程树清理、崩溃通知、`restart: on-failure` 自动拉起、
+  日志页查看连接状态。
+  - **Cloudflare Tunnel（快速隧道）**：`cloudflared tunnel --url http://127.0.0.1:<port>`
+    零凭据把本机端口暴露为临时公网 URL（`*.trycloudflare.com`），URL 在服务日志中查看；
+  - **Cloudflare Tunnel（命名隧道）**：`cloudflared tunnel run`，token 走 `.env.tunnel`
+    （env_file 注入进程环境），固定域名；
+  - **frp 客户端（frpc）**：`frpc -c frpc.toml`，四个参数（frps 地址/端口、远端端口、
+    本机目标端口）模板化，`auth.token` 经 `.env.frp` 注入并由 frp 的
+    `{{ .Envs.FRP_TOKEN }}` 配置模板引用，不写死任何凭据。
+- 凭据边界：token 一律走 env_file → 进程环境，不进 `supertask.yaml`、命令行 argv、
+  日志或事件；模板 README 说明自行加入 `.gitignore`。
+
 #### 声明式需求 needs（方向三·环境供给）
 
 - `supertask.yaml` 新增顶层 `needs` 声明（typed 化）：`needs: ["node@20", "postgres@16"]`

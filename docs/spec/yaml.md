@@ -267,11 +267,22 @@ ai:
 
 JSON Schema 对这些段用 `additionalProperties: true`，避免 1.1 加字段时 1.0 读失败。
 
-### 7.1 `gateway`（1.6 转 typed）
+### 7.1 `gateway`（1.6 转 typed；方向四扩三形态路由）
 
 网关是一等能力：路由是意图，SuperTask 把意图编译成对应反代引擎的配置文件，
 校验后像服务一样托管。`gateway: {}`（1.0 reserved 空段）语义不变：读回仍在、
 视为未配置（`GATEWAY_NOT_CONFIGURED`），旧文件零迁移。
+
+每条路由是三种形态之一（恰选其一）：
+
+1. **代理**：`target`/`upstream` 二选一，把 path 前缀转发到本机回环上游。
+   WebSocket 三引擎一致透传（nginx 升级头、caddy `reverse_proxy` 原生、
+   apache `ProxyPass … upgrade=websocket`——需 Apache ≥ 2.4.47，旧版本会在
+   本机校验阶段报 `GATEWAY_CONFIG_INVALID` 并带 stderr）。
+2. **重定向**：`redirect` 目标（`/path` 或 `http(s)://…`），可选
+   `redirect_status`（301/302/307/308，缺省 302）。
+3. **静态站点**：`static_dir` 工作区内相对目录（拒绝绝对路径与 `..`），
+   `path` 必须为 `/`（整站静态，目录索引 index.html）。
 
 ```yaml
 gateway:
@@ -281,17 +292,38 @@ gateway:
   bin: null                # 可选：反代二进制显式路径（探测的最终 fallback）
   tls: off                 # 仅 caddy 生效：off | internal（本机 CA HTTPS）
   routes: []               # 路由列表：
-  # - host: api.localhost  #   可空 = 全匹配（catch-all）
+  # - host: api.localhost  #   可空 = 全匹配（catch-all）；多域名别名用逗号分隔
+  #   #   如 host: "api.localhost, admin.localhost"（同一组路由命中多个域名）
   #   path: /api           #   必填，以 / 开头的前缀；'/' 为根
   #   target: user-api     #   服务 id（生成时解析为其当前 port）
   #   # 或 upstream: 127.0.0.1:9000  # 显式上游，与 target 互斥
+  #   strip_prefix: true   #   可选：剥除 path 前缀后转发（缺省 false，前缀透传）
+  #   cors:                #   可选（仅代理路由）：route 级 CORS
+  #     origins:           #     必填非空："*" 或 http(s)://host[:port]
+  #       - http://localhost:3000
+  #     methods: [GET, POST]        # 缺省 GET, POST, PUT, PATCH, DELETE, OPTIONS
+  #     headers: [Authorization]    # 缺省 Origin, Content-Type, Accept, Authorization
+  #     max_age_secs: 600           # 缺省 600，上限 2592000
+  #     credentials: true           # 缺省 false；true 时 origins 不得为 "*"
+  # - path: /old          # 重定向形态
+  #   redirect: /new       #   目标：/ 开头路径或 http(s):// URL
+  #   redirect_status: 301 #   可选：301/302/307/308（缺省 302）
+  # - path: /             # 静态站点形态
+  #   static_dir: dist     #   工作区内相对目录；path 必须为 /
   x-experiment: keep       # 未知键 flatten extra round-trip
 ```
 
 校验（打开工作区时 warning，apply/start 时硬错误 `GATEWAY_ROUTE_INVALID`）：
-kind 枚举；port 1024–65535 且不与任一服务 port 重复；`(host, path)` 不重复；
-path 以 `/` 开头；host 为空或合法 hostname（含 `*.localhost` 形式子域）；
-target/upstream 恰一且 target 服务存在并有 `port`（或 `ports` 首个）。
+kind 枚举；port 1024–65535 且不与任一服务 port 重复；`(host, path)` 不重复
+（host 按多域名规范化集合比较）；path 以 `/` 开头；host 为空或逗号分隔的合法
+hostname 列表（含 `*.localhost` 形式子域）；代理/重定向/静态三形态恰选其一
+（`strip_prefix`/`cors` 仅代理路由）；target/upstream 恰一且 target 服务存在并有
+`port`（或 `ports` 首个）；redirect 目标与状态码合法；static_dir 为相对目录、
+无 `..`，且 path 为 `/`；CORS origins 非空、`*` 不与其他 origin 混用、
+`*` + `credentials` 拒绝。
+CORS 语义：白名单回显——请求 Origin 命中 origins 时回显该 Origin 并附带
+allow 方法/头/缓存头，未命中不加任何 CORS 头；preflight（OPTIONS）命中白名单
+时由网关本地 204 应答、不转发上游。
 配置产物生成到 `.supertask/gateway/`（磁盘产物是缓存，不是编辑对象）。
 
 ### 7.2 `needs`（2.2）

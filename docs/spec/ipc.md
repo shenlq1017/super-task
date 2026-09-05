@@ -679,10 +679,17 @@ gateway.status    input:  { workspace_id }
                   output: { configured, enabled, kind?, port?,
                             state?, pid?, last_error?,
                             routes: [{ host?, path, target?, upstream?,
+                                       strip_prefix?, cors?, redirect?,
+                                       redirect_status?, static_dir?,
                                        target_port?, upstream_alive? }],
                             conf_path? }
                           # state: starting | running | unhealthy | stopped | stopping | exited
                           # upstream_alive: 上游端口 loopback 双栈探测结果
+                          # 路由字段与 GatewayRouteSpec 对齐（yaml.md §7.1 三形态）：
+                          #   代理 = target/upstream 二选一（可带 strip_prefix/cors）
+                          #   重定向 = redirect（+redirect_status，缺省 302）
+                          #   静态站点 = static_dir（path 恒为 /）
+                          # cors: { origins, methods?, headers?, max_age_secs?, credentials? }
 
 gateway.preview   input:  { workspace_id, gateway? }     # 传配置则渲染草稿，缺省用当前 yaml
                   output: { files: [{ name, content }] } # 纯内存渲染，不落盘
@@ -719,7 +726,7 @@ gateway.trust     input:  { workspace_id } → { accepted }
 | code | 何时 |
 |------|------|
 | `GATEWAY_NOT_CONFIGURED` | 无 gateway 段 / 无 kind / enabled=false 时执行启动类命令；gateway.trust 非 caddy |
-| `GATEWAY_ROUTE_INVALID` | 路由静态校验失败（target 不存在/无端口、path/host 非法、重复、与网关端口冲突、upstream 语法非法）；details 带问题列表 |
+| `GATEWAY_ROUTE_INVALID` | 路由静态校验失败（三形态不恰选其一、target 不存在/无端口、path/host 非法（含多域名）、重复、与网关端口冲突、upstream 语法非法、redirect/static_dir/cors 字段非法）；details 带问题列表 |
 | `GATEWAY_BINARY_MISSING` | 反代二进制未找到（details/message 带引擎名与平台安装指引；不代装） |
 | `GATEWAY_CONFIG_INVALID` | 本机校验失败或超时（details 带 stderr/stdout 原文；Windows 版 `nginx -t` 会真实 bind 端口，端口被外部占用即在此暴露） |
 | `GATEWAY_START_FAILED` | 校验通过但 spawn 失败 / 进程立即退出（last_error 进网关日志与状态） |

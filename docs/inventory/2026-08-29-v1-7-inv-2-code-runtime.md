@@ -73,7 +73,8 @@ typed 字段（`ServiceSpec.service` + `DockerSpec`）→ 校验（validate.rs c
 
 - **工作区锁**（1.5）：`lock.rs`（321 行）——所有权锁 + `WORKSPACE_LOCKED`；CLI status/logs/doctor 不取锁（cli.md §命令表）。
 - **导出/导入包**（1.5）：`pkg.rs`（485 行）——manifest + supertask.yaml，`--with-secrets` 含声明密钥明文；import 只落盘不启动、目标已有 yaml 拒绝（cli.md）。
-- **网关**（1.6）：`gateway/`（model / render/ / validate / probe）——render 纯函数零新依赖；probe 三引擎探测进 `ToolchainProbe.gateway`。
+- **网关**（1.6；方向四扩展）：`gateway/`（model / render/ / validate / probe）——render 纯函数零新依赖；probe 三引擎探测进 `ToolchainProbe.gateway`。路由为三形态（代理 / 重定向 `redirect(+status)` / 静态站点 `static_dir`，恰选其一），代理路由可带 `strip_prefix` 与 route 级 CORS（白名单回显 + preflight 本地 204），`host` 支持逗号分隔多域名别名；apache WebSocket 经 `ProxyPass upgrade=websocket`（≥2.4.47），模块集含 setenvif/rewrite/dir；渲染输出由 `tests/golden/gateway/` 11 份 golden 锁字节。
+- **隧道模板**（方向四）：`template_assets/tunnel-cloudflared{,-token}/` 与 `tunnel-frpc/`——generic 服务纳管 cloudflared/frpc，token 走 `.env.*`（env_file 注入），`restart: on-failure`；模板机制不变（清单 + 文件双向一致性测试兜底），内置模板 10 套。
 - **声明式需求 needs**（方向三·环境供给）：`needs.rs`——resolve-only 四态解析（已存在/可安装/可归档供给/不可满足），内置归档目录 `ARCHIVE_CATALOG`，IPC `workspace.needsResolve`（ipc.md §10.17）。
 - **MCP**（1.5）：在 `crates/supertask-cli/src/mcp.rs`（不在 core）——rmcp stdio，7 工具（`:15-21`），断连清场。
 - **错误码**：`error.rs` `ErrorCode` enum 约 101 个变体；soon 机制：`features.rs:51-62` `SOON_COMMANDS`（cloud.login/cloud.sync/ai.complete）+ `FEATURE_SOON` 拒绝，禁止假成功。

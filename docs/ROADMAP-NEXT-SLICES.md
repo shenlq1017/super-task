@@ -110,4 +110,78 @@
 
 ---
 
+## 方向四：网络与身份
+
+> 已交付：隧道纳管模板（cloudflared 快速/命名、frpc，generic 纳管 + env_file 凭据）、
+> 网关三形态路由（代理 / 重定向 / 静态站点）与 strip_prefix、route 级 CORS、
+> 多域名别名、apache WebSocket（docs/spec/yaml.md §7.1）。以下为剩余候选
+> （均为涉及平台权限的高成本项，开工前先做权限边界调研）。
+
+### H. hosts 文件管理（本机 DNS 最小切片）
+
+- **目标**：`*.localhost` 之外的真实域名（如 `api.myapp.dev`）在本机可解析：
+  工作区声明域名 → 引擎生成 hosts 条目 → 管理员权限写入系统 hosts →
+  关闭工作区时清理自己写入的段。
+- **验收雏形**：写入带 SuperTask 标记段（幂等、可区分、可整体清理）；无管理员
+  权限时明确报错并给手动指引；多工作区域名冲突可检测；不碰用户手工条目。
+- **待细化**：Windows hosts 提权方式（以 UAC 提权子进程写入 vs 引导用户手动）、
+  与路由 `host:` 字段的联动（校验提示域名未解析）、是否会污染 hosts 的安全审查。
+
+### I. 私有 CA 与证书签发（caddy 之外的第二条路）
+
+- **目标**：不依赖 caddy internal CA 的证书能力：内置私有 CA（根证书生成 +
+  信任引导），为 nginx / apache 渲染出 `ssl_certificate` 路径与 SAN 证书，
+  覆盖 `tls: internal` 在三引擎的一致语义。
+- **已有材料**：`GatewayTls::Internal` 已是 spec 字段（当前仅 caddy 生效）；
+  rcgen 纯 Rust 签发可离线测试；`gateway.trust` 的用户确认先例。
+- **验收雏形**：`tls: internal` + kind: nginx/apache 时产物含证书路径且证书
+  对声明的 host（含多域名别名）有效；CA 私钥不出 `.supertask/` 沙箱、不进日志；
+  根证书信任沿用 trust 确认模式；过期/缺失自动重签。
+- **待细化**：CA 密钥的存放位置与权限、Windows 信任库写入方式、
+  与 caddy internal CA 的并存策略（避免两套根证书）。
+
+以下为三形态路由与隧道切片交付时留下的**待改进**（来自本轮已知的边界，
+成本小、可独立开工）：
+
+### J. 隧道就绪信息：公网 URL 提取到服务卡片
+
+- **现状**：quick tunnel 的公网 URL（`*.trycloudflare.com`）只在服务日志里，
+  用户要翻日志才能拿到。
+- **改进**：generic 服务的日志管道识别隧道分配 URL（cloudflared 的
+  `https://<子域>.trycloudflare.com` 行），提取后进运行页服务卡片/状态提示；
+  只读展示、不回显 token。
+- **待细化**：提取规则的挂点（LogHub 管道 vs 每次快照时正则）、重启换 URL 的
+  呈现、frpc 的 `远程地址` 文案组装。
+
+### K. 网关三形态真机冒烟（CORS / WebSocket / 静态）
+
+- **现状**：三引擎渲染由 11 份 golden 锁字节，但 CORS 白名单回显、preflight 204、
+  apache `upgrade=websocket`、caddy `uri strip_prefix` 剥空路径等**运行时行为**
+  只过了本机 `nginx -t` / `caddy validate` / `httpd -t` 级校验，未做真实请求验收。
+- **改进**：按方向八真机冒烟的口径，补一组网关行为清单（每引擎：
+  代理透传 / 剥前缀 / 重定向 / 静态索引 / CORS 命中与未命中 / preflight /
+  WebSocket 回显），汇入平台验收；发现差异回修渲染。
+- **待细化**：与方向八 M 系列共用环境；caddy `handle` 互斥顺序的实测确认。
+
+### L. apache 版本预检（upgrade=websocket 需 ≥2.4.47）
+
+- **现状**：旧版 Apache（<2.4.47）会在 `httpd -t` 阶段报 unknown parameter，
+  错误可见但要读 stderr 才能定位；`probe.rs` 已能拿版本字符串（`httpd -v`）。
+- **改进**：探测到 apache 且版本 < 2.4.47 时，在 `toolchain.probe` 的 gateway
+  apache 项加能力标注（或 validate 输出附 warning），UI 提示升级指引。
+- **待细化**：版本解析的健壮性（Apache Lounge / 发行版后缀）、警告挂点选
+  probe 还是 validate。
+
+### M. 隧道模板并入现有工作区（替代独立工作区）
+
+- **现状**：模板创建的是独立工作区（target_port 指向本机端口，跨工作区可用
+  但体验割裂）；把隧道服务加进**现有**工作区目前只能手改 yaml。
+- **改进**：复用方向二导入 preview/apply 的模板（`preview(root, current)` →
+  勾选 → `apply`），支持「向当前工作区添加模板服务/服务块」；与孤儿进程
+  纳管、Taskfile 导入共用同一写回与冲突语义。
+- **待细化**：块模板（blocks）在此入口的呈现、端口占位 `{{port}}` 的分配
+  交互、与 needs/toolchain 段的叠加规则。
+
+---
+
 （后续方向切片交付后在此追加）

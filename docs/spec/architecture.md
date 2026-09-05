@@ -138,7 +138,10 @@ GatewaySlot
   → spawn 网关进程（nginx `daemon off` 前台 / caddy `run` / httpd 平台 argv）。
   任何一步失败不 spawn：错误码 `GATEWAY_*` 五枚。
 - render 是纯函数（IR → 字符串，golden 测试锁定），与引擎、平台解耦；平台差异只在
-  argv 与探测，不在配置内容（apache LoadModule 目录由 bin 位置注入）。
+  argv 与探测，不在配置内容（apache LoadModule 目录由 bin 位置注入）。路由为
+  三形态（代理 / 重定向 / 静态站点，yaml.md §7.1）：代理可带 `strip_prefix` 与
+  route 级 CORS（白名单回显 + preflight 本地 204），`host` 支持逗号分隔多域名别名；
+  WebSocket 三引擎一致透传（apache 经 `upgrade=websocket`，≥2.4.47）。
 - 生命周期：`stop_all` / `close` / `detach`（切工作区终止、不进 DETACHED 移交）/
   CLI `down` / 引擎退出 / MCP 断连清场一律包含网关；`gateway.apply` = save_form 写
   yaml（`YAML_CONFLICT` 时网关保持运行）→ 重新生成 → 运行中则 stop→start（非热重载）。
