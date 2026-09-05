@@ -18,6 +18,8 @@ design_outputs/
 .cursor/
 .claude/
 .workbuddy/
+.freebuff/
+.zcode/
 .verify/
 .tmp/
 
