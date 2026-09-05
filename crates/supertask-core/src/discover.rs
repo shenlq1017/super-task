@@ -1004,6 +1004,7 @@ mod tests {
         let spec = crate::spec::HealthSpec {
             r#type: crate::spec::HealthType::Tcp,
             http: None,
+            pattern: None,
             interval_secs: 2,
             timeout_secs: 2,
         };

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::graph::start_order;
-use crate::health;
+use crate::health::{self, HealthResult};
 use crate::ipc::{LogSource, LogSourceKind, LogStream, DEFAULT_RING_LINES};
 use crate::launcher::{log_file_rel, CommandSpec};
 use crate::log::{LogBatcher, LogFile, LogHub, LogLine};
@@ -204,6 +204,12 @@ struct Slot {
     started_at_ms: Option<u64>,
     grace: Duration,
     health: Option<HealthView>,
+    // ---- 方向一：日志模式就绪判定（health.type: log）----
+    /// 日志扫描水位：启动时 = LogHub 当前 next_seq，天然排除上一轮进程的旧日志
+    log_scan_seq: u64,
+    /// 粘性命中：一旦匹配不因环形缓冲淘汰回退
+    log_matched: bool,
+    log_detail: Option<String>,
     last_error: Option<String>,
     last_exit: Option<ExitView>,
     cancel: Arc<AtomicBool>,
@@ -816,6 +822,9 @@ impl Engine {
                     health: None,
                     last_error,
                     last_exit: None,
+                    log_scan_seq: 0,
+                    log_matched: false,
+                    log_detail: None,
                     cancel: Arc::new(AtomicBool::new(false)),
                     managed,
                     artifact: None,
@@ -2721,10 +2730,16 @@ impl Engine {
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut g = self.inner.lock().expect("engine lock");
+            // 方向一：log 就绪水位先于 slot 可变借用快照
+            let log_watermark = g.logs.next_seq();
             let slot = g.slots.get_mut(id).expect("slot exists");
             slot.state = RtState::Starting;
             slot.started = Some(Instant::now());
             slot.started_at_ms = Some(now_ms());
+            // 方向一：log 就绪判定水位对齐本次启动
+            slot.log_scan_seq = log_watermark;
+            slot.log_matched = false;
+            slot.log_detail = None;
             slot.last_error = None;
             slot.last_exit = None;
             slot.exit_reason = None;
@@ -3566,6 +3581,9 @@ fn apply_spec_slots(g: &mut Inner, file: &SuperTaskFile) -> Result<()> {
                 health: None,
                 last_error: None,
                 last_exit: None,
+                log_scan_seq: 0,
+                log_matched: false,
+                log_detail: None,
                 cancel: Arc::new(AtomicBool::new(false)),
                 managed: true,
                 artifact: None,
@@ -4355,6 +4373,8 @@ fn spawn_core(
 
     {
         let mut g = inner.lock().expect("engine lock");
+        // 方向一：log 就绪水位先于 slot 可变借用快照
+        let log_watermark = g.logs.next_seq();
         let slot = g.slots.get_mut(&id).unwrap();
         // 同步当前 spec 的 port/kind/grace：改端口/profile 切换后重启仍显示新配置
         slot.port = port;
@@ -4384,6 +4404,10 @@ fn spawn_core(
         slot.pid = Some(pid);
         slot.started = Some(Instant::now());
         slot.started_at_ms = Some(now_ms());
+        // 方向一：log 就绪判定水位对齐本次启动（排除上一轮进程的旧日志）
+        slot.log_scan_seq = log_watermark;
+        slot.log_matched = false;
+        slot.log_detail = None;
         slot.last_error = None;
         slot.exit_reason = None;
         slot.env_snapshot = Some(EnvSnapshot {
@@ -5217,7 +5241,46 @@ fn spawn_health(
                 if in_terminal {
                     break;
                 }
-                let r = health::check_with_endpoints(&spec, port, &eps);
+                // 方向一：log 就绪在锁内扫描（内存有界操作）；tcp/http 慢探测保持锁外。
+                // 字段级解构规避 slots/logs 的借用冲突
+                let log_scan = if let HealthType::Log = spec.r#type {
+                    let mut g = inner.lock().expect("engine lock");
+                    let Inner { logs, slots, .. } = &mut *g;
+                    let Some(slot) = slots.get_mut(&id) else {
+                        break;
+                    };
+                    if slot.log_matched {
+                        Some(HealthResult {
+                            ok: true,
+                            detail: slot
+                                .log_detail
+                                .clone()
+                                .unwrap_or_else(|| "log matched".into()),
+                        })
+                    } else {
+                        let src = LogSource {
+                            kind: LogSourceKind::Service,
+                            id: id.clone(),
+                        };
+                        let pattern = spec.pattern.as_deref().unwrap_or("");
+                        let lines = logs.since(slot.log_scan_seq);
+                        let texts: Vec<&str> = lines
+                            .iter()
+                            .filter(|l| l.source == src)
+                            .map(|l| l.text.as_str())
+                            .collect();
+                        let r = health::log_ready(pattern, &texts);
+                        slot.log_scan_seq = logs.next_seq();
+                        if r.ok {
+                            slot.log_matched = true;
+                            slot.log_detail = Some(r.detail.clone());
+                        }
+                        Some(r)
+                    }
+                } else {
+                    None
+                };
+                let r = log_scan.unwrap_or_else(|| health::check_with_endpoints(&spec, port, &eps));
                 let mut g = inner.lock().expect("engine lock");
                 let Some(slot) = g.slots.get_mut(&id) else {
                     break;
@@ -5336,6 +5399,7 @@ fn compose_health(svc: &crate::spec::ServiceSpec) -> Option<crate::spec::HealthS
     svc.port.map(|_| crate::spec::HealthSpec {
         r#type: HealthType::Tcp,
         http: None,
+        pattern: None,
         interval_secs: 2,
         timeout_secs: 2,
     })
@@ -7412,6 +7476,9 @@ data:
             health: None,
             last_error: None,
             last_exit: None,
+            log_scan_seq: 0,
+            log_matched: false,
+            log_detail: None,
             cancel: Arc::new(AtomicBool::new(false)),
             managed: false,
             artifact: None,

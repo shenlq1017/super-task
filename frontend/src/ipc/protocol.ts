@@ -407,12 +407,14 @@ export function isIpcError(v: unknown): v is IpcError {
 // Spec DTOs — mirror `crates/supertask-core/src/spec/file.rs` (serde output)
 // ---------------------------------------------------------------------------
 
-export type HealthType = "none" | "tcp" | "http";
+export type HealthType = "none" | "tcp" | "http" | "log";
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
 export type HealthSpec = {
   type: HealthType;
   http?: string | null;
+  /** 仅 type: "log"：就绪正则（对单行日志做 is_match） */
+  pattern?: string | null;
   interval_secs: number;
   timeout_secs: number;
 };

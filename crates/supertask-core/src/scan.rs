@@ -386,6 +386,7 @@ fn spring_health(port: u16, pom: &str) -> HealthSpec {
         HealthSpec {
             r#type: HealthType::Http,
             http: Some(format!("http://127.0.0.1:{port}/actuator/health")),
+            pattern: None,
             interval_secs: 2,
             timeout_secs: 2,
         }
@@ -393,6 +394,7 @@ fn spring_health(port: u16, pom: &str) -> HealthSpec {
         HealthSpec {
             r#type: HealthType::Tcp,
             http: None,
+            pattern: None,
             interval_secs: 2,
             timeout_secs: 2,
         }
@@ -709,6 +711,7 @@ fn scan_node_roots(
         spec.health = Some(HealthSpec {
             r#type: HealthType::Tcp,
             http: None,
+            pattern: None,
             interval_secs: 2,
             timeout_secs: 2,
         });

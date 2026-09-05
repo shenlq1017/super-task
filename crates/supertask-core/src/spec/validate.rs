@@ -163,6 +163,28 @@ pub fn validate(file: &SuperTaskFile) -> Result<Vec<ParseWarning>> {
                         }
                     }
                 }
+                // 方向一：日志模式就绪判定——pattern 必填、长度受限、必须可编译
+                HealthType::Log => {
+                    let pat = h.pattern.as_deref().unwrap_or("");
+                    if pat.is_empty() {
+                        return Err(Error::new(
+                            ErrorCode::SpecInvalid,
+                            format!("{id}: log 就绪判定需要 pattern"),
+                        ));
+                    }
+                    if pat.len() > 256 {
+                        return Err(Error::new(
+                            ErrorCode::SpecInvalid,
+                            format!("{id}: pattern 过长（>256 字符）"),
+                        ));
+                    }
+                    if let Err(e) = regex::Regex::new(pat) {
+                        return Err(Error::new(
+                            ErrorCode::SpecInvalid,
+                            format!("{id}: pattern 不是合法正则: {e}"),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -767,6 +789,37 @@ mod tests {
         format!(
             "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8080\n{extra}\n"
         )
+    }
+
+    // 方向一：log 就绪判定校验（pattern 必填 / ≤256 / 可编译）
+    #[test]
+    fn log_health_requires_pattern_and_compilable_regex() {
+        // 缺 pattern → SPEC_INVALID
+        let e = parse_yaml(&svc_yaml("    health:\n      type: log\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
+        assert!(e.message().contains("pattern"), "{}", e.message());
+        // 非法正则 → SPEC_INVALID
+        let e = parse_yaml(&svc_yaml(
+            "    health:\n      type: log\n      pattern: \"[unclosed\"\n",
+        ))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
+        assert!(e.message().contains("正则"), "{}", e.message());
+        // 过长（>256 字符）→ SPEC_INVALID
+        let long = "a".repeat(257);
+        let e = parse_yaml(&svc_yaml(&format!(
+            "    health:\n      type: log\n      pattern: \"{long}\"\n"
+        )))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
+        // 合法配置：类型与 pattern 解析保留
+        let (f, _) = parse_yaml(&svc_yaml(
+            "    health:\n      type: log\n      pattern: \"Started .* in .* seconds\"\n",
+        ))
+        .unwrap();
+        let h = f.services["api"].health.as_ref().unwrap();
+        assert_eq!(h.r#type, HealthType::Log);
+        assert_eq!(h.pattern.as_deref(), Some("Started .* in .* seconds"));
     }
 
     // 2.2 restart 策略校验

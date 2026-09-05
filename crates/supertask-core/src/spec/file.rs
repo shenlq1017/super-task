@@ -520,6 +520,9 @@ pub struct HealthSpec {
     pub r#type: HealthType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http: Option<String>,
+    /// 仅 `type: log`：就绪正则（对单行日志做 `is_match`）；加载期校验可编译。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
     #[serde(default = "default_interval")]
     pub interval_secs: u32,
     #[serde(default = "default_timeout")]
@@ -540,6 +543,8 @@ pub enum HealthType {
     None,
     Tcp,
     Http,
+    /// 方向一：日志模式就绪判定——本进程启动以来的日志命中 `pattern` 即 ready
+    Log,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -586,6 +591,7 @@ impl SuperTaskFile {
                         svc.health = Some(HealthSpec {
                             r#type: HealthType::Tcp,
                             http: None,
+                            pattern: None,
                             interval_secs: 2,
                             timeout_secs: 2,
                         });
@@ -599,6 +605,7 @@ impl SuperTaskFile {
                         svc.health = Some(HealthSpec {
                             r#type: HealthType::Tcp,
                             http: None,
+                            pattern: None,
                             interval_secs: 2,
                             timeout_secs: 2,
                         });
@@ -615,6 +622,7 @@ impl SuperTaskFile {
                         svc.health = Some(HealthSpec {
                             r#type: HealthType::Tcp,
                             http: None,
+                            pattern: None,
                             interval_secs: 2,
                             timeout_secs: 2,
                         });

@@ -177,8 +177,9 @@
 
 ```yaml
 health:
-  type: none | tcp | http
+  type: none | tcp | http | log
   http: http://127.0.0.1:8080/actuator/health   # type=http
+  pattern: "Started .* in .* seconds"           # type=log
   interval_secs: 2
   timeout_secs: 2
 ```
@@ -188,8 +189,15 @@ health:
 | `none` | 进程还在即 running | 允许 |
 | `tcp` | TCP connect 成功 | 非法 |
 | `http` | GET 且 **2xx**（503 失败） | 非法 |
+| `log` | 本次启动以来的日志行命中 `pattern` | 允许 |
 
 探测目标只打 `127.0.0.1` / `localhost`，**禁止**对非本机做健康检查（1.0 安全）。`http` URL 若 host 不是 loopback → `HEALTH_HOST_FORBIDDEN`。`interval_secs` / `timeout_secs` 缺省均为 **2** 秒；`health.type` 缺省等价 `none`（进程存活即视为 running，除非 kind 自带 tcp 默认，见 §4.3–§4.6）。
+
+`type: log`（日志模式就绪判定）：对**本进程本次启动以来**产生的日志行逐行做正则
+`is_match`，任一行命中即 ready（此后粘性保持，不因环形缓冲淘汰回退；重启后水位
+重置重新匹配）。`pattern` 必填、≤256 字符、必须可编译，违反 → `SPEC_INVALID`；
+只匹配服务自身日志源，不扫其他服务；detail 携带命中行片段（≤120 字符）。适用于
+「日志即就绪信号」的框架（如 Spring Boot 的 `Started ... in ... seconds`）。
 
 不走系统 HTTP 代理。
 

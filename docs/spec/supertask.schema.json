@@ -63,8 +63,9 @@
     "health": {
       "type": "object",
       "properties": {
-        "type": { "type": "string", "enum": ["none", "tcp", "http"] },
+        "type": { "type": "string", "enum": ["none", "tcp", "http", "log"] },
         "http": { "type": "string" },
+        "pattern": { "type": "string", "maxLength": 256 },
         "interval_secs": { "type": "integer", "minimum": 1 },
         "timeout_secs": { "type": "integer", "minimum": 1 }
       },

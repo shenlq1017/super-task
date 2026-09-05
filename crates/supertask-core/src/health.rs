@@ -35,6 +35,11 @@ pub fn check_with_endpoints(
             ok: true,
             detail: "none".into(),
         },
+        // log 型由引擎健康线程走日志扫描判定（health::log_ready）；探测入口不应到达
+        HealthType::Log => HealthResult {
+            ok: false,
+            detail: "log 就绪需引擎日志扫描".into(),
+        },
         HealthType::Tcp => {
             let Some(addrs) = tcp_targets(port, eps) else {
                 return HealthResult {
@@ -237,6 +242,57 @@ fn split_http_url(url: &str) -> Option<(String, u16, String)> {
     Some((host, port, path))
 }
 
+// ---------------------------------------------------------------------------
+// 方向一：日志模式就绪判定（`health.type: log`）
+// ---------------------------------------------------------------------------
+
+/// 对本进程启动以来的日志行做就绪匹配：任一行命中 `pattern` 即 ready。
+/// 返回 HealthResult；detail 携带命中行片段（截断，日志页已有同内容面）。
+///
+/// pattern 由 spec 加载期校验（必填 / ≤256 / 可编译，`SPEC_INVALID`）；这里对
+/// 空与非正则做防御性降级（不 panic、给可诊断 detail）。
+pub fn log_ready(pattern: &str, lines: &[&str]) -> HealthResult {
+    if pattern.is_empty() {
+        return HealthResult {
+            ok: false,
+            detail: "log 缺少 pattern".into(),
+        };
+    }
+    let re = match regex::Regex::new(pattern) {
+        Ok(re) => re,
+        Err(e) => {
+            return HealthResult {
+                ok: false,
+                detail: format!("pattern 不是合法正则: {e}"),
+            }
+        }
+    };
+    for line in lines {
+        if re.is_match(line) {
+            return HealthResult {
+                ok: true,
+                detail: format!("log 命中: {}", snippet(line)),
+            };
+        }
+    }
+    HealthResult {
+        ok: false,
+        detail: format!("日志未匹配（已扫描 {} 行）", lines.len()),
+    }
+}
+
+/// detail 片段：≤120 字符，按字符边界截断（对齐 ring 的截断风格）。
+fn snippet(line: &str) -> String {
+    if line.len() <= 120 {
+        return line.to_string();
+    }
+    let mut end = 120;
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &line[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +340,7 @@ mod tests {
         let spec = HealthSpec {
             r#type: HealthType::Tcp,
             http: None,
+            pattern: None,
             interval_secs: 2,
             timeout_secs: 2,
         };
@@ -323,6 +380,7 @@ mod tests {
         let spec = HealthSpec {
             r#type: HealthType::Tcp,
             http: None,
+            pattern: None,
             interval_secs: 2,
             timeout_secs: 2,
         };
@@ -385,11 +443,53 @@ mod tests {
         let spec = HealthSpec {
             r#type: HealthType::Tcp,
             http: None,
+            pattern: None,
             interval_secs: 2,
             timeout_secs: 2,
         };
         let r = check_with_endpoints(&spec, None, &[]);
         assert!(!r.ok);
         assert!(r.detail.contains("无可用目标"), "{}", r.detail);
+    }
+
+    // ---- 方向一：log_ready ----
+
+    #[test]
+    fn log_ready_matches_and_reports_snippet() {
+        let lines = ["something before", "Started SuperTaskApp in 3.2 seconds"];
+        let r = log_ready("Started .* in .* seconds", &lines);
+        assert!(r.ok);
+        assert!(r.detail.contains("log 命中"), "{}", r.detail);
+        assert!(r.detail.contains("Started SuperTaskApp"), "{}", r.detail);
+    }
+
+    #[test]
+    fn log_ready_no_match_reports_scanned_count() {
+        let lines = ["line a", "line b"];
+        let r = log_ready("Started .*", &lines);
+        assert!(!r.ok);
+        assert!(r.detail.contains("2 行"), "{}", r.detail);
+    }
+
+    #[test]
+    fn log_ready_defends_bad_pattern() {
+        // 空 pattern（加载期已拦截，此处防御引擎直调路径）
+        let r = log_ready("", &["x"]);
+        assert!(!r.ok);
+        assert!(r.detail.contains("缺少 pattern"), "{}", r.detail);
+        // 非法正则不 panic、给可诊断 detail
+        let r = log_ready("[unclosed", &["x"]);
+        assert!(!r.ok);
+        assert!(r.detail.contains("不是合法正则"), "{}", r.detail);
+    }
+
+    #[test]
+    fn log_ready_snippet_truncates_on_char_boundary() {
+        // 多字节字符：验证按字符边界截断而非 panic
+        let long = "出".repeat(200);
+        let r = log_ready("出+", &[long.as_str()]);
+        assert!(r.ok);
+        assert!(r.detail.ends_with('…'), "{}", r.detail);
+        assert!(r.detail.chars().count() < 100, "{}", r.detail);
     }
 }

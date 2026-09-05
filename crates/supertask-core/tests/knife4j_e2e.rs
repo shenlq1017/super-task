@@ -188,6 +188,7 @@ services:
     let health = HealthSpec {
         r#type: HealthType::Http,
         http: Some("http://127.0.0.1:8080/v3/api-docs".into()),
+        pattern: None,
         interval_secs: 2,
         timeout_secs: 5,
     };
@@ -198,6 +199,7 @@ services:
         &HealthSpec {
             r#type: HealthType::Http,
             http: Some("http://127.0.0.1:8080/api/user/list".into()),
+            pattern: None,
             interval_secs: 2,
             timeout_secs: 5,
         },
