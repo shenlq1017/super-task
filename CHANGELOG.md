@@ -6,6 +6,22 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### Procfile 导入（方向二·纳管任意来源）
+
+- 配置页新增「导入 Procfile」：读取工作区根 `Procfile`（Foreman / Overmind / Heroku
+  生态，每行 `name: command`），sh 风格引号感知拆词后每行转一个 `kind: generic`
+  服务（首 token → program，其余 → args），先预览勾选再写回，与 Taskfile 导入 /
+  孤儿纳管同一 preview/apply 机制（写盘走 `yaml.saveForm` 乐观锁）。
+- **忠实优先**：含 shell 语法的命令（`$` 插值、管道、重定向、组合操作符、通配符、
+  反引号等）跳过不导入——generic 不经 shell 执行，插值与操作符无法忠实表达；
+  与 Taskfile「插值按原文导入」不同（scripts 走 `bash -c`，服务没有等价落点），
+  宁可少导不错导，预览明确提示手工配置。
+- `.env`（Foreman 约定自动加载）存在时草稿挂 `env_file: [.env]` 引用，值不内联、
+  不读取、不回显；`labels` 记录 `origin: imported / imported-from: Procfile:<name>`；
+  服务 id 按 id 规则合法化（导入内冲突加 `-proc` 后缀，与现有服务冲突默认保留）。
+- 新增错误码 `PROCFILE_NOT_FOUND` / `PROCFILE_INVALID`（ipc.md §7）；契约进
+  ipc.md §10.19；core `procfile::` 13 项离线单测。
+
 #### 三平台发布产物（方向八·多平台，M2）
 
 - `release.yml` 新增 macOS 与 Linux 构建任务，tag 触发后与 Windows 安装包进同一个
