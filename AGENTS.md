@@ -86,11 +86,12 @@ npm --prefix frontend run build   # 前端构建
 - **发布状态**：Windows 安装包（NSIS / MSI）随 GitHub Release 发布，自动更新链路已验证可用
   （`release.yml`：tag 触发 → 构建签名 → draft Release → 镜像到 cnb.cool `stable` 滚动 tag；
   应用内「设置 → 检查更新」走 CNB（国内）/ GitHub（海外）双端点）。
-- **平台**：Windows 可用；macOS / Linux **不推荐**——无构建产物、CI 矩阵仅 `windows-latest`、
-  无真机验收。推进事项见 `.workbuddy/local/VERSIONS-AND-PLAN.md` 第六节（M1–M6）。
+- **平台**：Windows 可用；macOS / Linux **不推荐**——无构建产物、无真机验收；
+  源码编译与测试已有三平台 CI 覆盖。推进事项见 `.workbuddy/local/VERSIONS-AND-PLAN.md`
+  第六节（M2–M6，M1 CI 矩阵已交付）。
 - 云端为自托管参考实现（默认 127.0.0.1:8787，SQLite），正式运营端点未定。
 - 下一步方向：见 [docs/ROADMAP.md](docs/ROADMAP.md)。
   当前优先级最高的三类是 ① 数据已就绪、只差接线的项
   （崩溃通知、MCP 暴露主机指标、MCP 输出脱敏、隧道纳管、孤儿进程纳管）；
   ② 编排层欠账（`restart` 策略、log-pattern 就绪判定、compose 导入）；
-  ③ 平台推进的 M1（CI 覆盖多平台，成本最低，先破「从未验证」）。
+  ③ 平台推进的 M2（`release.yml` 补 macOS / Linux 构建产物）。

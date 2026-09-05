@@ -6,6 +6,33 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 三平台 CI 矩阵恢复与平台修复（方向八·多平台）
+
+- CI core 矩阵恢复 `windows / macos / ubuntu` 三平台：rustfmt、supertask-core /
+  supertask-cli 全量测试、CLI version smoke 与 Tauri 壳 `cargo check` 在三平台各自
+  执行；Linux 构建前安装 Tauri 2 系统依赖（webkit2gtk-4.1 等）。frontend / cloud
+  job 与 Windows 发布链路不变。
+- 修复恢复后暴露的平台问题（WSL Ubuntu 实测 + CI 验证）：
+  - **`system_info` 核数字段在 Linux 上互换**：`linux_cores` 返回 `(logical, physical)`
+    而消费方按 `(physical, logical)` 解构，超线程机器上 `cpu_physical_cores` /
+    `cpu_logical_cores` 会颠倒（GitHub runner 核数恰好 4=4，掩盖了它）；已改为与
+    `windows_cores` 一致的 `(physical, logical)` 口径，并对矛盾拓扑（physical >
+    logical，如 WSL2 合成 cpuinfo）按「取不到」返回 null，不伪造。
+  - Linux 编译修复：`getifaddrs` 的 `ifa_addr` 在 Linux 是裸指针（原按 `Option`
+    解构编不过）；`/proc/<pid>/stat` 解析迭代器补 `mut`（Linux-only 代码此前从未
+    在 Linux 编译过）。
+  - 跨平台语义修复：mise 工具链解析的 PATH 前缀分隔符按平台取（Unix 原硬编码
+    `;`，会拼出无效 PATH）；sandbox / 数据卷校验的绝对路径测试样例、gradlew
+    wrapper 测试执行位按平台适配。
+  - 环境假设收敛（首轮 CI 实测暴露）：macOS `lsof` exit 1 且无输出按 lsof 约定
+    是「无任何 TCP LISTEN」的合法空表，不再误报 `PORT_SCAN_FAILED`；发现页 CPU%
+    差分采样与网关缺失分支测试在无监听 / 预装 nginx 的环境（如 CI 虚拟机）跳过；
+    ide 的 Explorer 相关测试限定 Windows（Unix 上 resolve 返回 None 是正确行为）。
+  - **node / maven 启动程序名按平台取**：`npm.cmd` / `mvn.cmd` 等 Windows shim 名
+    原先硬编码到所有平台，Unix 上 PATH 找不到直接 `MISSING_TOOL`——node 工作区
+    在 Linux/macOS 根本起不来；现按平台取裸名（Windows 行为不变），与 go/python
+    程序名口径一致。
+
 #### MCP 错误聚合与就绪等待 + 统一输出脱敏（方向七·AI 原生）
 
 - MCP 新增 `supertask_errors`：一次调用拿到「当前栈是否就绪 + 按服务聚合的错误摘要」——
