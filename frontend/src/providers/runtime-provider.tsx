@@ -4,6 +4,7 @@ import { toast } from "@/components/ui/toast";
 import { isTauri } from "../ipc/invoke";
 import {
   IpcFailure,
+  event,
   type RuntimeSnapshot,
   type ServiceRuntimeView,
   type ScriptRuntimeView,
@@ -50,7 +51,9 @@ async function listenRuntime(cb: (s: RuntimeSnapshot) => void): Promise<() => vo
   if (!isTauri()) return () => {};
   const mod = (await import("@tauri-apps/api/event")) as any;
   const listen = mod.listen as (event: string, handler: (e: any) => void) => Promise<() => void>;
-  const un = await listen("st.runtime", (e: any) => {
+  // 事件名常量真源在 protocol.event（引擎 emit 的连字符名）；此前手写 "st.runtime"
+  // 与引擎事件名不符，监听从不命中，全靠下方轮询兜底。
+  const un = await listen(event.RUNTIME, (e: any) => {
     cb({
       protocol: 1,
       workspace_id: "",
