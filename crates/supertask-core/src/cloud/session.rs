@@ -51,12 +51,19 @@ struct SessionContainer {
 }
 
 /// 设备 id：sha256(hostname + 首启时间戳) 前 16 hex；首启时间戳保存在独立 meta/device.json。
+/// 进程内 memoize：并发首调（测试全量并发等）只产生一次时间戳——否则两个线程
+/// 各自 miss → 各自 now() 落盘并返回不同值。跨进程仍以文件里先落盘者为准。
 pub fn device_id() -> String {
-    let host = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "unknown-host".into());
-    let first_run = first_run_ms(&device_meta_path());
-    sha256_hex(format!("{host}{first_run}").as_bytes())[..16].to_string()
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let host = std::env::var("COMPUTERNAME")
+                .or_else(|_| std::env::var("HOSTNAME"))
+                .unwrap_or_else(|_| "unknown-host".into());
+            let first_run = first_run_ms(&device_meta_path());
+            sha256_hex(format!("{host}{first_run}").as_bytes())[..16].to_string()
+        })
+        .clone()
 }
 
 fn first_run_ms(path: &PathBuf) -> u64 {
