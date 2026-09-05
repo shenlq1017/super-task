@@ -25,6 +25,9 @@ pub use v15::*;
 mod v16;
 pub use v16::*;
 
+mod v17;
+pub use v17::*;
+
 /// Stable invoke names. Tauri layer must register these (or map 1:1).
 pub mod cmd {
     pub const SESSION_HELLO: &str = "session.hello";
@@ -85,6 +88,12 @@ pub mod cmd {
     pub const WORKSPACE_ADOPT_APPLY: &str = "workspace.adoptApply";
     // ---- 声明式需求 needs（方向三·环境供给，ipc.md §10.17）----
     pub const WORKSPACE_NEEDS_RESOLVE: &str = "workspace.needsResolve";
+    // ---- 数据快照（方向六·数据与备份，ipc.md §10.18）----
+    pub const WORKSPACE_DATA_LIST: &str = "workspace.dataList";
+    pub const WORKSPACE_DATA_SNAPSHOT_CREATE: &str = "workspace.dataSnapshotCreate";
+    pub const WORKSPACE_DATA_RESTORE_PREVIEW: &str = "workspace.dataRestorePreview";
+    pub const WORKSPACE_DATA_RESTORE: &str = "workspace.dataRestore";
+    pub const WORKSPACE_DATA_SNAPSHOT_DELETE: &str = "workspace.dataSnapshotDelete";
     // ---- 1.6 ----
     pub const GATEWAY_STATUS: &str = "gateway.status";
     pub const GATEWAY_PREVIEW: &str = "gateway.preview";

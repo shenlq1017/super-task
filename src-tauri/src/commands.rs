@@ -2243,6 +2243,76 @@ pub fn workspace_import_package(
 }
 
 // ---------------------------------------------------------------------------
+// 方向六：数据快照（ipc.md §10.18；core 实现，这里只做校验与转发）
+// ---------------------------------------------------------------------------
+
+/// 数据卷与快照列表（只读）。
+#[tauri::command(rename = "workspace.dataList")]
+pub fn workspace_data_list(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::ipc::DataListOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.data_list().map_err(ipc_err)
+}
+
+/// 为数据卷创建离线快照（绑定服务未停止 → SNAPSHOT_BUSY）。
+#[tauri::command(rename = "workspace.dataSnapshotCreate")]
+pub fn workspace_data_snapshot_create(
+    state: EngineState<'_>,
+    workspace_id: String,
+    volume_id: String,
+    note: Option<String>,
+) -> Result<supertask_core::ipc::DataSnapshotCreatedOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state
+        .data_snapshot_create(&volume_id, note.as_deref().unwrap_or(""))
+        .map_err(ipc_err)
+}
+
+/// 恢复预览（纯只读：覆盖面 + remove_count + blockers）。
+#[tauri::command(rename = "workspace.dataRestorePreview")]
+pub fn workspace_data_restore_preview(
+    state: EngineState<'_>,
+    workspace_id: String,
+    volume_id: String,
+    snapshot_id: String,
+) -> Result<supertask_core::ipc::DataRestorePreviewOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state
+        .data_restore_preview(&volume_id, &snapshot_id)
+        .map_err(ipc_err)
+}
+
+/// 恢复（整包校验 → stash → 解压 → 失败回滚）。
+#[tauri::command(rename = "workspace.dataRestore")]
+pub fn workspace_data_restore(
+    state: EngineState<'_>,
+    workspace_id: String,
+    volume_id: String,
+    snapshot_id: String,
+) -> Result<supertask_core::ipc::DataRestoreOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state
+        .data_restore(&volume_id, &snapshot_id)
+        .map_err(ipc_err)
+}
+
+/// 删除单个快照文件。
+#[tauri::command(rename = "workspace.dataSnapshotDelete")]
+pub fn workspace_data_snapshot_delete(
+    state: EngineState<'_>,
+    workspace_id: String,
+    volume_id: String,
+    snapshot_id: String,
+) -> Result<supertask_core::ipc::DataSnapshotDeletedOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state
+        .data_snapshot_delete(&volume_id, &snapshot_id)
+        .map_err(ipc_err)
+}
+
+// ---------------------------------------------------------------------------
 // 1.6：网关（core 侧实现；这里只做 IPC 适配。gateway.trust 修改系统信任库，
 // UI 层强制确认对话框在前端，本层照常暴露——本地单用户、无网络面）
 // ---------------------------------------------------------------------------

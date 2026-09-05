@@ -1135,6 +1135,7 @@ fn empty_file(root: &Path) -> SuperTaskFile {
         profiles: None,
         toolchain: None,
         needs: None,
+        data: None,
         templates: None,
         git: None,
         docker: None,

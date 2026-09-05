@@ -21,3 +21,9 @@ scripts:
       - node -v
       - echo SCRIPT_OK
     timeout_secs: 60
+# 数据卷（方向六）：声明后可在工作区页做离线快照/恢复；绑定服务需停止
+data:
+  volumes:
+    app-data:
+      service: api
+      dir: data/api

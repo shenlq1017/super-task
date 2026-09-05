@@ -201,8 +201,93 @@ pub fn validate(file: &SuperTaskFile) -> Result<Vec<ParseWarning>> {
     validate_v12(file)?;
     validate_v13(file)?;
     validate_needs(file)?;
+    validate_data(file)?;
 
     Ok(warnings)
+}
+
+/// 方向六：data.volumes 数据卷静态校验（yaml.md §7.3，ipc.md §10.18）。
+/// 只声明事实：id/dir 沙箱、`.supertask` 排除、卷间不嵌套、service 存在性；
+/// 运行期语义（快照/恢复、SNAPSHOT_BUSY）由 `snapshot.rs` 负责。
+fn validate_data(file: &SuperTaskFile) -> Result<()> {
+    use crate::spec::MAX_DATA_VOLUMES;
+    let Some(data) = &file.data else {
+        return Ok(());
+    };
+    if data.volumes.len() > MAX_DATA_VOLUMES {
+        return Err(Error::new(
+            ErrorCode::DataInvalid,
+            format!(
+                "data.volumes 最多 {MAX_DATA_VOLUMES} 个，当前 {}",
+                data.volumes.len()
+            ),
+        ));
+    }
+    // 归一化后的卷路径表：查重复与前缀嵌套（Windows 大小写不敏感）。
+    let mut norm_dirs: Vec<(String, Vec<String>)> = Vec::new();
+    for (id, vol) in &data.volumes {
+        if !crate::ipc::is_valid_id(id) {
+            return Err(Error::new(
+                ErrorCode::DataInvalid,
+                format!("非法数据卷 id {id}"),
+            ));
+        }
+        let rel = crate::sandbox::assert_rel_safe(&vol.dir).map_err(|e| {
+            Error::new(
+                ErrorCode::DataInvalid,
+                format!("data 卷 {id} dir 非法（{}）: {:?}", e.message(), vol.dir),
+            )
+        })?;
+        let comps: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        if comps.is_empty() {
+            return Err(Error::new(
+                ErrorCode::DataInvalid,
+                format!("data 卷 {id} dir 不能是工作区根: {:?}", vol.dir),
+            ));
+        }
+        if comps[0].eq_ignore_ascii_case(".supertask") {
+            return Err(Error::new(
+                ErrorCode::DataInvalid,
+                format!("data 卷 {id} dir 不能位于 .supertask/ 内: {:?}", vol.dir),
+            ));
+        }
+        if let Some(service) = &vol.service {
+            if !file.services.contains_key(service) {
+                return Err(Error::new(
+                    ErrorCode::DataInvalid,
+                    format!("data 卷 {id}: service {:?} 不存在", service),
+                ));
+            }
+        }
+        norm_dirs.push((id.clone(), comps));
+    }
+    let key = |comps: &[String]| -> Vec<String> {
+        if cfg!(windows) {
+            comps.iter().map(|c| c.to_lowercase()).collect()
+        } else {
+            comps.to_vec()
+        }
+    };
+    for i in 0..norm_dirs.len() {
+        for j in (i + 1)..norm_dirs.len() {
+            let a = key(&norm_dirs[i].1);
+            let b = key(&norm_dirs[j].1);
+            let n = a.len().min(b.len());
+            if a[..n] == b[..n] {
+                return Err(Error::new(
+                    ErrorCode::DataInvalid,
+                    format!(
+                        "data 卷 {} 与 {} 的 dir 重复或嵌套",
+                        norm_dirs[i].0, norm_dirs[j].0
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 方向三：needs 逐条静态校验（语法口径与 `needs::parse_need` 同源，
@@ -771,6 +856,68 @@ mod tests {
         }
         let e = parse_yaml(&svc_yaml(&y)).unwrap_err();
         assert_eq!(e.code(), ErrorCode::NeedsInvalid);
+    }
+
+    // ---- 方向六：data.volumes 数据卷校验（yaml.md §7.3）----
+
+    #[test]
+    fn data_volumes_round_trip_as_typed_section() {
+        let y =
+            svc_yaml("data:\n  volumes:\n    app-db:\n      service: api\n      dir: data/db\n");
+        let (f, _) = parse_yaml(&y).unwrap();
+        let vol = &f.data.as_ref().unwrap().volumes["app-db"];
+        assert_eq!(vol.service.as_deref(), Some("api"));
+        assert_eq!(vol.dir, "data/db");
+        let text = crate::spec::to_yaml(&f).unwrap();
+        let (f2, _) = parse_yaml(&text).unwrap();
+        assert_eq!(f2.data, f.data);
+        // 不写 data 的旧 YAML 不受影响
+        let (f3, _) = parse_yaml(&svc_yaml("")).unwrap();
+        assert!(f3.data.is_none());
+    }
+
+    #[test]
+    fn data_volumes_reject_bad_id_dir_and_service() {
+        // 非法卷 id
+        let e = parse_yaml(&svc_yaml(
+            "data:\n  volumes:\n    1bad:\n      dir: data/db\n",
+        ))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DataInvalid);
+        // 绝对路径 / .. 逃逸 / 空目录
+        for dir in ["C:/tmp/db", "../outside/db", "."] {
+            let y = format!("data:\n  volumes:\n    v:\n      dir: {dir:?}\n");
+            let e = parse_yaml(&svc_yaml(&y)).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::DataInvalid, "dir={dir}");
+        }
+        // 绑定服务不存在（depends_on 口径）
+        let e = parse_yaml(&svc_yaml(
+            "data:\n  volumes:\n    v:\n      service: nope\n      dir: data/db\n",
+        ))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DataInvalid);
+    }
+
+    #[test]
+    fn data_volumes_reject_supertask_and_overlap() {
+        // 快照目录自包含：禁 .supertask 内
+        let e = parse_yaml(&svc_yaml(
+            "data:\n  volumes:\n    v:\n      dir: .supertask/snapshots\n",
+        ))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DataInvalid);
+        // 卷间嵌套
+        let e = parse_yaml(&svc_yaml(
+            "data:\n  volumes:\n    a:\n      dir: data\n    b:\n      dir: data/db\n",
+        ))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DataInvalid);
+        // 卷间重复
+        let e = parse_yaml(&svc_yaml(
+            "data:\n  volumes:\n    a:\n      dir: data/db\n    b:\n      dir: data/db\n",
+        ))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DataInvalid);
     }
 
     #[test]

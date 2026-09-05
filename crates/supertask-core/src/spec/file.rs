@@ -9,6 +9,8 @@ use crate::ipc::{is_valid_id, MAX_CMDS, MAX_ENV_KEYS, MAX_SERVICES};
 pub const MAX_PROFILES: usize = 32;
 /// 方向三：声明式 needs 条目上限。
 pub const MAX_NEEDS: usize = 32;
+/// 方向六：data.volumes 数据卷上限（ipc.md §10.18）。
+pub const MAX_DATA_VOLUMES: usize = 32;
 /// 1.2: services.*.group 显示名最长字符数。
 pub const MAX_GROUP_CHARS: usize = 64;
 
@@ -46,6 +48,10 @@ pub struct SuperTaskFile {
     /// 仅作为 `workspace.needsResolve` 的解析输入，不影响加载与启动行为。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs: Option<Vec<String>>,
+    /// 方向六·数据与备份：数据卷声明（yaml.md §7.3），快照/恢复的操作对象
+    /// （ipc.md §10.18）。仅声明目录与可选服务绑定，不影响加载与启动行为。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<DataSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -431,6 +437,27 @@ pub struct DockerSpec {
     pub project_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub builds: Vec<DockerBuild>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+/// 方向六·数据与备份：顶层 `data` 段（typed，yaml.md §7.3）。
+/// 卷 id 为 key（照 services 模板）；只声明事实，不改变加载与启动行为。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataSpec {
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub volumes: IndexMap<String, DataVolumeSpec>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataVolumeSpec {
+    /// 可选：绑定服务 id（存在性在加载期校验；快照/恢复要求该服务已停止）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// 必填：工作区相对路径（`sandbox::assert_rel_safe` 规则；禁在 `.supertask/` 内）。
+    pub dir: String,
     #[serde(default, flatten)]
     pub extra: IndexMap<String, Value>,
 }

@@ -34,6 +34,7 @@ pub mod runtime;
 pub mod sandbox;
 pub mod scan;
 pub mod secrets;
+pub mod snapshot;
 pub mod spec;
 pub mod spring;
 pub mod taskfile;

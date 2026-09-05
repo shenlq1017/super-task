@@ -386,6 +386,12 @@ pub fn run() {
             commands::templates_preview,
             commands::workspace_export_package,
             commands::workspace_import_package,
+            // 方向六：数据快照（ipc.md §10.18）
+            commands::workspace_data_list,
+            commands::workspace_data_snapshot_create,
+            commands::workspace_data_restore_preview,
+            commands::workspace_data_restore,
+            commands::workspace_data_snapshot_delete,
             commands::git_clone,
             commands::git_status,
             commands::git_pull,

@@ -2,11 +2,12 @@ mod file;
 pub mod validate;
 
 pub use file::{
-    DockerBuild, DockerSpec, GatewayConf, GatewayCorsSpec, GatewayKind, GatewayRoute, GatewayTls,
-    GoNetworkSpec, HealthSpec, HealthType, LogRetentionSpec, LoggingSpec, MavenNetworkSpec,
-    NetworkSpec, NpmNetworkSpec, PackageManager, ParseWarning, ProfileItem, ProfileServiceOverride,
-    ProfilesSpec, ProxyMode, ProxySpec, PythonNetworkSpec, ScriptSpec, SecretsBackend, SecretsSpec,
-    ServiceSpec, SuperTaskFile, ToolchainManager, ToolchainSpec, MAX_GROUP_CHARS, MAX_PROFILES,
+    DataSpec, DataVolumeSpec, DockerBuild, DockerSpec, GatewayConf, GatewayCorsSpec, GatewayKind,
+    GatewayRoute, GatewayTls, GoNetworkSpec, HealthSpec, HealthType, LogRetentionSpec, LoggingSpec,
+    MavenNetworkSpec, NetworkSpec, NpmNetworkSpec, PackageManager, ParseWarning, ProfileItem,
+    ProfileServiceOverride, ProfilesSpec, ProxyMode, ProxySpec, PythonNetworkSpec, ScriptSpec,
+    SecretsBackend, SecretsSpec, ServiceSpec, SuperTaskFile, ToolchainManager, ToolchainSpec,
+    MAX_DATA_VOLUMES, MAX_GROUP_CHARS, MAX_PROFILES,
 };
 pub use validate::{is_valid_secret_key, is_valid_toolchain_version, validate, validate_proxy_url};
 

@@ -134,6 +134,12 @@ pub enum ErrorCode {
     TermLimit,
     // ---- 2.2（方向三·环境供给：声明式 needs，ipc.md §10.17）----
     NeedsInvalid,
+    // ---- 2.2（方向六·数据与备份：数据快照，ipc.md §10.18）----
+    DataInvalid,
+    SnapshotNotFound,
+    SnapshotInvalid,
+    SnapshotVersion,
+    SnapshotBusy,
 }
 
 #[derive(Debug, Error)]
@@ -282,6 +288,12 @@ mod tests {
             (ErrorCode::TermLimit, "TERM_LIMIT"),
             // 声明式 needs（§10.17）
             (ErrorCode::NeedsInvalid, "NEEDS_INVALID"),
+            // 数据快照（§10.18）
+            (ErrorCode::DataInvalid, "DATA_INVALID"),
+            (ErrorCode::SnapshotNotFound, "SNAPSHOT_NOT_FOUND"),
+            (ErrorCode::SnapshotInvalid, "SNAPSHOT_INVALID"),
+            (ErrorCode::SnapshotVersion, "SNAPSHOT_VERSION"),
+            (ErrorCode::SnapshotBusy, "SNAPSHOT_BUSY"),
         ];
         for (code, expected) in pairs {
             let value = serde_yaml::to_value(code).expect("serialize ErrorCode");

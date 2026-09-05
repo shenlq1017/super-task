@@ -828,6 +828,7 @@ mod tests {
             profiles: None,
             toolchain: None,
             needs: None,
+            data: None,
             network: None,
             log_retention: None,
             templates: None,

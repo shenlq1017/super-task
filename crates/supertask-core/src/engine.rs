@@ -488,6 +488,224 @@ impl Engine {
         ))
     }
 
+    // ---- 方向六：数据快照（ipc.md §10.18）。快照是离线文件快照：
+    // 绑定服务未停止则 create/restore 拒绝（SNAPSHOT_BUSY）；预览不受限。----
+
+    /// 快照存储目录：`<root>/.supertask/snapshots/<volume_id>`。
+    fn snapshots_dir(root: &Path, volume_id: &str) -> PathBuf {
+        root.join(".supertask").join("snapshots").join(volume_id)
+    }
+
+    fn data_volume_of(g: &Inner, volume_id: &str) -> Result<crate::spec::DataVolumeSpec> {
+        g.spec
+            .data
+            .as_ref()
+            .and_then(|d| d.volumes.get(volume_id))
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    format!(
+                        "data 卷不存在: {volume_id}（在 supertask.yaml 的 data.volumes 中声明）"
+                    ),
+                )
+            })
+    }
+
+    /// 快照 id 仅允许数字（created_at 毫秒 stem），杜绝路径拼接面。
+    fn snapshot_zip_path(root: &Path, volume_id: &str, snapshot_id: &str) -> Result<PathBuf> {
+        if snapshot_id.is_empty() || !snapshot_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::new(
+                ErrorCode::SnapshotInvalid,
+                format!("快照 id 非法: {snapshot_id:?}"),
+            ));
+        }
+        Ok(Self::snapshots_dir(root, volume_id).join(format!("{snapshot_id}.zip")))
+    }
+
+    /// 离线快照守护：绑定服务处于非 Stopped/Exited 态即拒绝。
+    fn ensure_bound_service_stopped(g: &Inner, service: Option<&str>) -> Result<()> {
+        let Some(svc) = service else {
+            return Ok(());
+        };
+        let busy = g.slots.get(svc).is_some_and(|s| {
+            matches!(
+                s.state,
+                RtState::Starting
+                    | RtState::Running
+                    | RtState::Unhealthy
+                    | RtState::Stopping
+                    | RtState::Building
+            )
+        });
+        if busy {
+            return Err(Error::new(
+                ErrorCode::SnapshotBusy,
+                format!("绑定的服务 {svc} 正在运行，停止后再快照/恢复"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn meta_view(m: crate::snapshot::SnapshotMeta) -> crate::ipc::DataSnapshotView {
+        crate::ipc::DataSnapshotView {
+            id: m.id,
+            created_at: m.created_at,
+            bytes: m.bytes,
+            file_count: m.file_count,
+            total_bytes: m.total_bytes,
+            note: m.note,
+        }
+    }
+
+    /// `workspace.dataList`：数据卷与各自快照（只读）。
+    pub fn data_list(&self) -> Result<crate::ipc::DataListOut> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let mut warnings: Vec<String> = Vec::new();
+        let mut volumes = Vec::new();
+        if let Some(data) = &g.spec.data {
+            for (id, vol) in &data.volumes {
+                let out_dir = Self::snapshots_dir(&g.root, id);
+                let (metas, mut w) = crate::snapshot::list_snapshots(&out_dir);
+                warnings.append(&mut w);
+                // 上次恢复中断可能遗留 stash（正常路径已自动回滚清理）。
+                if let Ok(read) = fs::read_dir(&out_dir) {
+                    if read.flatten().any(|e| {
+                        e.file_name().to_string_lossy().starts_with(".stash-") && e.path().is_dir()
+                    }) {
+                        warnings.push(format!(
+                            "数据卷 {id} 存在上次恢复的遗留备份（.stash-*），确认后可手动删除"
+                        ));
+                    }
+                }
+                volumes.push(crate::ipc::DataVolumeView {
+                    id: id.clone(),
+                    service: vol.service.clone(),
+                    dir: vol.dir.clone(),
+                    snapshots: metas.into_iter().map(Self::meta_view).collect(),
+                });
+            }
+        }
+        Ok(crate::ipc::DataListOut { volumes, warnings })
+    }
+
+    /// `workspace.dataSnapshotCreate`：为数据卷创建离线快照。
+    pub fn data_snapshot_create(
+        &self,
+        volume_id: &str,
+        note: &str,
+    ) -> Result<crate::ipc::DataSnapshotCreatedOut> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let vol = Self::data_volume_of(&g, volume_id)?;
+        Self::ensure_bound_service_stopped(&g, vol.service.as_deref())?;
+        let dir = sandbox::confine(&g.root, &vol.dir)?;
+        let out_dir = Self::snapshots_dir(&g.root, volume_id);
+        let meta = crate::snapshot::create_snapshot(
+            &dir,
+            &out_dir,
+            volume_id,
+            vol.service.as_deref(),
+            note,
+        )?;
+        let mut warnings = Vec::new();
+        if vol.service.is_some() {
+            warnings.push(format!(
+                "快照为离线文件快照，绑定服务 {} 需保持停止直到恢复完成",
+                vol.service.unwrap()
+            ));
+        }
+        Ok(crate::ipc::DataSnapshotCreatedOut {
+            volume_id: volume_id.to_string(),
+            snapshot: Self::meta_view(meta),
+            warnings,
+        })
+    }
+
+    /// `workspace.dataRestorePreview`：恢复预览（纯只读，不要求服务已停止）。
+    pub fn data_restore_preview(
+        &self,
+        volume_id: &str,
+        snapshot_id: &str,
+    ) -> Result<crate::ipc::DataRestorePreviewOut> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let vol = Self::data_volume_of(&g, volume_id)?;
+        let zip = Self::snapshot_zip_path(&g.root, volume_id, snapshot_id)?;
+        let dir = sandbox::confine(&g.root, &vol.dir)?;
+        let preview = crate::snapshot::restore_preview(&zip, &dir)?;
+        let mut blockers = Vec::new();
+        if let Some(svc) = &vol.service {
+            let busy = g.slots.get(svc).is_some_and(|s| {
+                matches!(
+                    s.state,
+                    RtState::Starting
+                        | RtState::Running
+                        | RtState::Unhealthy
+                        | RtState::Stopping
+                        | RtState::Building
+                )
+            });
+            if busy {
+                blockers.push(format!("绑定的服务 {svc} 正在运行，停止后才能恢复"));
+            }
+        }
+        Ok(crate::ipc::DataRestorePreviewOut {
+            volume_id: volume_id.to_string(),
+            snapshot_id: snapshot_id.to_string(),
+            ready: blockers.is_empty(),
+            blockers,
+            target_exists: preview.target_exists,
+            current_files: preview.current_files,
+            snapshot_files: preview.snapshot_files,
+            total_bytes: preview.total_bytes,
+            remove_count: preview.remove_count,
+            remove_sample: preview.remove_sample,
+            warnings: Vec::new(),
+        })
+    }
+
+    /// `workspace.dataRestore`：恢复（校验 → stash → 解压 → 失败回滚）。
+    pub fn data_restore(
+        &self,
+        volume_id: &str,
+        snapshot_id: &str,
+    ) -> Result<crate::ipc::DataRestoreOut> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let vol = Self::data_volume_of(&g, volume_id)?;
+        Self::ensure_bound_service_stopped(&g, vol.service.as_deref())?;
+        let zip = Self::snapshot_zip_path(&g.root, volume_id, snapshot_id)?;
+        let dir = sandbox::confine(&g.root, &vol.dir)?;
+        let stash = Self::snapshots_dir(&g.root, volume_id).join(format!(".stash-{}", now_ms()));
+        let out = crate::snapshot::restore_snapshot(&zip, &dir, &stash)?;
+        Ok(crate::ipc::DataRestoreOut {
+            volume_id: volume_id.to_string(),
+            snapshot_id: snapshot_id.to_string(),
+            restored_files: out.restored_files,
+            removed_files: out.removed_files,
+            warnings: Vec::new(),
+        })
+    }
+
+    /// `workspace.dataSnapshotDelete`：删除单个快照文件。
+    pub fn data_snapshot_delete(
+        &self,
+        volume_id: &str,
+        snapshot_id: &str,
+    ) -> Result<crate::ipc::DataSnapshotDeletedOut> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        Self::data_volume_of(&g, volume_id)?;
+        let zip = Self::snapshot_zip_path(&g.root, volume_id, snapshot_id)?;
+        crate::snapshot::delete_snapshot(&zip)?;
+        Ok(crate::ipc::DataSnapshotDeletedOut {
+            volume_id: volume_id.to_string(),
+            snapshot_id: snapshot_id.to_string(),
+        })
+    }
+
     pub fn open(&self, path: &Path) -> Result<(Vec<ParseWarning>, RuntimeSnapshot)> {
         // 1.5 §3.1：fail-fast，避免对已打开工作区误释放重入拿到的锁
         {
@@ -6823,6 +7041,157 @@ services:
         assert_eq!(e.code(), ErrorCode::YamlConflict);
         eng.close().unwrap();
         let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- 方向六：数据快照（ipc.md §10.18）----
+
+    fn data_ws_yaml() -> &'static str {
+        r#"
+version: 1
+services:
+  db:
+    kind: spring-boot
+    module: db
+    port: 2
+    health:
+      type: none
+data:
+  volumes:
+    app-db:
+      service: db
+      dir: data/db
+"#
+    }
+
+    /// 离线注入 Running 槽（真起服务不是离线测试的事）。
+    fn running_slot_for_test(_id: &str, port: u16) -> Slot {
+        Slot {
+            state: RtState::Running,
+            pid: None,
+            port: Some(port),
+            kind: "spring-boot".into(),
+            job: None,
+            stop_requested: false,
+            started: None,
+            started_at_ms: None,
+            grace: Duration::from_secs(0),
+            health: None,
+            last_error: None,
+            last_exit: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            managed: false,
+            artifact: None,
+            exit_reason: None,
+            restart: crate::spec::RestartSpec::default(),
+            restart_left: 0,
+            restart_attempt: None,
+            restart_cancel: Arc::new(AtomicBool::new(false)),
+            restart_plan: None,
+            compose: None,
+            env_snapshot: None,
+        }
+    }
+
+    /// 数据快照闭环：list → create → 预览（remove_count）→ restore → delete。
+    #[test]
+    fn data_snapshot_restore_round_trip_and_delete() {
+        let root = write_ws_yaml(data_ws_yaml());
+        fs::create_dir_all(root.join("data/db")).unwrap();
+        fs::write(root.join("data/db/rows.txt"), "seed").unwrap();
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+
+        let list = eng.data_list().unwrap();
+        assert_eq!(list.volumes.len(), 1);
+        assert_eq!(list.volumes[0].id, "app-db");
+        assert_eq!(list.volumes[0].service.as_deref(), Some("db"));
+        assert_eq!(list.volumes[0].dir, "data/db");
+        assert!(list.volumes[0].snapshots.is_empty());
+
+        let created = eng.data_snapshot_create("app-db", "初次").unwrap();
+        assert_eq!(created.snapshot.file_count, 1);
+        assert_eq!(created.snapshot.note, "初次");
+
+        // 修改数据后预览：stray 不在快照内，恢复将被删除
+        fs::write(root.join("data/db/rows.txt"), "dirty").unwrap();
+        fs::write(root.join("data/db/stray.log"), "junk").unwrap();
+        let pv = eng
+            .data_restore_preview("app-db", &created.snapshot.id)
+            .unwrap();
+        assert!(pv.ready);
+        assert_eq!(pv.remove_count, 1);
+        assert_eq!(pv.remove_sample, vec!["stray.log".to_string()]);
+
+        let out = eng.data_restore("app-db", &created.snapshot.id).unwrap();
+        assert_eq!(out.restored_files, 1);
+        assert_eq!(out.removed_files, 1);
+        assert_eq!(
+            fs::read_to_string(root.join("data/db/rows.txt")).unwrap(),
+            "seed"
+        );
+        assert!(!root.join("data/db/stray.log").exists());
+
+        eng.data_snapshot_delete("app-db", &created.snapshot.id)
+            .unwrap();
+        assert!(eng.data_list().unwrap().volumes[0].snapshots.is_empty());
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 离线守护：绑定服务运行中 → create/restore 报 SNAPSHOT_BUSY；预览不受限但 ready=false。
+    #[test]
+    fn data_snapshot_restore_blocked_while_bound_service_running() {
+        let root = write_ws_yaml(data_ws_yaml());
+        fs::create_dir_all(root.join("data/db")).unwrap();
+        fs::write(root.join("data/db/rows.txt"), "seed").unwrap();
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+        let created = eng.data_snapshot_create("app-db", "").unwrap();
+
+        {
+            let mut g = eng.inner.lock().expect("engine lock");
+            g.slots.insert("db".into(), running_slot_for_test("db", 2));
+        }
+        let e = eng.data_snapshot_create("app-db", "").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SnapshotBusy);
+        let e = eng
+            .data_restore("app-db", &created.snapshot.id)
+            .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SnapshotBusy);
+        let pv = eng
+            .data_restore_preview("app-db", &created.snapshot.id)
+            .unwrap();
+        assert!(!pv.ready);
+        assert!(pv.blockers.iter().any(|b| b.contains("db")));
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 诊断面：卷不存在 → NOT_FOUND；快照 id 非法 → SNAPSHOT_INVALID；
+    /// 合法 id 但文件缺失 → SNAPSHOT_NOT_FOUND；未打开工作区 → 报错。
+    #[test]
+    fn data_volume_and_snapshot_id_errors() {
+        let root = write_ws_yaml(data_ws_yaml());
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+        assert_eq!(
+            eng.data_snapshot_create("nope", "").unwrap_err().code(),
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            eng.data_snapshot_delete("app-db", "../x")
+                .unwrap_err()
+                .code(),
+            ErrorCode::SnapshotInvalid
+        );
+        assert_eq!(
+            eng.data_restore("app-db", "123").unwrap_err().code(),
+            ErrorCode::SnapshotNotFound
+        );
+        eng.close().unwrap();
+        let eng2 = Engine::fail_for_test();
+        assert!(eng2.data_list().is_err());
         let _ = fs::remove_dir_all(&root);
     }
 }
