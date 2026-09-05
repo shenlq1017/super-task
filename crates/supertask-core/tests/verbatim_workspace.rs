@@ -25,11 +25,15 @@ fn workspace_id_has_no_verbatim_prefix() {
         !id.contains(r"\\?\"),
         "workspace_id 仍带 verbatim 前缀: {id}"
     );
+    // id 必须是 temp 目录某一干净形式：原始路径、canonicalize 后路径
+    // （Windows 短路径展开 / macOS /var → /private/var 符号链接）二者之一。
+    let canon = std::fs::canonicalize(&dir).unwrap();
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
     assert!(
-        id.to_lowercase() == dir.to_string_lossy().to_lowercase() || {
-            // temp 在 Windows 上可能是短路径/软链接规范化后的差异，退一步只断言盘符形态
-            id.as_bytes().get(1) == Some(&b':')
-        }
+        same(&id, &dir.to_string_lossy()) || same(&id, &canon.to_string_lossy()),
+        "workspace_id 应为 temp 目录的干净形式: id={id}, dir={}, canon={}",
+        dir.display(),
+        canon.display()
     );
 
     engine.close().expect("close");

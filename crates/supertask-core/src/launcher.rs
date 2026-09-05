@@ -330,7 +330,7 @@ pub fn plan_maven_reactor_prep_install_in(
     ];
     args.extend(svc.build_args.iter().cloned());
     Some(CommandSpec {
-        program: "mvn.cmd".into(),
+        program: maven_program_name().into(),
         args,
         cwd_rel: svc.cwd.clone().unwrap_or_else(|| ".".into()),
         env,
@@ -365,7 +365,7 @@ fn plan_spring(
             }
             args.extend(svc.extra_args.iter().cloned());
             Ok(CommandSpec {
-                program: "mvn.cmd".into(),
+                program: maven_program_name().into(),
                 args,
                 cwd_rel: svc.cwd.clone().unwrap_or_else(|| ".".into()),
                 env,
@@ -396,12 +396,14 @@ fn gradle_task_args(module: &str, task: &str) -> Vec<String> {
 }
 
 fn plan_node(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<CommandSpec> {
-    let pm = match svc.package_manager.unwrap_or(PackageManager::Npm) {
-        PackageManager::Npm => "npm.cmd",
-        PackageManager::Pnpm => "pnpm.cmd",
-        PackageManager::Yarn => "yarn.cmd",
-        PackageManager::Bun => "bun.exe",
+    // Windows 走 .cmd/.exe shim；Unix 用裸名（与 go/python 程序名口径一致）
+    let (win, unix) = match svc.package_manager.unwrap_or(PackageManager::Npm) {
+        PackageManager::Npm => ("npm.cmd", "npm"),
+        PackageManager::Pnpm => ("pnpm.cmd", "pnpm"),
+        PackageManager::Yarn => ("yarn.cmd", "yarn"),
+        PackageManager::Bun => ("bun.exe", "bun"),
     };
+    let pm = if cfg!(windows) { win } else { unix };
     let script = svc.script.clone().unwrap_or_else(|| "dev".into());
     let mut args = vec!["run".into(), script];
     if !svc.extra_args.is_empty() {
@@ -419,6 +421,14 @@ fn plan_node(svc: &ServiceSpec, env: IndexMap<String, String>) -> Result<Command
 // ---------------------------------------------------------------------------
 // 1.7 §4.2：python / go / generic
 // ---------------------------------------------------------------------------
+
+fn maven_program_name() -> &'static str {
+    if cfg!(windows) {
+        "mvn.cmd"
+    } else {
+        "mvn"
+    }
+}
 
 fn go_program_name() -> &'static str {
     if cfg!(windows) {
@@ -826,7 +836,7 @@ pub fn plan_jar_build_in(
             args.push("-DskipTests".into());
             args.extend(svc.build_args.iter().cloned());
             Ok(CommandSpec {
-                program: "mvn.cmd".into(),
+                program: maven_program_name().into(),
                 args,
                 cwd_rel: svc.cwd.clone().unwrap_or_else(|| ".".into()),
                 env,
@@ -1165,7 +1175,7 @@ services:
         )
         .unwrap();
         let c = plan_service(&f, "api").unwrap();
-        assert_eq!(c.program, "mvn.cmd");
+        assert_eq!(c.program, maven_program_name());
         assert_eq!(
             c.args,
             vec!["-pl", "user-service", "spring-boot:run", "-DskipTests"]
@@ -1455,7 +1465,7 @@ services:
         )
         .unwrap();
         let c = plan_service_in(&f, "api", Some(&root)).unwrap();
-        assert_eq!(c.program, "mvn.cmd");
+        assert_eq!(c.program, maven_program_name());
         assert_eq!(c.args, vec!["-pl", "app", "spring-boot:run"]);
         // cwd 无构建文件、cwd/module 有 → 回退到 cwd/module
         let (f2, _) = parse_yaml(
@@ -1490,7 +1500,7 @@ services:
         assert_eq!(c.args, vec!["bootRun"]);
         let f2 = gradle_yaml("    build_tool: maven\n    module: \".\"\n    port: 8080");
         let c2 = plan_service_in(&f2, "api", Some(&root)).unwrap();
-        assert_eq!(c2.program, "mvn.cmd");
+        assert_eq!(c2.program, maven_program_name());
         let _ = fs::remove_dir_all(&root);
     }
 
