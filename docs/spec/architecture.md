@@ -33,7 +33,7 @@ mise/winget 安装）、`docker`（compose）、`gateway`（nginx/caddy/apache �
 `git` / `ide`（git 状态与 IDE 打开）、`ports` / `network` / `host_metrics` / `metrics`
 （端口、代理、指标）、`profiles`（多环境覆盖）、`secrets`（密钥声明与存取）、`pkg`
 （工作区打包导入导出）、`term`（终端会话）、`cloud`（云客户端）、`ai`（AI 辅助）、
-`lock`（工作区锁）、`appdata`、`operation`、`error` 等。
+`lock`（工作区锁）、`appdata`、`operation`、`error` 等。另有 `snapshot`（方向六·数据与备份：服务绑定数据卷的离线快照——zip+manifest+sha256、stash 回滚式恢复与删除，spec `data.volumes` 的运行期操作面，ipc.md §10.18）。
 
 引擎 **不依赖 Tauri**，便于单测和以后做 CLI（1.5）。
 

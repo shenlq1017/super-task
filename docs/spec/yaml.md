@@ -50,6 +50,7 @@
 | `scripts` | 1.0 | map | 可空 |
 | `toolchain` | 1.2 | object | typed：`manager`/`java`/`maven`/`node`/`package_manager`，见 1.2 规格 §4 |
 | `needs` | 2.2 | string[] | typed：声明式需求 `node@20`/`postgres@16`，见 §7.2，解析契约见 ipc.md §10.17 |
+| `data` | 2.2 | object | typed：`data.volumes` 数据卷声明（快照/恢复目标），见 §7.3，IPC 契约见 ipc.md §10.18 |
 | `network` | 1.2 | object | typed：`proxy`（off/system/custom）/`maven.mirror`/`npm.registry`/`python.index_url`（1.7）/`go.goproxy`（1.7），见 1.2 规格 §7 |
 | `log_retention` | 1.2 | object | **顶层**保留策略，不要嵌进 `logging` |
 | `templates` | reserved | object | 1.1 来源模板元数据 |
@@ -365,6 +366,36 @@ needs:
 JSON Schema 对该段的处理与其它顶层段一致（`needs` 声明为 `string[]`，条目级语法
 校验由引擎负责，schema 不重复）。
 
+### 7.3 `data`（方向六·数据与备份）
+
+工作区顶层 `data.volumes` 声明**数据卷**：与服务绑定的数据目录，是快照/恢复的
+操作对象（离线文件快照：zip + manifest + 逐条 sha256，契约见 ipc.md §10.18）。
+服务关联库的备份、工作区定时备份等能力共用该声明。卷只声明事实
+（目录 + 可选服务绑定），不影响加载与启动行为。
+
+```yaml
+data:
+  volumes:
+    app-db:
+      service: api   # 可选：绑定服务 id
+      dir: data/db   # 必填：工作区相对路径
+```
+
+语法规则（加载期 fail-fast，非法即 `DATA_INVALID`）：
+
+- 卷 id：`^[A-Za-z][A-Za-z0-9_-]{0,63}$`（与服务 id 同规）；每工作区 ≤32 卷
+  （`MAX_DATA_VOLUMES`）。
+- `dir`：必填、非空、工作区相对路径，规则同 `env_file`（`sandbox::assert_rel_safe`：
+  禁绝对路径、禁 `..` 逃逸、禁盘符）；不得为 `.`（工作区根）；**不得位于 `.supertask/`
+  内**（快照存于 `.supertask/snapshots/`，防自包含递归）。
+- 卷间 `dir` 不得重复，也不得互相嵌套（前缀包含；Windows 下大小写不敏感）。
+- `service`：可选；若声明必须存在于 `services`（同 `depends_on` 口径，加载期报错）。
+- 运行期语义：快照/恢复要求绑定服务已停止（`SNAPSHOT_BUSY`），快照为目录内容
+  替换式恢复——见 ipc.md §10.18。
+
+JSON Schema：`data.volumes` 为 map（卷 id 为 key），形状见 `supertask.schema.json`
+的 `$defs/dataVolume`，语义校验由引擎负责。
+
 ---
 
 ## 8. 校验顺序
@@ -374,10 +405,11 @@ JSON Schema 对该段的处理与其它顶层段一致（`needs` 声明为 `stri
 3. `version`  
 4. id 字符集、服务数  
 5. 顶层 `needs` 静态校验：逐条按 `parse_need` 口径（id/版本要求格式）+ 条目数上限（§7.2，非法 `NEEDS_INVALID`）  
-6. 每服务 kind 特有必填  
-7. `depends_on` 引用存在  
-8. 端口重复 → **警告** `PORT_DUP`（1.0 不阻断；1.2 阻断）  
-9. 成环只在 **启动** 时硬失败（打开文件仍允许，便于人改）  
+6. 顶层 `data.volumes` 静态校验：卷 id/`dir` 沙箱、`.supertask` 排除、卷间不重复不嵌套、`service` 存在性（§7.3，非法 `DATA_INVALID`）  
+7. 每服务 kind 特有必填  
+8. `depends_on` 引用存在  
+9. 端口重复 → **警告** `PORT_DUP`（1.0 不阻断；1.2 阻断）  
+10. 成环只在 **启动** 时硬失败（打开文件仍允许，便于人改）  
 
 `enabled: false` 的服务仍参与引用检查（别人可以 depends_on 它，启动时再报）。
 

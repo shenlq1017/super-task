@@ -6,7 +6,7 @@
 
 ## 1. 模块一览（顶层目录实测）
 
-`crates/supertask-core/src/`：`appdata / cloud/ / discover / docker/ / engine / error / features / gateway/ / git / graph / health / ide / ipc/ (v12,v13,v15,v16) / launcher / lock / log/ (batch,file,ring,search) / merge / needs / metrics / network / operation / pkg / ports / probe / proc/ (windows,unix) / profiles / runtime/ / sandbox / scan / secrets / spring / spec/ (file,validate) / taskfile / template / toolchain/ (discover,install,manifest,provider,resolver,runner,versions)`。
+`crates/supertask-core/src/`：`appdata / cloud/ / discover / docker/ / engine / error / features / gateway/ / git / graph / health / ide / ipc/ (v12,v13,v15,v16,v17) / launcher / lock / log/ (batch,file,ring,search) / merge / needs / metrics / network / operation / pkg / ports / probe / proc/ (windows,unix) / profiles / runtime/ / sandbox / scan / secrets / snapshot / spring / spec/ (file,validate) / taskfile / template / toolchain/ (discover,install,manifest,provider,resolver,runner,versions)`。
 
 另有独立 `crates/supertask-cloud-server/`：当前实测有 Cargo manifest、`lib.rs`、`main.rs`、`config.rs`、`auth.rs`、`entities.rs`、`state.rs`、`error.rs`、`http.rs`、`quota.rs`、`telemetry.rs`、`migrations/0001_init.sql` 和 `tests/api.rs`；已具备本地 HTTP router/API、healthz、配额/遥测和 in-process 集成测试。未知 type 仍受当前四类型校验限制；正式 HTTPS/运营和真机验收未完成。服务端事实与环境变量见 [docs/spec/cloud-server.md](../spec/cloud-server.md)。
 
@@ -76,6 +76,7 @@ typed 字段（`ServiceSpec.service` + `DockerSpec`）→ 校验（validate.rs c
 - **网关**（1.6；方向四扩展）：`gateway/`（model / render/ / validate / probe）——render 纯函数零新依赖；probe 三引擎探测进 `ToolchainProbe.gateway`。路由为三形态（代理 / 重定向 `redirect(+status)` / 静态站点 `static_dir`，恰选其一），代理路由可带 `strip_prefix` 与 route 级 CORS（白名单回显 + preflight 本地 204），`host` 支持逗号分隔多域名别名；apache WebSocket 经 `ProxyPass upgrade=websocket`（≥2.4.47），模块集含 setenvif/rewrite/dir；渲染输出由 `tests/golden/gateway/` 11 份 golden 锁字节。
 - **隧道模板**（方向四）：`template_assets/tunnel-cloudflared{,-token}/` 与 `tunnel-frpc/`——generic 服务纳管 cloudflared/frpc，token 走 `.env.*`（env_file 注入），`restart: on-failure`；模板机制不变（清单 + 文件双向一致性测试兜底），内置模板 10 套。
 - **声明式需求 needs**（方向三·环境供给）：`needs.rs`——resolve-only 四态解析（已存在/可安装/可归档供给/不可满足），内置归档目录 `ARCHIVE_CATALOG`，IPC `workspace.needsResolve`（ipc.md §10.17）。
+- **服务绑定数据快照**（方向六·数据与备份）：`snapshot.rs`——离线文件快照（zip = manifest + `data/<rel>`，逐条 sha256，条目 ≤20000 / 总量 ≤512 MiB）、stash 回滚式恢复（目录内容替换）、spec `data.volumes` 段（`spec/file.rs` + `validate_data`，`DATA_INVALID`）；绑定服务运行中禁止快照/恢复（`SNAPSHOT_BUSY`）；存储 `<root>/.supertask/snapshots/<卷>/<时间戳>.zip`；IPC `workspace.data*` 5 命令（ipc.md §10.18），UI 工作区页「数据快照」卡片。
 - **MCP**（1.5）：在 `crates/supertask-cli/src/mcp.rs`（不在 core）——rmcp stdio，7 工具（`:15-21`），断连清场。
 - **错误码**：`error.rs` `ErrorCode` enum 约 101 个变体；soon 机制：`features.rs:51-62` `SOON_COMMANDS`（cloud.login/cloud.sync/ai.complete）+ `FEATURE_SOON` 拒绝，禁止假成功。
 - **taskfile.rs**：1.4 Taskfile 导入（映射成 scripts）。

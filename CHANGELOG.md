@@ -6,6 +6,24 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 服务绑定数据快照/恢复（方向六·数据与备份）
+
+- 工作区页新增「数据快照」卡片（与导出包同区）：为 supertask.yaml 顶层
+  `data.volumes` 声明的数据目录一键离线快照、列出、恢复预览、恢复与删除——
+  实验前打快照，搞砸了恢复；spec 新增 `data:` 段（卷 id + `dir` 工作区相对路径 +
+  可选 `service` 绑定），加载期校验目录沙箱、`.supertask` 排除、卷间不重复不嵌套、
+  绑定服务存在性（`DATA_INVALID`）。
+- **恢复 = 目录内容替换，先预览再动手**：整包逐条 sha256 校验 → 现目录整体 stash →
+  解压 → 失败自动回滚；快照外现存文件恢复后将被删除，恢复预览强制给出
+  `remove_count`（附 ≤20 条样例）供确认；快照损坏 / format 过新 / 超上限 /
+  目标被占用均有稳定错误码（`SNAPSHOT_INVALID` / `SNAPSHOT_VERSION` / `SNAPSHOT_BUSY`）。
+- **离线快照语义**：绑定服务未停止时禁止快照/恢复（`SNAPSHOT_BUSY`），不做在线
+  逻辑备份；快照存于工作区 `.supertask/snapshots/<卷>/<时间戳>.zip`（先临时文件再
+  改名），不进工作区导出包；上限单快照 2 万条目 / 512 MiB。
+- 契约：IPC 新增 `workspace.dataList` / `dataSnapshotCreate` / `dataRestorePreview` /
+  `dataRestore` / `dataSnapshotDelete`（ipc.md §10.18，码表 §7 五个新码），
+  行为规格进 `docs/spec/yaml.md` §7.3 与 `supertask.schema.json`（`$defs/dataVolume`）。
+
 #### 一键体检报告（方向五·主机与服务可观测性）
 
 - 系统监控页新增「体检报告」卡片：一键并行探测工具链（8 工具 + python/go）、网关三引擎

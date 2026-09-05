@@ -135,6 +135,11 @@
 | `workspace.adoptPreview` | `{ workspace_id }` | `AdoptPreviewOut`（§10.16）孤儿进程纳管 dry-run：与当前工作区相关的监听进程 → generic 服务草稿 + 冲突/警告报告。**纯内存计算，不落盘、不杀进程**；命令行与草稿参数已脱敏 |
 | `workspace.adoptApply` | `{ workspace_id, choices: [{pid, action}], base_hash }` | `{ spec, hash, warnings[] }` 只新增用户确认的服务草稿；**apply 前重新发现进程**（退出的 pid 按警告跳过），写回走 saveForm（base_hash 冲突 → `YAML_CONFLICT`） |
 | `workspace.needsResolve` | `{ workspace_id, refresh? }` | `NeedsResolveOut`（§10.17）声明式需求 needs 解析：逐条给出四态（已存在/可安装/可归档供给/不可满足）+ reason 解释。**resolve-only dry-run：不安装、不下载、不写盘** |
+| `workspace.dataList` | `{ workspace_id }` | `DataListOut`（§10.18）数据卷与各自快照列表（created_at 降序）。**只读** |
+| `workspace.dataSnapshotCreate` | `{ workspace_id, volume_id, note? }` | `DataSnapshotCreatedOut`（§10.18）为数据卷创建离线快照；绑定服务未停止 → `SNAPSHOT_BUSY` |
+| `workspace.dataRestorePreview` | `{ workspace_id, volume_id, snapshot_id }` | `DataRestorePreviewOut`（§10.18）恢复预览：覆盖面与 `remove_count`，纯只读 |
+| `workspace.dataRestore` | `{ workspace_id, volume_id, snapshot_id }` | `DataRestoreOut`（§10.18）恢复：整包校验 → stash → 解压 → 失败回滚 |
+| `workspace.dataSnapshotDelete` | `{ workspace_id, volume_id, snapshot_id }` | `DataSnapshotDeletedOut`（§10.18）删除单个快照文件 |
 
 `workspace_id` = 规范化绝对路径。之后所有运行时命令带这个 id，**禁止**再传任意路径去 spawn。
 
@@ -420,6 +425,11 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
 | code | 何时 |
 |------|------|
 | `NEEDS_INVALID` | needs 项非法（id/版本要求格式、lts 别名、条目数超限） |
+| `DATA_INVALID` | `data.volumes` 声明非法（卷 id/`dir` 沙箱、`.supertask` 排除、卷间重复或嵌套、绑定服务不存在，§10.18） |
+| `SNAPSHOT_NOT_FOUND` | 数据卷下快照不存在/不可读 |
+| `SNAPSHOT_INVALID` | 快照 zip/manifest 损坏、条目哈希不符、zip-slip、超上限（条目数/总字节）、落盘失败 |
+| `SNAPSHOT_VERSION` | 快照 format 高于支持版本 |
+| `SNAPSHOT_BUSY` | 绑定服务未停止，禁止快照/恢复 |
 
 ---
 
@@ -967,3 +977,66 @@ true 强制重探工具链。
 **测试**：core `needs::` 28 项离线单测（条目语法、版本前缀矩阵、四态判定、平台差异、
 端到端演示：resolve → FakeRunner 安装链 → 重新 resolve satisfied）+ `spec::validate`
 3 项（round-trip / 非法条目 `NEEDS_INVALID` / 超 32 条）。
+
+### 10.18 数据快照（方向六·数据与备份，2026-09-05）
+
+工作区 YAML 顶层 `data.volumes` 声明数据卷（字段规格见 yaml.md §7.3），本组命令提供
+**离线文件快照闭环**：create → list → restorePreview → restore → delete。核心实现
+`crates/supertask-core/src/snapshot.rs`；UI 挂工作区页「数据快照」卡片（与导出包同区）。
+
+**快照格式与存储**
+
+- zip = `manifest.json` + `data/<相对路径>`；manifest
+  `{format:1, volume_id, service?, note, created_at(epoch ms), source_os, app_version,
+  file_count, total_bytes, entries[{path, sha256, bytes}]}`（条目口径同导出包 pkg）。
+- 存储 `<工作区根>/.supertask/snapshots/<volume_id>/<created_at_ms>.zip`；先写
+  `.tmp` 再改名，不产生半截快照。快照不进工作区导出包（export_package 只打包
+  yaml + 密钥）。
+- 上限：单快照条目 ≤20000、解压总字节 ≤512 MiB，超出 → `SNAPSHOT_INVALID`
+  （附实际值与上限）。
+- 只打包普通文件；符号链接跳过并计入 warnings；空目录本身不保留（只保文件）。
+- **离线语义**：快照是文件级快照，不做在线/逻辑备份。绑定服务必须处于
+  Stopped/Exited（未绑定卷不受限），否则 create/restore 报 `SNAPSHOT_BUSY`；
+  预览不受限。
+
+**恢复语义**
+
+- 恢复 = **目录内容替换为快照内容**：先整包逐条 sha256 校验（任何一条不符即
+  `SNAPSHOT_INVALID`，不动目标目录）→ 现有目标目录整体改名至 stash
+  （`.supertask/snapshots/<volume_id>/.stash-<ts>`）→ 解压落盘（zip-slip 拒绝）→
+  成功后删除 stash；解压失败删除半成品、stash 改名回滚，报 `SNAPSHOT_INVALID`。
+- 快照外现存文件恢复后**被删除**——`restorePreview` 必须给出 `remove_count`
+  （附 ≤20 条 `remove_sample`），UI 据此确认。
+- 恢复不重启服务、不改 supertask.yaml；恢复完成后服务按既有启动链路读取恢复后的
+  数据。上次恢复中断遗留的 `.stash-*` 在 `dataList` 中以 warnings 提示。
+
+**`workspace.dataList` 出参 `DataListOut { volumes[], warnings[] }`**
+（mirror `ipc::v17`）
+
+| 字段 | 说明 |
+|------|------|
+| `volumes[].id` / `dir` / `service?` | spec 声明原文（`dir` 为工作区相对路径） |
+| `volumes[].snapshots[]` | `DataSnapshotView { id, created_at, bytes, file_count, total_bytes, note }`，按 created_at 降序；`id` = created_at 毫秒字符串，`bytes` = zip 文件大小；manifest 损坏的快照文件跳过并计入 warnings |
+
+**`workspace.dataSnapshotCreate`** 入参 `{ workspace_id, volume_id, note? }`；
+出参 `DataSnapshotCreatedOut { volume_id, snapshot, warnings[] }`。volume_id 不存在 →
+`NOT_FOUND`。
+
+**`workspace.dataRestorePreview`** 出参
+`DataRestorePreviewOut { volume_id, snapshot_id, ready, blockers[], target_exists,
+current_files, snapshot_files, total_bytes, remove_count, remove_sample[], warnings[] }`。
+`ready=false` 的情形（绑定服务运行中等）进 `blockers`；preview 纯只读、零副作用。
+
+**`workspace.dataRestore`** 出参
+`DataRestoreOut { volume_id, snapshot_id, restored_files, removed_files, warnings[] }`。
+
+**`workspace.dataSnapshotDelete`** 出参
+`DataSnapshotDeletedOut { volume_id, snapshot_id }`。
+
+**错误码**：新增 `DATA_INVALID`（加载期，§7）/ `SNAPSHOT_NOT_FOUND` / `SNAPSHOT_INVALID` /
+`SNAPSHOT_VERSION` / `SNAPSHOT_BUSY`（§7）；卷不存在 → 既有 `NOT_FOUND`。
+
+**测试**：core `snapshot::` 12 项离线单测（round-trip、空目录、缺失目录、哈希不符、
+未来 format、zip-slip、损坏跳过、stash 回滚、上限、删除）+ `spec::validate` data 段
+3 项（round-trip / id·dir·service 非法 / `.supertask` 与嵌套拒绝）+ `engine::tests`
+数据快照 3 项（离线闭环、Running 槽注入 `SNAPSHOT_BUSY` 守护、诊断面）。
