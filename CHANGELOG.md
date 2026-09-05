@@ -2,6 +2,27 @@
 
 All notable changes to SuperTask are documented here.
 
+## [Unreleased]
+
+### Docs
+
+- 文档目录重组：历史规划与设计材料归档至 `docs/archive/`（`plans/` 35 份版本规格与实施计划、
+  `research/` 选型调研、`adr/` 早期架构决策、`verification/` 历史验收记录）；删除未实际应用的
+  UI 原型稿 `docs/prototypes/`（HTML mockup 与截图，设计已由 `frontend/` 实现取代，git 历史可查）。
+  `docs/spec/` 保持为当前功能唯一真源，全部交叉链接已同步修正。
+- README 重写：删除版本编号路线图（主题版本 1.x/2.x 与发布版本 v0.x 两套序列），
+  改为「未来考虑」方向性内容；新增平台支持状态表（Windows 安装包可用、自动更新已验证，
+  macOS / Linux 不推荐）与「获取与更新」章节；如实修正 CI 覆盖范围（当前仅 Windows）；
+  构建与开发章节移除「安装包尚未发布」表述。
+- `docs/ROADMAP.md` 重写为方向型路线图：按九个能力方向组织，移除版本号与排期，
+  每项标注借鉴来源、现状与「价值 · 成本 · 契合度」评级；新增「主机与服务可观测性」方向
+  （系统信息面板、指标历史趋势、网络速率、按服务资源归因、MCP 暴露主机指标）与
+  ServBay 付费墙对照的机会清单。
+- 版本编号路线图与 F/G 编号逐项规划迁出仓库，本地存档于 `.workbuddy/local/VERSIONS-AND-PLAN.md`
+  （`.gitignore` 已排除），含主题版本历史、发布版本记录、发版操作清单、
+  F1–F28 / G1–G2 / N1–N13 / M1–M6 规划与平台推进专项。
+- 新增 `AGENTS.md`：AI 编码代理工作指南（仓库布局、文档地图、构建测试命令、硬性约定、git 约定）。
+
 ## [0.1.3] - 2026-09-04
 
 > 本版本包含自 v0.1.1 以来的全部累积变更（PR #14 ~ #25）。
