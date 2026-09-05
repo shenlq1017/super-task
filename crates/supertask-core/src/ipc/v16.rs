@@ -3,7 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 状态视图里的一条路由（含解析出的目标端口与上游存活）。
+/// 状态视图里的一条路由（含解析出的目标端口与上游存活；方向四起携带
+/// 三形态与 CORS 配置，与 `GatewayRouteSpec` 字段对齐）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatewayRouteView {
     pub host: Option<String>,
@@ -12,6 +13,16 @@ pub struct GatewayRouteView {
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strip_prefix: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cors: Option<crate::spec::GatewayCorsSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub static_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_port: Option<u16>,
     /// 上游端口是否在本机监听（loopback 双栈探测）
@@ -110,6 +121,11 @@ mod tests {
                 path: "/api".into(),
                 target: Some("user-api".into()),
                 upstream: None,
+                strip_prefix: None,
+                cors: None,
+                redirect: None,
+                redirect_status: None,
+                static_dir: None,
                 target_port: Some(8081),
                 upstream_alive: Some(true),
             }],

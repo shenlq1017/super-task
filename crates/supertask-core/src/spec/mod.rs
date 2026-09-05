@@ -2,9 +2,9 @@ mod file;
 pub mod validate;
 
 pub use file::{
-    DockerBuild, DockerSpec, GatewayConf, GatewayKind, GatewayRoute, GatewayTls, GoNetworkSpec,
-    HealthSpec, HealthType, LogRetentionSpec, LoggingSpec, MavenNetworkSpec, NetworkSpec,
-    NpmNetworkSpec, PackageManager, ParseWarning, ProfileItem, ProfileServiceOverride,
+    DockerBuild, DockerSpec, GatewayConf, GatewayCorsSpec, GatewayKind, GatewayRoute, GatewayTls,
+    GoNetworkSpec, HealthSpec, HealthType, LogRetentionSpec, LoggingSpec, MavenNetworkSpec,
+    NetworkSpec, NpmNetworkSpec, PackageManager, ParseWarning, ProfileItem, ProfileServiceOverride,
     ProfilesSpec, ProxyMode, ProxySpec, PythonNetworkSpec, ScriptSpec, SecretsBackend, SecretsSpec,
     ServiceSpec, SuperTaskFile, ToolchainManager, ToolchainSpec, MAX_GROUP_CHARS, MAX_PROFILES,
 };

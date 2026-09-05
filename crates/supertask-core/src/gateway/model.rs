@@ -5,7 +5,12 @@
 //! 通过 `host_for_port` 闭包注入，本模块保持纯函数）。
 
 use crate::error::{Error, ErrorCode, Result};
-use crate::spec::{GatewayConf, GatewayKind, GatewayRoute, GatewayTls, SuperTaskFile};
+use crate::gateway::{
+    CORS_DEFAULT_HEADERS, CORS_DEFAULT_MAX_AGE_SECS, CORS_DEFAULT_METHODS, REDIRECT_DEFAULT_STATUS,
+};
+use crate::spec::{
+    GatewayConf, GatewayCorsSpec, GatewayKind, GatewayRoute, GatewayTls, SuperTaskFile,
+};
 
 /// 路由数上限（§1.2 路由模型；防失控配置）。
 pub const MAX_ROUTES: usize = 64;
@@ -24,14 +29,70 @@ impl UpstreamAddr {
     }
 }
 
-/// host 分组下的一个 location：path 前缀 + 上游。
+/// 重定向目标（IR）：`to` 为 `/path` 或 `http(s)://…`；status 已含缺省 302。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayRedirect {
+    pub to: String,
+    pub status: u16,
+}
+
+/// CORS 策略（IR）：spec 缺省已补齐（methods/headers/max_age/credentials）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayCors {
+    pub origins: Vec<String>,
+    pub methods: Vec<String>,
+    pub headers: Vec<String>,
+    pub max_age_secs: u32,
+    pub credentials: bool,
+}
+
+impl From<&GatewayCorsSpec> for GatewayCors {
+    fn from(c: &GatewayCorsSpec) -> Self {
+        let methods = c
+            .methods
+            .clone()
+            .unwrap_or_else(|| CORS_DEFAULT_METHODS.iter().map(|s| s.to_string()).collect());
+        let headers = c
+            .headers
+            .clone()
+            .unwrap_or_else(|| CORS_DEFAULT_HEADERS.iter().map(|s| s.to_string()).collect());
+        Self {
+            origins: c.origins.clone(),
+            methods,
+            headers,
+            max_age_secs: c.max_age_secs.unwrap_or(CORS_DEFAULT_MAX_AGE_SECS),
+            credentials: c.credentials.unwrap_or(false),
+        }
+    }
+}
+
+impl GatewayCors {
+    /// `Access-Control-Allow-Methods` / `-Headers` 的逗号串（含空格分隔）。
+    pub fn methods_csv(&self) -> String {
+        self.methods.join(", ")
+    }
+
+    pub fn headers_csv(&self) -> String {
+        self.headers.join(", ")
+    }
+}
+
+/// host 分组下的一个 location：path 前缀 + 三种形态（代理/重定向/静态站点）。
+/// 代理形态：`upstream` Some（`strip_prefix` 剥除 path 前缀后转发）；
+/// 重定向形态：`redirect` Some；静态形态：`static_dir` Some（渲染就绪的
+/// 目录路径，resolve 时已用工作区根拼接为绝对 posix 路径，仅 path=/）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayLocation {
     pub path: String,
-    pub upstream: UpstreamAddr,
+    pub upstream: Option<UpstreamAddr>,
+    pub redirect: Option<GatewayRedirect>,
+    pub strip_prefix: bool,
+    pub static_dir: Option<String>,
+    pub cors: Option<GatewayCors>,
 }
 
 /// host 分组：None = 全匹配（catch-all，nginx default_server / caddy 根站点）。
+/// Some 为规范化后的逗号串（多域名别名，排序去重、", " 连接）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayServerGroup {
     pub host: Option<String>,
@@ -109,38 +170,60 @@ fn service_port(svc: &crate::spec::ServiceSpec) -> Option<u16> {
     svc.port.or_else(|| svc.ports.first().copied())
 }
 
+/// 工作区根 + 相对目录 → 渲染就绪的 posix 绝对路径（static_dir）。
+/// 越界（`..`）在静态校验已拒绝；这里只做确定性拼接（含根路径反斜杠规范化）。
+fn join_root(root: &str, rel: &str) -> String {
+    let r = root.replace('\\', "/");
+    let r = r.trim_end_matches('/');
+    let rel = rel.trim();
+    let rel = rel.replace('\\', "/");
+    if r.is_empty() {
+        rel
+    } else {
+        format!("{r}/{rel}")
+    }
+}
+
+/// host 多域名拆分（与静态校验同一语义）：逗号分隔、trim、去空段。
+fn split_hosts(host: Option<&str>) -> Vec<String> {
+    host.map(|h| {
+        h.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// 把 GatewayConf 解析为 IR。`host_for_port`：端口 → 回环 host 文本
 /// （引擎侧按 1.2 监听表注入 v4/v6 选择；测试用恒等 `127.0.0.1`）。
+/// `root`：工作区根路径（static_dir 拼接为绝对 posix 路径）。
 /// 前置条件：静态校验已通过（target 存在等在 `validate_static` 负责，
 /// 这里对缺失 target 返回 GATEWAY_ROUTE_INVALID 兜底）。
 pub fn resolve(
     file: &SuperTaskFile,
     conf: &GatewayConf,
     host_for_port: &dyn Fn(u16) -> String,
+    root: &str,
 ) -> Result<ResolvedGateway> {
     let kind = conf
         .kind
         .ok_or_else(|| Error::new(ErrorCode::GatewayNotConfigured, "gateway 段未配置 kind"))?;
     let mut groups: Vec<GatewayServerGroup> = Vec::new();
     for (i, route) in conf.routes.iter().enumerate() {
-        let upstream = resolve_upstream_of(file, route, i)?;
-        let upstream = UpstreamAddr {
-            host: host_for_port(upstream.port),
-            port: upstream.port,
-        };
-        let host = normalized_host(route);
-        if let Some(group) = groups.iter_mut().find(|g| g.host == host) {
-            group.locations.push(GatewayLocation {
-                path: route.path.clone(),
-                upstream,
-            });
+        let hosts = split_hosts(route.host.as_deref());
+        let mut sorted = hosts.clone();
+        sorted.sort();
+        sorted.dedup();
+        let host_key = (!sorted.is_empty()).then(|| sorted.join(", "));
+        let location = resolve_location(file, route, i, host_for_port, root)?;
+        if let Some(group) = groups.iter_mut().find(|g| g.host == host_key) {
+            group.locations.push(location);
         } else {
             groups.push(GatewayServerGroup {
-                host,
-                locations: vec![GatewayLocation {
-                    path: route.path.clone(),
-                    upstream,
-                }],
+                host: host_key,
+                locations: vec![location],
             });
         }
     }
@@ -150,6 +233,39 @@ pub fn resolve(
         tls: conf.tls,
         groups,
         apache_modules_dir: None,
+    })
+}
+
+fn resolve_location(
+    file: &SuperTaskFile,
+    route: &GatewayRoute,
+    index: usize,
+    host_for_port: &dyn Fn(u16) -> String,
+    root: &str,
+) -> Result<GatewayLocation> {
+    let redirect = route.redirect.as_deref().map(|r| GatewayRedirect {
+        to: r.trim().to_string(),
+        status: route.redirect_status.unwrap_or(REDIRECT_DEFAULT_STATUS),
+    });
+    let static_dir = route.static_dir.as_deref().map(|d| join_root(root, d));
+    let upstream = if redirect.is_none() && static_dir.is_none() {
+        Some({
+            let upstream = resolve_upstream_of(file, route, index)?;
+            UpstreamAddr {
+                host: host_for_port(upstream.port),
+                port: upstream.port,
+            }
+        })
+    } else {
+        None
+    };
+    Ok(GatewayLocation {
+        path: route.path.clone(),
+        upstream,
+        redirect,
+        strip_prefix: route.strip_prefix.unwrap_or(false),
+        static_dir,
+        cors: route.cors.as_ref().map(GatewayCors::from),
     })
 }
 
@@ -181,16 +297,6 @@ pub(crate) fn route_invalid(index: usize, why: impl Into<String>) -> Error {
         ErrorCode::GatewayRouteInvalid,
         format!("第 {} 条路由：{}", index + 1, why.into()),
     )
-}
-
-/// host 归一化：None / 空 → None（catch-all）。
-fn normalized_host(route: &GatewayRoute) -> Option<String> {
-    route
-        .host
-        .as_deref()
-        .map(str::trim)
-        .filter(|h| !h.is_empty())
-        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -237,7 +343,7 @@ mod tests {
             "  kind: nginx\n  port: 8080\n  routes:\n    - path: /api\n      target: user-api\n    - host: api.localhost\n      path: /\n      target: user-api\n    - path: /\n      target: web\n",
         );
         let conf = file.gateway.clone().unwrap();
-        let ir = resolve(&file, &conf, &|_| "127.0.0.1".into()).unwrap();
+        let ir = resolve(&file, &conf, &|_| "127.0.0.1".into(), "C:/ws").unwrap();
         assert_eq!(ir.kind, GatewayKind::Nginx);
         assert_eq!(ir.port, 8080);
         assert_eq!(ir.groups.len(), 2);
@@ -245,8 +351,63 @@ mod tests {
         assert_eq!(ir.groups[0].host, None);
         assert_eq!(ir.groups[0].locations.len(), 2);
         assert_eq!(ir.groups[0].locations[0].path, "/api");
-        assert_eq!(ir.groups[0].locations[0].upstream.port, 8081);
+        assert_eq!(
+            ir.groups[0].locations[0].upstream.as_ref().unwrap().port,
+            8081
+        );
         assert_eq!(ir.groups[1].host.as_deref(), Some("api.localhost"));
+    }
+
+    #[test]
+    fn resolve_groups_same_host_set_regardless_of_order() {
+        // 同一域名集合（书写顺序不同）归入同一组，键为排序去重后的逗号串
+        let file = ws(
+            SERVICES,
+            "  kind: nginx\n  routes:\n    - host: \"b.localhost, a.localhost\"\n      path: /x\n      target: user-api\n    - host: \"a.localhost ,b.localhost\"\n      path: /y\n      target: web\n",
+        );
+        let conf = file.gateway.clone().unwrap();
+        let ir = resolve(&file, &conf, &|_| "127.0.0.1".into(), "").unwrap();
+        assert_eq!(ir.groups.len(), 1);
+        assert_eq!(
+            ir.groups[0].host.as_deref(),
+            Some("a.localhost, b.localhost")
+        );
+        assert_eq!(ir.groups[0].locations.len(), 2);
+    }
+
+    #[test]
+    fn resolve_redirect_static_and_proxy_locations() {
+        let file = ws(
+            SERVICES,
+            "  kind: caddy\n  routes:\n    - path: /old\n      redirect: /new\n      redirect_status: 301\n    - path: /\n      static_dir: dist\n    - path: /api\n      target: user-api\n      strip_prefix: true\n      cors:\n        origins:\n          - http://localhost:3000\n",
+        );
+        let conf = file.gateway.clone().unwrap();
+        let ir = resolve(&file, &conf, &|_| "127.0.0.1".into(), "C:/ws").unwrap();
+        let locs = &ir.groups[0].locations;
+        assert_eq!(
+            locs[0].redirect,
+            Some(GatewayRedirect {
+                to: "/new".into(),
+                status: 301,
+            })
+        );
+        assert_eq!(locs[0].upstream, None);
+        assert_eq!(locs[1].static_dir.as_deref(), Some("C:/ws/dist"));
+        assert_eq!(locs[1].upstream, None);
+        assert_eq!(locs[1].path, "/");
+        let proxy = &locs[2];
+        assert_eq!(proxy.upstream.as_ref().unwrap().port, 8081);
+        assert!(proxy.strip_prefix);
+        let cors = proxy.cors.as_ref().unwrap();
+        assert_eq!(cors.origins, vec!["http://localhost:3000".to_string()]);
+        // 缺省集补齐
+        assert_eq!(cors.methods_csv(), "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+        assert_eq!(
+            cors.headers_csv(),
+            "Origin, Content-Type, Accept, Authorization"
+        );
+        assert_eq!(cors.max_age_secs, 600);
+        assert!(!cors.credentials);
     }
 
     #[test]
@@ -256,7 +417,7 @@ mod tests {
             "  kind: nginx\n  routes:\n    - path: /\n      target: ghost\n",
         );
         let conf = file.gateway.clone().unwrap();
-        let e = resolve(&file, &conf, &|_| "127.0.0.1".into()).unwrap_err();
+        let e = resolve(&file, &conf, &|_| "127.0.0.1".into(), "").unwrap_err();
         assert_eq!(e.code(), ErrorCode::GatewayRouteInvalid);
         assert!(e.message().contains("ghost"));
     }
@@ -268,8 +429,11 @@ mod tests {
             "  kind: caddy\n  routes:\n    - path: /x\n      upstream: 127.0.0.1:9000\n",
         );
         let conf = file.gateway.clone().unwrap();
-        let ir = resolve(&file, &conf, &|_| "127.0.0.1".into()).unwrap();
-        assert_eq!(ir.groups[0].locations[0].upstream.port, 9000);
+        let ir = resolve(&file, &conf, &|_| "127.0.0.1".into(), "").unwrap();
+        assert_eq!(
+            ir.groups[0].locations[0].upstream.as_ref().unwrap().port,
+            9000
+        );
     }
 
     #[test]
@@ -277,7 +441,7 @@ mod tests {
         let file = ws(SERVICES, "  enabled: false\n");
         let conf = file.gateway.clone().unwrap();
         assert_eq!(
-            resolve(&file, &conf, &|_| "127.0.0.1".into())
+            resolve(&file, &conf, &|_| "127.0.0.1".into(), "")
                 .unwrap_err()
                 .code(),
             ErrorCode::GatewayNotConfigured

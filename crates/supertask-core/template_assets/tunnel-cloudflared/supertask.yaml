@@ -1,0 +1,19 @@
+# SuperTask 官方模板：Cloudflare Tunnel 快速隧道
+# quick tunnel 零凭据；运行后在「运行 → 日志」查看分配的临时公网 URL。
+# 目标端口指向本机任意已监听端口（可以是其他 SuperTask 工作区的服务）。
+version: 1
+kind: workspace
+name: tunnel-cloudflared
+description: cloudflared quick tunnel，转发到本机 {{target_port}} 端口
+root: "."
+services:
+  tunnel:
+    kind: generic
+    program: cloudflared
+    args:
+      - tunnel
+      - --url
+      - http://127.0.0.1:{{target_port}}
+    restart: on-failure
+    health:
+      type: none

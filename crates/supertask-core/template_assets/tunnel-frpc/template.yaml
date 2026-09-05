@@ -1,0 +1,27 @@
+# 内置模板清单：frp 客户端 frpc（ROADMAP 方向四·隧道纳管）
+# 自建/第三方 frps 场景；auth.token 经 .env.frp（env_file）注入，
+# 由 frp 的 {{ .Envs.FRP_TOKEN }} 配置模板引用，不写死在 frpc.toml。
+id: tunnel-frpc
+version: "1"
+name: frp 客户端（frpc）
+description: "frpc：把本机端口经 frps 服务器暴露到远端端口。auth.token 走 .env.frp 环境变量注入。需本机已安装 frpc（frp ≥ 0.52）。"
+stacks:
+  - tunnel
+files:
+  - supertask.yaml
+  - frpc.toml
+  - .env.frp
+  - README.md
+params:
+  - key: frp_server_addr
+    label: frps 服务器地址（如 tunnel.example.com）
+    required: true
+  - key: frp_server_port
+    label: frps 服务器端口（默认 7000）
+    required: true
+  - key: frp_remote_port
+    label: 远端暴露端口（frps 上的公网端口，如 18080）
+    required: true
+  - key: target_port
+    label: 目标服务端口（本机已监听的端口，如 5173）
+    required: true

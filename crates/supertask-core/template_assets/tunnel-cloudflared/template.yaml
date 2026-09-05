@@ -1,0 +1,16 @@
+# 内置模板清单：Cloudflare Tunnel 快速隧道（ROADMAP 方向四·隧道纳管）
+# quick tunnel 零凭据；把本机已监听端口暴露为临时公网 URL。
+# 不自研隧道协议：cloudflared 以 kind: generic 服务纳管，复用统一启停/日志/崩溃通知。
+id: tunnel-cloudflared
+version: "1"
+name: Cloudflare Tunnel（快速隧道）
+description: "cloudflared quick tunnel：把本机端口暴露为临时公网 URL（*.trycloudflare.com），零凭据。启动后在运行页查看 tunnel 日志获取分配的 URL。需本机已安装 cloudflared。"
+stacks:
+  - tunnel
+files:
+  - supertask.yaml
+  - README.md
+params:
+  - key: target_port
+    label: 目标服务端口（本机已监听的端口，如 5173）
+    required: true

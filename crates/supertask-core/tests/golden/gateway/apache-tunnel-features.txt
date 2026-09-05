@@ -8,8 +8,7 @@ ErrorLog "C:/ws/.supertask/gateway/httpd-error.log"
 LogLevel warn
 CustomLog "C:/ws/.supertask/gateway/httpd-access.log" common
 
-LoadModule mpm_event_module "C:/xampp/apache/modules/mod_mpm_event.so"
-LoadModule unixd_module "C:/xampp/apache/modules/mod_unixd.so"
+LoadModule mpm_winnt_module "C:/xampp/apache/modules/mod_mpm_winnt.so"
 LoadModule authz_core_module "C:/xampp/apache/modules/mod_authz_core.so"
 LoadModule log_config_module "C:/xampp/apache/modules/mod_log_config.so"
 LoadModule alias_module "C:/xampp/apache/modules/mod_alias.so"
@@ -27,14 +26,31 @@ ProxyPreserveHost On
 
 <VirtualHost 127.0.0.1:8080>
     ServerName api.localhost
+    ServerAlias api2.localhost
 
-    ProxyPass / http://127.0.0.1:8081/ upgrade=websocket
-    ProxyPassReverse / http://127.0.0.1:8081/
+    <Location "/api">
+        SetEnvIf Origin "^(http://app\.dev:3000|http://app\.dev:5173)$" CORS_ORIGIN_0=$1
+        Header always set Access-Control-Allow-Origin "%{CORS_ORIGIN_0}e" env=CORS_ORIGIN_0
+        Header always set Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS" env=CORS_ORIGIN_0
+        Header always set Access-Control-Allow-Headers "Origin, Content-Type, Accept, Authorization" env=CORS_ORIGIN_0
+        Header always set Access-Control-Max-Age "600" env=CORS_ORIGIN_0
+        Header always set Access-Control-Allow-Credentials "true" env=CORS_ORIGIN_0
+    </Location>
+    RewriteEngine On
+    RewriteCond %{REQUEST_METHOD} =OPTIONS
+    RewriteCond %{ENV:CORS_ORIGIN_0} !^$
+    RewriteRule ^/api(/.*)?$ - [R=204,L]
+
+    ProxyPass /api http://127.0.0.1:8081/ upgrade=websocket
+    ProxyPassReverse /api http://127.0.0.1:8081/
 </VirtualHost>
 
 <VirtualHost 127.0.0.1:8080>
     ServerName localhost
 
-    ProxyPass / http://127.0.0.1:5173/ upgrade=websocket
-    ProxyPassReverse / http://127.0.0.1:5173/
+    DocumentRoot "C:/ws/web/dist"
+    <Directory "C:/ws/web/dist">
+        Require all granted
+    </Directory>
+    Redirect 308 /old /new
 </VirtualHost>

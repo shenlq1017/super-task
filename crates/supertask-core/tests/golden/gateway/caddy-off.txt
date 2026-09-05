@@ -9,7 +9,7 @@ http://localhost:8443 {
 	handle @r0 {
 		reverse_proxy http://127.0.0.1:8081
 	}
-	handle {
+	handle @r1 {
 		reverse_proxy http://127.0.0.1:5173
 	}
 }

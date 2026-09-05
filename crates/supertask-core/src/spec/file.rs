@@ -193,8 +193,31 @@ pub enum GatewayTls {
     Internal,
 }
 
-/// 单条路由：host（None/空 = 全匹配 catch-all）+ path 前缀 → target 服务 id
-/// 或显式 upstream（互斥，恰一）。
+/// route 级 CORS（方向四，仅代理路由）。`origins` 必填：`*` 或
+/// `http(s)://host[:port]`（不可与其他项混用 `*`）；methods/headers 缺省取
+/// 常规开发集；credentials=true 时拒绝 `*`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayCorsSpec {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub methods: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<bool>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+/// 单条路由（方向四起共三种形态，恰选其一）：
+/// - 代理：`target`/`upstream` 二选一（可带 `strip_prefix` 剥前缀、`cors`）；
+/// - 重定向：`redirect` 目标（`/path` 或 `http(s)://…`），可选 `redirect_status`
+///   （301/302/307/308，缺省 302）；
+/// - 静态站点：`static_dir`（工作区内相对目录，`path` 必须为 `/`）。
+/// `host` 支持逗号分隔多域名别名（空 = 全匹配 catch-all）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatewayRoute {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,6 +227,16 @@ pub struct GatewayRoute {
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strip_prefix: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cors: Option<GatewayCorsSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub static_dir: Option<String>,
     #[serde(default, flatten)]
     pub extra: IndexMap<String, Value>,
 }

@@ -2,7 +2,10 @@
 //!
 //! 关键行为：`daemon off` 前台运行（进程树托管必需）；空 host 组 =
 //! `default_server`；无 catch-all 组时输出 404 兜底 server；WebSocket
-//! 升级头透传（Vite HMR 可用）。
+//! 升级头透传（Vite HMR 可用）；CORS 用 `map $http_origin` 白名单回显
+//! （origin 未命中时不发头），preflight OPTIONS 本地 204；`strip_prefix`
+//! 用带尾斜杠的 proxy_pass（nginx 前缀替换语义）；静态路由 `root` +
+//! `try_files`。
 
 use crate::gateway::model::ResolvedGateway;
 
@@ -27,7 +30,36 @@ pub fn render_nginx(ir: &ResolvedGateway, dir: &str) -> String {
     out.push_str("    map $http_upgrade $connection_upgrade {\n");
     out.push_str("        default upgrade;\n");
     out.push_str("        ''      close;\n");
-    out.push_str("    }\n\n");
+    out.push_str("    }\n");
+
+    // CORS 白名单 map（origin 命中 → 回显，未命中 → 空串，add_header 空值不发送）。
+    // 变量编号与 server/location 渲染顺序一致（同一 sorted_locations 迭代）。
+    let mut cors_idx = 0usize;
+    let mut maps: Vec<String> = Vec::new();
+    for group in &ir.groups {
+        for loc in sorted_locations(&group.locations) {
+            if let Some(cors) = &loc.cors {
+                if !is_wildcard(cors) {
+                    let mut m = String::new();
+                    m.push_str(&format!("    map $http_origin $cors{cors_idx} {{\n"));
+                    m.push_str("        default \"\";\n");
+                    for o in &cors.origins {
+                        m.push_str(&format!("        \"{o}\" \"{o}\";\n"));
+                    }
+                    m.push_str("    }\n");
+                    maps.push(m);
+                }
+                cors_idx += 1;
+            }
+        }
+    }
+    for m in &maps {
+        out.push('\n');
+        out.push_str(m);
+    }
+    if maps.is_empty() {
+        out.push('\n');
+    }
 
     let catch_all = ir.groups.iter().find(|g| g.host.is_none());
     if catch_all.is_none() {
@@ -38,12 +70,16 @@ pub fn render_nginx(ir: &ResolvedGateway, dir: &str) -> String {
         out.push_str("        return 404;\n");
         out.push_str("    }\n\n");
     }
+    // 与 map 收集遍历同序，重新从 0 编号
+    let mut cors_idx = 0usize;
     for group in &ir.groups {
         out.push_str("    server {\n");
         match &group.host {
             Some(host) => {
                 out.push_str(&format!("        listen {listen};\n"));
-                out.push_str(&format!("        server_name {host};\n"));
+                // 多域名别名：server_name 以空格分隔
+                let names = host.split(", ").collect::<Vec<_>>().join(" ");
+                out.push_str(&format!("        server_name {names};\n"));
             }
             None => {
                 out.push_str(&format!("        listen {listen} default_server;\n"));
@@ -53,7 +89,43 @@ pub fn render_nginx(ir: &ResolvedGateway, dir: &str) -> String {
         out.push('\n');
         for loc in sorted_locations(&group.locations) {
             out.push_str(&format!("        location {} {{\n", loc.path));
-            out.push_str(&format!("            proxy_pass {};\n", loc.upstream.url()));
+            if let Some(rd) = &loc.redirect {
+                out.push_str(&format!("            return {} {};\n", rd.status, rd.to));
+                out.push_str("        }\n");
+                continue;
+            }
+            if let Some(d) = &loc.static_dir {
+                out.push_str(&format!("            root \"{}\";\n", posix(d)));
+                out.push_str("            index index.html;\n");
+                out.push_str("            try_files $uri $uri/ =404;\n");
+                out.push_str("        }\n");
+                continue;
+            }
+            if let Some(cors) = &loc.cors {
+                let origin = if is_wildcard(cors) {
+                    "\"*\"".to_string()
+                } else {
+                    format!("$cors{cors_idx}")
+                };
+                cors_idx += 1;
+                push_cors_headers(&mut out, &origin, cors, 3);
+                out.push_str("            if ($request_method = OPTIONS) {\n");
+                push_cors_headers(&mut out, &origin, cors, 4);
+                out.push_str("                return 204;\n");
+                out.push_str("            }\n");
+            }
+            let url = match &loc.upstream {
+                Some(u) => {
+                    // strip_prefix：proxy_pass 带尾斜杠 URI → nginx 剥 location 前缀
+                    if loc.strip_prefix {
+                        format!("{}/", u.url())
+                    } else {
+                        u.url()
+                    }
+                }
+                None => continue,
+            };
+            out.push_str(&format!("            proxy_pass {url};\n"));
             out.push_str("            proxy_http_version 1.1;\n");
             out.push_str("            proxy_set_header Host $host;\n");
             out.push_str("            proxy_set_header X-Real-IP $remote_addr;\n");
@@ -71,6 +143,40 @@ pub fn render_nginx(ir: &ResolvedGateway, dir: &str) -> String {
     out
 }
 
+fn is_wildcard(cors: &crate::gateway::model::GatewayCors) -> bool {
+    cors.origins.len() == 1 && cors.origins[0] == "*"
+}
+
+/// 一组 Access-Control add_header（缩进按层级：3 = location 内，4 = if 内）。
+fn push_cors_headers(
+    out: &mut String,
+    origin_expr: &str,
+    cors: &crate::gateway::model::GatewayCors,
+    level: usize,
+) {
+    let pad = "    ".repeat(level);
+    out.push_str(&format!(
+        "{pad}add_header Access-Control-Allow-Origin {origin_expr} always;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}add_header Access-Control-Allow-Methods \"{}\" always;\n",
+        cors.methods_csv()
+    ));
+    out.push_str(&format!(
+        "{pad}add_header Access-Control-Allow-Headers \"{}\" always;\n",
+        cors.headers_csv()
+    ));
+    out.push_str(&format!(
+        "{pad}add_header Access-Control-Max-Age \"{}\" always;\n",
+        cors.max_age_secs
+    ));
+    if cors.credentials {
+        out.push_str(&format!(
+            "{pad}add_header Access-Control-Allow-Credentials \"true\" always;\n"
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,7 +187,7 @@ mod tests {
         let text = format!("version: 1\nservices:\n{services}\ngateway:\n{gateway_yaml}");
         let (f, _) = parse_yaml(&text).unwrap();
         let conf = f.gateway.clone().unwrap();
-        resolve(&f, &conf, &|_| "127.0.0.1".into()).unwrap()
+        resolve(&f, &conf, &|_| "127.0.0.1".into(), "C:/ws").unwrap()
     }
 
     const SERVICES: &str = "  user-api:\n    kind: spring-boot\n    module: api\n    port: 8081\n  web:\n    kind: node\n    dir: web\n    port: 5173\n";
@@ -140,15 +246,44 @@ mod tests {
     }
 
     #[test]
+    fn golden_nginx_tunnel_features() {
+        // 多域名别名 + 重定向 + 静态站点 + strip_prefix + CORS（显式 origin）
+        let ir = ir_of(
+            "  kind: nginx\n  port: 8080\n  routes:\n    - host: \"api.localhost, api2.localhost\"\n      path: /api\n      target: user-api\n      strip_prefix: true\n      cors:\n        origins:\n          - http://localhost:3000\n          - http://localhost:5173\n    - path: /\n      static_dir: dist\n    - path: /old\n      redirect: /new\n      redirect_status: 301\n",
+            SERVICES,
+        );
+        let text = render_nginx(&ir, "C:/ws/.supertask/gateway");
+        golden("nginx-tunnel-features.txt", &text);
+        assert!(text.contains("server_name api.localhost api2.localhost;"));
+        assert!(text.contains("proxy_pass http://127.0.0.1:8081/;"));
+        assert!(text.contains("return 301 /new;"));
+        assert!(text.contains("root \"C:/ws/dist\";"));
+        assert!(text.contains("map $http_origin $cors0 {"));
+        assert_eq!(text.matches("return 204;").count(), 1);
+    }
+
+    #[test]
+    fn golden_nginx_cors_wildcard() {
+        let ir = ir_of(
+            "  kind: nginx\n  routes:\n    - path: /api\n      target: user-api\n      cors:\n        origins:\n          - \"*\"\n",
+            SERVICES,
+        );
+        let text = render_nginx(&ir, "C:/ws/.supertask/gateway");
+        golden("nginx-cors-wildcard.txt", &text);
+        assert!(text.contains("add_header Access-Control-Allow-Origin \"*\" always;"));
+        assert!(!text.contains("map $http_origin"));
+    }
+
+    #[test]
     fn nginx_ipv6_upstream_rendered_with_brackets() {
         let mut ir = ir_of(
             "  kind: nginx\n  port: 8080\n  routes:\n    - path: /\n      target: web\n",
             SERVICES,
         );
-        ir.groups[0].locations[0].upstream = UpstreamAddr {
+        ir.groups[0].locations[0].upstream = Some(UpstreamAddr {
             host: "[::1]".into(),
             port: 5173,
-        };
+        });
         let text = render_nginx(&ir, "/ws/.supertask/gateway");
         assert!(text.contains("proxy_pass http://[::1]:5173;"), "{text}");
     }

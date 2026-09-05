@@ -315,7 +315,7 @@ mod tests {
         );
         let (f, _) = crate::spec::parse_yaml(&text).unwrap();
         let conf = f.gateway.clone().unwrap();
-        crate::gateway::model::resolve(&f, &conf, &|_| "127.0.0.1".into()).unwrap()
+        crate::gateway::model::resolve(&f, &conf, &|_| "127.0.0.1".into(), "").unwrap()
     }
 
     #[test]

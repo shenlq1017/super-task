@@ -4,8 +4,12 @@
 //! `tls internal` → 站点地址 `https://…` + 块内 `tls internal`；路由用命名
 //! matcher + `handle`（同站点互斥），按最长前缀声明；空 host 组用
 //! `localhost` 站点地址（浏览器对 `*.localhost` 内建直连 127.0.0.1）。
+//! 方向四扩展：多域名别名（逗号分隔站点地址）；重定向用块级 `redir`；
+//! 静态站点用 `root *` + `file_server`；`strip_prefix` 用 `uri strip_prefix`；
+//! CORS 用 `header_regexp` 白名单回显 Origin + preflight OPTIONS 本地 204
+//! （`reverse_proxy` 原生支持 WebSocket 升级）。
 
-use crate::gateway::model::ResolvedGateway;
+use crate::gateway::model::{GatewayCors, ResolvedGateway};
 
 use super::{has_root, sorted_locations};
 
@@ -23,7 +27,11 @@ pub fn render_caddy(ir: &ResolvedGateway) -> String {
     out.push_str("{\n\tadmin off\n}\n\n");
     for group in &ir.groups {
         let site = match &group.host {
-            Some(host) => format!("{scheme}://{host}:{}", ir.port),
+            Some(host) => host
+                .split(", ")
+                .map(|h| format!("{scheme}://{h}:{}", ir.port))
+                .collect::<Vec<_>>()
+                .join(", "),
             None => format!("{scheme}://localhost:{}", ir.port),
         };
         out.push_str(&format!("{site} {{\n"));
@@ -32,17 +40,60 @@ pub fn render_caddy(ir: &ResolvedGateway) -> String {
         }
         let has_root_route = has_root(&group.locations);
         for (i, loc) in sorted_locations(&group.locations).iter().enumerate() {
-            if loc.path == "/" {
-                // 根路由 = 站点 catch-all handle
+            // 根路径 = 站点 catch-all：不用 path matcher（裸 handle / 裸 redir）
+            let at_root = loc.path == "/";
+            if let Some(rd) = &loc.redirect {
+                if at_root {
+                    out.push_str(&format!("\tredir {} {}\n", rd.to, rd.status));
+                } else {
+                    out.push_str(&format!("\t@r{i} path {p} {p}/*\n", p = loc.path));
+                    out.push_str(&format!("\tredir @r{i} {} {}\n", rd.to, rd.status));
+                }
+                continue;
+            }
+            if let Some(d) = &loc.static_dir {
+                // 静态站点（path=/）：root + file_server（裸 handle = 站点兜底）
                 out.push_str("\thandle {\n");
-                out.push_str(&format!("\t\treverse_proxy {}\n", loc.upstream.url()));
+                out.push_str(&format!("\t\troot * {}\n", caddy_path(d)));
+                out.push_str("\t\tfile_server\n");
                 out.push_str("\t}\n");
                 continue;
             }
-            out.push_str(&format!("\t@r{i} path {p} {p}/*\n", p = loc.path));
-            out.push_str(&format!("\thandle @r{i} {{\n"));
-            out.push_str(&format!("\t\treverse_proxy {}\n", loc.upstream.url()));
-            out.push_str("\t}\n");
+            let Some(upstream) = &loc.upstream else {
+                continue;
+            };
+            if !at_root {
+                out.push_str(&format!("\t@r{i} path {p} {p}/*\n", p = loc.path));
+            }
+            match &loc.cors {
+                Some(cors) if is_wildcard(cors) => {
+                    out.push_str("\thandle {\n");
+                    push_cors_headers(&mut out, cors, "\"*\"", 2);
+                    push_preflight(&mut out, i, 2);
+                    push_proxy(&mut out, upstream, loc.strip_prefix, &loc.path, 2);
+                    out.push_str("\t}\n");
+                }
+                Some(cors) => {
+                    out.push_str(&format!(
+                        "\t@r{i}cors header_regexp Origin {}\n",
+                        origins_regex(cors)
+                    ));
+                    out.push_str(&format!("\thandle @r{i}cors {{\n"));
+                    push_cors_headers(&mut out, cors, "\"{http.request.header.Origin}\"", 2);
+                    push_preflight(&mut out, i, 2);
+                    push_proxy(&mut out, upstream, loc.strip_prefix, &loc.path, 2);
+                    out.push_str("\t}\n");
+                    // 未命中白名单的请求（含无 Origin 的普通请求）原样代理
+                    out.push_str(&format!("\thandle @r{i} {{\n"));
+                    push_proxy(&mut out, upstream, loc.strip_prefix, &loc.path, 2);
+                    out.push_str("\t}\n");
+                }
+                None => {
+                    out.push_str(&format!("\thandle @r{i} {{\n"));
+                    push_proxy(&mut out, upstream, loc.strip_prefix, &loc.path, 2);
+                    out.push_str("\t}\n");
+                }
+            }
         }
         if !has_root_route {
             out.push_str("\thandle {\n\t\trespond \"Not Found\" 404\n\t}\n");
@@ -51,6 +102,91 @@ pub fn render_caddy(ir: &ResolvedGateway) -> String {
     }
     let trimmed = out.trim_end_matches('\n');
     format!("{trimmed}\n")
+}
+
+fn is_wildcard(cors: &GatewayCors) -> bool {
+    cors.origins.len() == 1 && cors.origins[0] == "*"
+}
+
+/// CORS 头（header 指令先于 reverse_proxy/ respondents 执行）。
+/// origin：`"*"` 或白名单回显占位符 `{http.request.header.Origin}`。
+fn push_cors_headers(out: &mut String, cors: &GatewayCors, origin: &str, level: usize) {
+    let pad = "\t".repeat(level);
+    out.push_str(&format!(
+        "{pad}header Access-Control-Allow-Origin {origin}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}header Access-Control-Allow-Methods \"{}\"\n",
+        cors.methods_csv()
+    ));
+    out.push_str(&format!(
+        "{pad}header Access-Control-Allow-Headers \"{}\"\n",
+        cors.headers_csv()
+    ));
+    out.push_str(&format!(
+        "{pad}header Access-Control-Max-Age \"{}\"\n",
+        cors.max_age_secs
+    ));
+    if cors.credentials {
+        out.push_str(&format!(
+            "{pad}header Access-Control-Allow-Credentials \"true\"\n"
+        ));
+    }
+}
+
+/// preflight：OPTIONS 且 Origin 命中时本地 204（respond 终止，不转发上游）。
+fn push_preflight(out: &mut String, i: usize, level: usize) {
+    let pad = "\t".repeat(level);
+    out.push_str(&format!("{pad}@r{i}pre method OPTIONS\n"));
+    out.push_str(&format!("{pad}handle @r{i}pre {{\n"));
+    out.push_str(&format!("{pad}\trespond 204\n"));
+    out.push_str(&format!("{pad}}}\n"));
+}
+
+fn push_proxy(
+    out: &mut String,
+    upstream: &crate::gateway::model::UpstreamAddr,
+    strip_prefix: bool,
+    path: &str,
+    level: usize,
+) {
+    let pad = "\t".repeat(level);
+    if strip_prefix {
+        // strip_prefix 后剩余为空时 Caddy 以 / 处理
+        out.push_str(&format!("{pad}uri strip_prefix {path}\n"));
+    }
+    out.push_str(&format!("{pad}reverse_proxy {}\n", upstream.url()));
+}
+
+/// Caddyfile 路径 token：正斜杠；含空白时加引号。
+fn caddy_path(p: &str) -> String {
+    let p = p.replace('\\', "/");
+    if p.chars().any(char::is_whitespace) {
+        format!("\"{p}\"")
+    } else {
+        p
+    }
+}
+
+/// origin 白名单 → Go 正则交替（每个 origin 完整锚定，特殊字符转义）。
+fn origins_regex(cors: &GatewayCors) -> String {
+    let alts: Vec<String> = cors.origins.iter().map(|o| regex_escape(o)).collect();
+    format!("^({})$", alts.join("|"))
+}
+
+/// Go 正则元字符转义（origin 里的 . : / 等按字面匹配）。
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(
+            c,
+            '.' | '^' | '$' | '|' | '(' | ')' | '[' | ']' | '{' | '}' | '*' | '+' | '?' | '\\'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -63,7 +199,7 @@ mod tests {
         let text = format!("version: 1\nservices:\n{services}\ngateway:\n{gateway_yaml}");
         let (f, _) = parse_yaml(&text).unwrap();
         let conf = f.gateway.clone().unwrap();
-        resolve(&f, &conf, &|_| "127.0.0.1".into()).unwrap()
+        resolve(&f, &conf, &|_| "127.0.0.1".into(), "C:/ws").unwrap()
     }
 
     const SERVICES: &str = "  user-api:\n    kind: spring-boot\n    module: api\n    port: 8081\n  web:\n    kind: node\n    dir: web\n    port: 5173\n";
@@ -110,5 +246,43 @@ mod tests {
         );
         let text = render_caddy(&ir);
         assert!(text.contains("respond \"Not Found\" 404"), "{text}");
+    }
+
+    #[test]
+    fn golden_caddy_tunnel_features() {
+        // 多域名 + strip_prefix + CORS 显式 origin（含点号，检验正则转义）+ 静态站点 + 重定向
+        let ir = ir_of(
+            "  kind: caddy\n  port: 8080\n  routes:\n    - host: \"api.localhost, api2.localhost\"\n      path: /api\n      target: user-api\n      strip_prefix: true\n      cors:\n        origins:\n          - http://app.dev:3000\n          - http://app.dev:5173\n        credentials: true\n    - path: /\n      static_dir: dist\n    - path: /old\n      redirect: /new\n",
+            SERVICES,
+        );
+        let text = render_caddy(&ir);
+        golden("caddy-tunnel-features.txt", &text);
+        assert!(text.contains("http://api.localhost:8080, http://api2.localhost:8080 {"));
+        assert!(text.contains("uri strip_prefix /api"));
+        assert!(
+            text.contains("header_regexp Origin ^(http://app\\.dev:3000|http://app\\.dev:5173)$"),
+            "{text}"
+        );
+        assert!(text.contains("respond 204"));
+        assert!(text.contains("root * C:/ws/dist"));
+        assert!(text.contains("file_server"));
+        assert!(text.contains("redir @r0 /new 302"));
+    }
+
+    #[test]
+    fn caddy_cors_wildcard_single_handle() {
+        let ir = ir_of(
+            "  kind: caddy\n  routes:\n    - path: /api\n      target: user-api\n      cors:\n        origins:\n          - \"*\"\n",
+            SERVICES,
+        );
+        let text = render_caddy(&ir);
+        assert!(
+            text.contains("header Access-Control-Allow-Origin \"*\""),
+            "{text}"
+        );
+        assert!(
+            !text.contains("header_regexp"),
+            "通配不需要白名单 matcher：{text}"
+        );
     }
 }

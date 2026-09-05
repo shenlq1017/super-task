@@ -2721,6 +2721,11 @@ impl Engine {
                 path: r.path.clone(),
                 target: r.target.clone(),
                 upstream: r.upstream.clone(),
+                strip_prefix: r.strip_prefix,
+                cors: r.cors.clone(),
+                redirect: r.redirect.clone(),
+                redirect_status: r.redirect_status,
+                static_dir: r.static_dir.clone(),
                 target_port,
                 upstream_alive: alive,
             });
@@ -2772,7 +2777,12 @@ impl Engine {
                 })?,
         };
         crate::gateway::ensure_static(&spec, &conf)?;
-        let ir = crate::gateway::model::resolve(&spec, &conf, &|_| "127.0.0.1".into())?;
+        let ir = crate::gateway::model::resolve(
+            &spec,
+            &conf,
+            &|_| "127.0.0.1".into(),
+            &root.to_string_lossy(),
+        )?;
         let dir = crate::gateway::validate::gateway_dir(&root);
         let (name, content) =
             crate::gateway::render::render_conf(&ir, &dir.to_string_lossy(), "modules")?;
@@ -2823,7 +2833,12 @@ impl Engine {
                 })
             }
         };
-        let mut ir = crate::gateway::model::resolve(&spec, &conf, &loopback_host_for)?;
+        let mut ir = crate::gateway::model::resolve(
+            &spec,
+            &conf,
+            &loopback_host_for,
+            &root.to_string_lossy(),
+        )?;
         ir.apache_modules_dir = apache_modules_dir_of(&bin);
         match crate::gateway::validate::validate_gateway(&root, &ir, &bin, self.validator.as_ref())
         {
@@ -2857,7 +2872,12 @@ impl Engine {
         crate::gateway::ensure_static(&spec, &conf)?;
         let kind = conf.kind.expect("kind checked");
         let bin = crate::gateway::probe::resolve_gateway_bin(kind, conf.bin.as_deref())?;
-        let mut ir = crate::gateway::model::resolve(&spec, &conf, &loopback_host_for)?;
+        let mut ir = crate::gateway::model::resolve(
+            &spec,
+            &conf,
+            &loopback_host_for,
+            &root.to_string_lossy(),
+        )?;
         ir.apache_modules_dir = apache_modules_dir_of(&bin);
         let conf_path =
             crate::gateway::validate::validate_gateway(&root, &ir, &bin, self.validator.as_ref())?;
@@ -6777,6 +6797,11 @@ services:
             path: "/".into(),
             target: Some("api".into()),
             upstream: None,
+            strip_prefix: None,
+            cors: None,
+            redirect: None,
+            redirect_status: None,
+            static_dir: None,
             extra: Default::default(),
         });
         let e = eng.gateway_apply(new_conf.clone(), "deadbeef").unwrap_err();

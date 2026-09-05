@@ -1,0 +1,20 @@
+# SuperTask 官方模板：Cloudflare Tunnel 命名隧道
+# token 只经 .env.tunnel（env_file）注入进程环境，不写进 supertask.yaml。
+# 填好 .env.tunnel 后启动；固定公网 URL 在 Cloudflare 控制台的隧道配置里。
+version: 1
+kind: workspace
+name: tunnel-cloudflared-token
+description: cloudflared 命名隧道（token 经 env_file 注入，固定域名）
+root: "."
+services:
+  tunnel:
+    kind: generic
+    program: cloudflared
+    args:
+      - tunnel
+      - run
+    env_file:
+      - .env.tunnel
+    restart: on-failure
+    health:
+      type: none

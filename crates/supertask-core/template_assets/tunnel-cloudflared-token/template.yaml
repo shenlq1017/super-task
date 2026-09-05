@@ -1,0 +1,12 @@
+# 内置模板清单：Cloudflare Tunnel 命名隧道（ROADMAP 方向四·隧道纳管）
+# token 走 .env.tunnel（env_file 注入），不进 supertask.yaml / 日志 / 事件。
+id: tunnel-cloudflared-token
+version: "1"
+name: Cloudflare Tunnel（命名隧道）
+description: "cloudflared 命名隧道：固定域名/固定 URL。把 Zero Trust 控制台复制的 token 填入 .env.tunnel 后启动。需本机已安装 cloudflared。"
+stacks:
+  - tunnel
+files:
+  - supertask.yaml
+  - .env.tunnel
+  - README.md

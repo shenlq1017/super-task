@@ -1,0 +1,13 @@
+# frp 客户端配置（frpc ≥ 0.52，TOML 格式）
+# 令牌经环境变量注入：frp 配置文件支持 Go 模板渲染，{{ .Envs.FRP_TOKEN }}
+# 在 frpc 读取时被替换为进程环境变量 FRP_TOKEN 的值（由 SuperTask env_file 注入）。
+serverAddr = "{{frp_server_addr}}"
+serverPort = {{frp_server_port}}
+
+[[proxies]]
+name = "supertask-tunnel"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = {{target_port}}
+remotePort = {{frp_remote_port}}
+auth.token = "{{ .Envs.FRP_TOKEN }}"
