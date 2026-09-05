@@ -845,6 +845,7 @@ const zhCN = {
       opening: "打开中…",
       dependsOn: "依赖 {{deps}}",
       noDeps: "无依赖",
+      restartAttempt: "自动重启 · 第 {{n}} 次",
       externalTitle: "外部进程：非 SuperTask 启动，仅监控，停止将 taskkill 整棵树",
       externalShort: "外部",
       externalMonitor: "外部 · 仅监控",

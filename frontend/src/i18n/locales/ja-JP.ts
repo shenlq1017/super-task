@@ -1261,6 +1261,7 @@ const jaJP = {
       opening: "開いています…",
       dependsOn: "{{deps}} に依存",
       noDeps: "依存なし",
+      restartAttempt: "自動再起動 · {{n}} 回目",
       externalTitle: "外部プロセス：SuperTask 以外が起動、監視のみ。停止時はツリー全体を taskkill",
       externalShort: "外部",
       externalMonitor: "外部 · 監視のみ",

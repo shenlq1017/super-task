@@ -394,16 +394,30 @@ function ServiceCard({
   const depsText = spec?.depends_on?.length
     ? t("pages.run.dependsOn", { deps: spec.depends_on.join(", ") })
     : t("pages.run.noDeps");
-  const foot = svc.last_error
-    ? <span className="block truncate text-[11px] text-[var(--st-danger)]" title={svc.last_error}>⚠ {svc.last_error}</span>
-    : <span className="flex min-w-0 items-center gap-1 text-[11px] text-[var(--t3)]">
+  // 2.2 restart：退避等待/自动重启进行中，或当前实例由第 n 次自动重启拉起
+  const restartBadge = svc.restart_attempt != null && (
+    <span
+      className="block h-5 shrink-0 rounded-full bg-[var(--st-warn-tint,#fff8e1)] px-1.5 font-mono text-[10px] leading-5 text-[var(--st-warn,#9a6700)]"
+      title={t("pages.run.restartAttempt", { n: svc.restart_attempt })}
+    >
+      ⟳ {t("pages.run.restartAttempt", { n: svc.restart_attempt })}
+    </span>
+  );
+  const foot = (
+    <span className="flex min-w-0 items-center gap-1 text-[11px] text-[var(--t3)]">
+      {restartBadge}
+      {svc.last_error ? (
+        <span className="block truncate text-[11px] text-[var(--st-danger)]" title={svc.last_error}>⚠ {svc.last_error}</span>
+      ) : (
         <span
           className="block h-5 max-w-full truncate rounded-full bg-[var(--surface-2)] px-1.5 font-mono text-[10px] leading-5 text-[var(--t3)]"
           title={depsText}
         >
           {depsText}
         </span>
-      </span>;
+      )}
+    </span>
+  );
 
   // Rail color follows runtime status (not selection). Selection is elevation/border only.
   const railColor =

@@ -6,6 +6,23 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### restart 策略与自动重启（方向一·服务监管）
+
+- `supertask.yaml` 服务级 `restart` 字段自 reserved 转正（2.2）：`never`（默认）/ `on-failure`
+  （意外退出且退出码 ≠ 0 时自动重启）/ `always`（意外退出即重启，含 0 正常退出）；
+  新增 `max_retries`（1..=100，缺省 5）。取值与组合非法即 `SPEC_INVALID`；
+  compose 服务不允许该字段（重启由 compose 文件自管）；不设 `unless-stopped`
+  （引擎生命周期即应用会话，会话内与 `always` 行为一致）。
+- 引擎自动重启监管（`supertask-core/src/engine.rs`）：`spawn_core` 成功后捕获最小启动计划，
+  进程意外退出后由监管线程按 1s 起指数退避（16s 封顶）原样重放——不重规划命令、不复检工具，
+  手动 `start` 仍走完整链路（重置计数）。预算耗尽后停在 Exited 并写 `last_error`
+  （自动重启 N 次后放弃）；手动停止取消待执行的重启；构建期退出不自动重建；
+  应用重启后不自动恢复监管（需手动启动）。spec 校验、运行时状态机、
+  重启循环与手动取消均有聚焦测试（引擎 2 项、spec 4 项）。
+- 运行页：自动重启退避/进行中的服务卡片显示「⟳ 自动重启 · 第 N 次」徽标；
+  `runtime.snapshot` 新增 additive 字段 `restart_attempt`（1 起，手动启动后消失），
+  `docs/spec/ipc.md` §6 同步；`docs/spec/yaml.md` §4.1 字段表更新。
+
 #### 系统监控页
 
 - 侧边栏「环境」组新增「系统监控」页（`/monitor`）：整机资源的实时面板，

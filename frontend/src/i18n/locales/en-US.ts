@@ -1261,6 +1261,7 @@ const enUS = {
       opening: "Opening…",
       dependsOn: "depends on {{deps}}",
       noDeps: "No dependencies",
+      restartAttempt: "Auto-restart · attempt {{n}}",
       externalTitle: "External process: not started by SuperTask, monitor only; stopping taskkills the whole tree",
       externalShort: "External",
       externalMonitor: "External · monitor only",
