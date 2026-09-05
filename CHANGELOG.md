@@ -6,6 +6,22 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 模板分享：导入 / 导出（方向九·长期与生态）
+
+- 模板页新增「导入模板包」：把外部模板 zip（社区分享、自建模板）装入本地模板库，
+  与内置模板共用同一套创建 / 组合 / 预览管线；包根支持「清单在根」与「单顶层目录」
+  两种形态（后者覆盖直接压缩模板目录的习惯）。
+- 本地模板卡片新增「导出」：打包为可分享 zip（包根 = `template.yaml` + 全部模板文件），
+  可直接被导入功能导回。
+- 安全口径（包是不受信输入，蓝本对齐数据快照）：条目路径禁 `..` / 隐藏段 / 反斜杠 /
+  冒号与构建产物目录段，条目 ≤ 2000 / 总字节 ≤ 64 MiB，模板 id 仅字母数字 / 连字符 /
+  下划线（≤ 64，id 即本地库目录名），清单声明 ⇄ 包内容双向一致（缺文件 / 多文件均拒），
+  staging 目录 + 原子改名、失败即清理不落半成品；与内置或现有本地同 id 拒收
+  （`TEMPLATE_ID_CONFLICT`，内置随应用分发防遮蔽）。零新增错误码。
+- 契约进 ipc.md §10.1（`templates.import` / `templates.export`）；生态扩展就绪审计
+  进 `docs/inventory/2026-09-06-ecosystem-extension-readiness.md`
+  （插件 / WSL2 / 团队基线维持路线图暂缓判定）。
+
 #### 三平台 CI 矩阵恢复与平台修复（方向八·多平台）
 
 - CI core 矩阵恢复 `windows / macos / ubuntu` 三平台：rustfmt、supertask-core /
