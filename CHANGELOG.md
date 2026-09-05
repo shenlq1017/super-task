@@ -6,6 +6,18 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 日志模式就绪判定（方向一·服务监管与自愈）
+
+- 健康判定新增 `health.type: log` 与 `health.pattern`：对服务**本次启动以来**的日志行
+  逐行做正则匹配，任一行命中即 ready（粘性保持，不因环形缓冲淘汰回退；重启后水位
+  重置重新匹配）。Spring Boot 等「日志即就绪信号」场景不再只靠 tcp 猜。
+- `pattern` 必填、≤256 字符、必须可编译，违反 → `SPEC_INVALID`（零新增错误码）；
+  只匹配服务自身日志源，不扫其他服务；detail 携带命中行片段（≤120 字符，与日志页
+  同内容面）。
+- 引擎侧：健康线程对 log 型走 LogHub 增量扫描（启动水位 = 当前 `next_seq`，天然
+  排除上一轮进程的旧日志）；`none/tcp/http` 探测路径与 restart 策略行为不变。
+- 契约进 `docs/spec/yaml.md` §4.5 与 `supertask.schema.json`；前端 spec DTO 镜像同步。
+
 #### 模板分享：导入 / 导出（方向九·长期与生态）
 
 - 模板页新增「导入模板包」：把外部模板 zip（社区分享、自建模板）装入本地模板库，
