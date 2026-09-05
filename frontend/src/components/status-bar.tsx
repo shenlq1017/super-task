@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { ChevronUp, Cpu, HardDrive, MemoryStick, Thermometer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiSystemMetrics } from "../ipc/api";
-import { TEMP_MODES, type HostMetrics, type TempMode } from "../ipc/protocol";
+import { TEMP_MODES, type HostMetrics } from "../ipc/protocol";
+import { fmtBytes, loadColor, pct, tempColor } from "@/lib/metrics";
+import { pickTempMode, useTempMode } from "@/lib/temp-mode";
 
 const POLL_MS = 3000;
 /** Fast temperature mode polls harder: the backend sampler is already resident,
@@ -11,51 +14,6 @@ const POLL_MS = 3000;
 const POLL_MS_FAST_TEMP = 1200;
 const ROTATE_MS = 2400;
 const HISTORY = 24;
-const TEMP_MODE_KEY = "supertask.statusBar.tempMode";
-
-function loadTempMode(): TempMode {
-  try {
-    const raw = window.localStorage.getItem(TEMP_MODE_KEY);
-    if (raw && (TEMP_MODES as readonly string[]).includes(raw)) return raw as TempMode;
-  } catch {
-    // Private mode / disabled storage: fall back to the default.
-  }
-  return "auto";
-}
-
-function fmtBytes(n: number | null | undefined): string {
-  if (n == null) return "\u2014";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  return v >= 100 || i <= 1
-    ? Math.round(v) + " " + units[i]
-    : v.toFixed(1) + " " + units[i];
-}
-
-function pct(used: number | null, total: number | null): number | null {
-  if (used == null || total == null || total <= 0) return null;
-  return Math.min(100, Math.max(0, (used / total) * 100));
-}
-
-/** Amber above 75%, red above 90% - same status language as services. */
-function loadColor(p: number | null): string {
-  if (p == null) return "var(--t3)";
-  if (p >= 90) return "var(--st-danger)";
-  if (p >= 75) return "var(--st-warn)";
-  return "var(--st-ok)";
-}
-
-function tempColor(c: number | null): string {
-  if (c == null) return "var(--t3)";
-  if (c >= 85) return "var(--st-danger)";
-  if (c >= 70) return "var(--st-warn)";
-  return "var(--st-ok)";
-}
 
 /** Tiny inline CPU history bars - trend without spending a whole row. */
 function Sparkline({ values }: { values: number[] }) {
@@ -130,17 +88,8 @@ export function StatusBar(props: {
   const [expanded, setExpanded] = useState(false);
   const [rotateIdx, setRotateIdx] = useState(0);
   const [paused, setPaused] = useState(false);
-  const [tempMode, setTempMode] = useState<TempMode>(loadTempMode);
+  const tempMode = useTempMode();
   const alive = useRef(true);
-
-  const pickTempMode = (mode: TempMode) => {
-    setTempMode(mode);
-    try {
-      window.localStorage.setItem(TEMP_MODE_KEY, mode);
-    } catch {
-      // Preference is cosmetic; losing persistence is not worth surfacing.
-    }
-  };
 
   useEffect(() => {
     alive.current = true;
@@ -292,6 +241,13 @@ export function StatusBar(props: {
                     ? t(`statusBar.tempModes.${tempMode}.hint`)
                     : t("statusBar.tempUnsupportedHint")}
                 </p>
+                <Link
+                  to="/monitor"
+                  onClick={() => setExpanded(false)}
+                  className="mt-2 inline-block text-[11px] font-medium text-[var(--st-accent)] hover:underline"
+                >
+                  {t("statusBar.openMonitor")} →
+                </Link>
               </section>
               <section>
                 <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3)]">

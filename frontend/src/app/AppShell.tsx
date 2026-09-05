@@ -35,6 +35,7 @@ import {
   Container,
   Cloud,
   Sparkles,
+  Activity,
 } from "lucide-react";
 
 export type ShellCtx = {
@@ -359,6 +360,7 @@ const NAV_ICONS: Record<string, React.ReactNode> = {
   git: <GitBranch className="size-4" />,
   docker: <Container className="size-4" />,
   gateway: <Globe className="size-4" />,
+  monitor: <Activity className="size-4" />,
   cloud: <Cloud className="size-4" />,
   ai: <Sparkles className="size-4" />,
 };

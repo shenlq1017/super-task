@@ -17,6 +17,7 @@ import { TemplatesPage } from "../pages/templates-page";
 import { GitPage } from "../pages/git-page";
 import { DockerPage } from "../pages/docker-page";
 import { GatewayPage } from "../pages/gateway-page";
+import { MonitorPage } from "../pages/monitor-page";
 import { CloudPage } from "../pages/cloud-page";
 import { AiPage } from "../pages/ai-page";
 import { useFeatures } from "../providers/session-provider";
@@ -35,6 +36,7 @@ const LIVE_PAGES: Record<string, ComponentType> = {
   git: GitPage,
   docker: DockerPage,
   gateway: GatewayPage,
+  monitor: MonitorPage,
   cloud: CloudPage,
   ai: AiPage,
   settings: SettingsPage,

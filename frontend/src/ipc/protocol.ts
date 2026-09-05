@@ -1155,16 +1155,31 @@ export type TempMode = "off" | "auto" | "fast";
 
 export const TEMP_MODES: readonly TempMode[] = ["off", "auto", "fast"] as const;
 
-/** `system.metrics` 输出：主机级 CPU / 内存 / 磁盘 / CPU 温度（状态栏用）。
- *  与工作区 Job 树指标不同口径；任一字段可能为 null（平台不暴露）。 */
+/** `system.metrics` 输出：主机级 CPU / 内存 / 磁盘 / CPU 温度 / 网络采样
+ *  （状态栏与「系统监控」页用）。与工作区 Job 树指标不同口径；
+ *  任一字段可能为 null（平台不暴露）；占比与速率为差分采样，首次调用为 null。 */
 export type HostMetrics = {
   cpuPercent: number | null;
+  /** 占比拆分（与 cpuPercent 同窗口）；Windows 无 Nice，恒 0。 */
+  cpuUserPercent: number | null;
+  cpuSystemPercent: number | null;
+  cpuNicePercent: number | null;
+  cpuIdlePercent: number | null;
   memoryUsedBytes: number | null;
   memoryTotalBytes: number | null;
+  memoryAvailableBytes: number | null;
+  /** Windows 为提交内存口径（Task Manager「已提交」）。 */
+  swapUsedBytes: number | null;
+  swapTotalBytes: number | null;
   diskUsedBytes: number | null;
   diskTotalBytes: number | null;
   cpuTempC: number | null;
   /** false = 本机没有可用的 CPU 温度传感器，切档位也不会有值。 */
   cpuTempSupported: boolean;
+  /** 字节/秒；首次采样无基线为 null。 */
+  netUploadBps: number | null;
+  netDownloadBps: number | null;
+  /** 本机默认路由网卡的 IPv4。 */
+  netLocalIp: string | null;
   sampledAtMs: number;
 };

@@ -1100,6 +1100,7 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         { id: "git", path: "/git", status: "live", since: "1.1" },
         { id: "docker", path: "/docker", status: "live", since: "1.3" },
         { id: "gateway", path: "/gateway", status: "live", since: "1.6" },
+        { id: "monitor", path: "/monitor", status: "live", since: "2.2" },
         { id: "cloud", path: "/cloud", status: "live", since: "2.0" },
         { id: "ai", path: "/ai", status: "live", since: "2.1" },
         { id: "settings", path: "/settings", status: "live", since: "1.0" },
@@ -1515,20 +1516,32 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   }
 
   if (command === "system.metrics") {
-    // Mock：随时间轻微波动的主机指标，便于无 Tauri 环境预览状态栏。
+    // Mock：随时间轻微波动的主机指标，便于无 Tauri 环境预览状态栏与监控页。
     const tick = Date.now() / 1000;
     const total = 32 * 1024 ** 3;
     const temp = (args as { temp?: string } | undefined)?.temp ?? "auto";
     // fast 档波动更快，用来验证高频档确实在跳数。
     const tempC = temp === "fast" ? 52 + 6 * Math.abs(Math.sin(tick / 2)) : 52 + 6 * Math.abs(Math.sin(tick / 13));
+    const cpu = 18 + 12 * Math.abs(Math.sin(tick / 7));
+    const idle = 100 - cpu;
     return {
-      cpuPercent: 18 + 12 * Math.abs(Math.sin(tick / 7)),
+      cpuPercent: cpu,
+      cpuUserPercent: cpu * 0.62,
+      cpuSystemPercent: cpu * 0.38,
+      cpuNicePercent: 0,
+      cpuIdlePercent: idle,
       memoryUsedBytes: Math.round(total * (0.44 + 0.06 * Math.sin(tick / 11))),
       memoryTotalBytes: total,
+      memoryAvailableBytes: Math.round(total * (0.5 - 0.06 * Math.sin(tick / 11))),
+      swapUsedBytes: 0,
+      swapTotalBytes: 0,
       diskUsedBytes: Math.round(931 * 1024 ** 3 * 0.62),
       diskTotalBytes: 931 * 1024 ** 3,
       cpuTempC: temp === "off" ? null : tempC,
       cpuTempSupported: true,
+      netUploadBps: 4096 * (1 + Math.abs(Math.sin(tick / 5))),
+      netDownloadBps: 12 * 1024 * (1 + Math.abs(Math.sin(tick / 3))),
+      netLocalIp: "192.168.1.10",
       sampledAtMs: Date.now(),
     };
   }

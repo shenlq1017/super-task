@@ -4,6 +4,27 @@ All notable changes to SuperTask are documented here.
 
 ## [Unreleased]
 
+### Features
+
+#### 系统监控页
+
+- 侧边栏「环境」组新增「系统监控」页（`/monitor`）：整机资源的实时面板，
+  五张卡片对齐经典监控面板样式——CPU 负载（绿→黄→红渐变半圆仪表盘 + 指针 + 大号百分比 +
+  系统/用户/Nice/闲置四格占比）、CPU 使用率历史（1 Hz 滚动面积图，仅页面打开期间累积，约 2 分钟窗口）、
+  内存（进度条 + 已用/总量 + 压力/可用/交换空间）、存储（进度条 + 已用/总量）、
+  网络（本机 IPv4 + 上传/下载速率）。深浅色与六色板自动适配，取不到的字段显示「—」。
+- `system.metrics` 主机采样扩展（`supertask-core/src/host_metrics.rs`）：
+  新增 CPU 四分占比（Windows 走 `GetSystemTimes` 拆分，Nice 恒 0；Linux 解析 `/proc/stat`）、
+  内存可用量与交换空间（Windows 为提交内存口径，Linux 读 `/proc/meminfo` SwapTotal/SwapFree）、
+  网络上传下载速率（字节/秒，差分按经过时间归一：Windows `GetIfTable2` 排除 loopback，
+  Linux `/proc/net/dev`）与本机 IPv4（优先默认路由网卡；Windows `GetAdaptersAddresses`，
+  Linux `getifaddrs`）。全部为可空字段，向后兼容；首次采样占比与速率为 null（无差分基线）。
+- 状态栏：详情弹窗新增「打开系统监控」跳转入口；温度档位偏好抽为共享响应式模块
+  （`frontend/src/lib/temp-mode.ts`），状态栏与监控页共用同一档位，避免页面轮询把
+  Windows 高频档常驻采样器反复拉起/杀掉；`fmtBytes`/`pct`/`loadColor` 等格式化工具
+  提取至 `frontend/src/lib/metrics.ts` 供两处共用（无行为变化）。
+- Mock（浏览器预览）与四语言词条（zh-CN / en-US / ja-JP / zh-TW）同步补齐。
+
 ### Docs
 
 - 文档目录重组：历史规划与设计材料归档至 `docs/archive/`（`plans/` 35 份版本规格与实施计划、

@@ -23,6 +23,7 @@ export const NAV_META: Record<string, NavMeta> = {
   env: { labelKey: "env", group: "environment" },
   docker: { labelKey: "docker", group: "environment" },
   gateway: { labelKey: "gateway", group: "environment" },
+  monitor: { labelKey: "monitor", group: "environment" },
   cloud: { labelKey: "cloud", group: "extend" },
   ai: { labelKey: "ai", group: "extend" },
   settings: { labelKey: "settings", group: "system" },
