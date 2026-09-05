@@ -72,6 +72,9 @@ export const cmd = {
   WORKSPACE_SCAN_APPLY: "workspace.scanApply",
   IMPORT_TASKFILE_PREVIEW: "import.taskfilePreview",
   IMPORT_TASKFILE_APPLY: "import.taskfileApply",
+  // 孤儿进程纳管（ipc.md §10.16）
+  WORKSPACE_ADOPT_PREVIEW: "workspace.adoptPreview",
+  WORKSPACE_ADOPT_APPLY: "workspace.adoptApply",
   // 1.6（ipc.md §10.10）：网关
   GATEWAY_STATUS: "gateway.status",
   GATEWAY_PREVIEW: "gateway.preview",
@@ -582,6 +585,8 @@ export type ForeignService = {
   cwd: string | null;
   /** 完整命令行；读取失败为 null */
   cmd_line: string | null;
+  /** 父进程 pid；平台不支持 / 读取失败为 null（ipc.md §10.16 进程关系） */
+  parent_pid: number | null;
   /** CPU 占用%（整机口径）。首次采样无差值 / 读取失败为 null */
   cpu_percent: number | null;
   /** 物理内存占用（工作集，字节）；读取失败为 null */
@@ -900,6 +905,42 @@ export type TaskfileImportItem = {
 };
 
 export type TaskfilePreviewOut = { tasks: TaskfileImportItem[]; warnings: string[] };
+
+// ---------------------------------------------------------------------------
+// DTOs — 孤儿进程纳管（ipc.md §10.16，mirror `crates/supertask-core/src/adopt.rs`）
+// ---------------------------------------------------------------------------
+
+export type AdoptStatus = "adoptable" | "matched" | "id_conflict" | "unadoptable";
+
+/** `workspace.adoptPreview` 条目。draft 为 generic 服务草稿（敏感参数已脱敏）。 */
+export type AdoptItem = {
+  pid: number;
+  process_name: string;
+  /** 运行时归类提示：java/node/…；草稿 kind 恒为 generic */
+  process_kind: string;
+  ports: number[];
+  /** 脱敏后的完整命令行（展示用） */
+  cmd_line: string | null;
+  cwd: string | null;
+  /** 父进程 pid；parent_name 仅当父进程也在发现列表中 */
+  parent_pid: number | null;
+  parent_name: string | null;
+  status: AdoptStatus;
+  /** matched / unadoptable 的原因说明 */
+  reason: string | null;
+  /** 目标服务 id；id_conflict 时为被占用 id，候选在 candidate_id */
+  service_id: string;
+  candidate_id: string | null;
+  draft: ServiceSpec | null;
+  warnings: string[];
+  /** 默认动作：干净 adoptable = true；有警告/冲突/不可纳入 = false */
+  selected: boolean;
+};
+
+export type AdoptPreviewOut = { items: AdoptItem[]; warnings: string[] };
+
+/** `workspace.adoptApply` 选择项：用户确认纳管的 pid。 */
+export type AdoptChoice = { pid: number; action: "add" | "keep" };
 
 // ---------------------------------------------------------------------------
 // 1.6 DTOs — 网关（ipc.md §10.10，mirror `crates/supertask-core/src/ipc/v16.rs`）

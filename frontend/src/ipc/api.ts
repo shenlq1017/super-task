@@ -27,6 +27,8 @@ import {
   type ToolchainProbeOut,
   type ToolchainVersionsOut,
   type TaskfilePreviewOut,
+  type AdoptPreviewOut,
+  type AdoptChoice,
   type WorkspaceOpenOut,
   type YamlSaveOut,
   type YamlView,
@@ -470,6 +472,18 @@ export const apiTaskfilePreview = (workspaceId: string) =>
 /** 应用所选任务；只增改所选 scripts.*，base_hash 冲突 → YAML_CONFLICT。 */
 export const apiTaskfileApply = (workspaceId: string, selected: string[], baseHash: string) =>
   invoke<YamlSaveOut>(cmd.IMPORT_TASKFILE_APPLY, { workspaceId, selected, baseHash });
+
+// ---------------------------------------------------------------------------
+// 孤儿进程纳管（ipc.md §10.16）
+// ---------------------------------------------------------------------------
+
+/** 纳管 dry-run 预览：纯内存计算，不落盘不杀进程；只含与当前工作区相关的进程。 */
+export const apiAdoptPreview = (workspaceId: string) =>
+  invoke<AdoptPreviewOut>(cmd.WORKSPACE_ADOPT_PREVIEW, { workspaceId });
+
+/** 应用纳管选择；应用前重算，写回走 saveForm（base_hash 冲突 → YAML_CONFLICT）。 */
+export const apiAdoptApply = (workspaceId: string, choices: AdoptChoice[], baseHash: string) =>
+  invoke<YamlSaveOut>(cmd.WORKSPACE_ADOPT_APPLY, { workspaceId, choices, baseHash });
 
 // ---------------------------------------------------------------------------
 // 网关（1.6，ipc.md §10.10）

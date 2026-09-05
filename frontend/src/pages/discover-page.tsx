@@ -9,6 +9,7 @@ import {
   FileInput,
   FolderOpen,
   HardDrive,
+  Magnet,
   Radar,
   RefreshCw,
   Square,
@@ -34,11 +35,12 @@ import { toast as toastGlobal, useToast } from "@/components/ui/toast";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
 import { useWorkspace } from "../providers/workspace-provider";
 import { useYaml } from "../providers/yaml-provider";
-import { apiImportReadme, apiImportReadmeApply, apiSystemDiscover, apiSystemKillProcess, apiYamlGet } from "../ipc/api";
+import { apiAdoptPreview, apiAdoptApply, apiImportReadme, apiImportReadmeApply, apiSystemDiscover, apiSystemKillProcess, apiYamlGet } from "../ipc/api";
 import { formatIpcFailure } from "../lib/error-messages";
 import { IpcFailure } from "../ipc/protocol";
-import type { ForeignService, MergeChoice, ReadmePreviewOut } from "../ipc/protocol";
+import type { AdoptChoice, AdoptPreviewOut, ForeignService, MergeChoice, ReadmePreviewOut } from "../ipc/protocol";
 import { ScanPreviewPanel, type FieldChoice } from "@/components/scan-merge";
+import { AdoptPanel } from "@/components/adopt-panel";
 
 const REFRESH_MS = 30_000;
 const PORT_DEBOUNCE_MS = 250;
@@ -188,11 +190,22 @@ export function DiscoverPage() {
   const [readmeScriptChecked, setReadmeScriptChecked] = useState<Record<string, boolean>>({});
   const [readmeFieldChoices, setReadmeFieldChoices] = useState<Record<string, Record<string, FieldChoice>>>({});
   const [readmeApplying, setReadmeApplying] = useState(false);
+  // 孤儿进程纳管（ipc.md §10.16）：发现结果 → generic 服务草稿 → 人确认写回
+  const [adoptPreview, setAdoptPreview] = useState<AdoptPreviewOut | null>(null);
+  const [adoptLoading, setAdoptLoading] = useState(false);
+  const [adoptChecked, setAdoptChecked] = useState<Record<number, boolean>>({});
+  const [adoptApplying, setAdoptApplying] = useState(false);
   // 命令面板「从 README 导入」经 /discover?readme=1 自动展开向导
   const [searchParams, setSearchParams] = useSearchParams();
   const autoReadmeDone = useRef(false);
 
-  const dialogsOpen = detail != null || killTarget != null || readmePreview != null || readmeLoading;
+  const dialogsOpen =
+    detail != null ||
+    killTarget != null ||
+    readmePreview != null ||
+    readmeLoading ||
+    adoptPreview != null ||
+    adoptLoading;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -252,9 +265,10 @@ export function DiscoverPage() {
     };
   }, [refresh, dialogsOpen]);
 
-  // 切换工作区后 README 预览失效
+  // 切换工作区后 README 预览 / 纳管预览失效
   useEffect(() => {
     closeReadmeImport();
+    closeAdopt();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.state.workspaceId]);
 
@@ -506,6 +520,64 @@ export function DiscoverPage() {
     setSortBy((prev) => (prev === "match" ? "cpu" : prev === "cpu" ? "memory" : "match"));
   };
 
+  // 孤儿进程纳管：dry-run 预览（core 纯计算；不杀进程不落盘）
+  const openAdopt = async () => {
+    const wid = ws.state.workspaceId;
+    if (!wid || adoptLoading) return;
+    setAdoptLoading(true);
+    try {
+      const out = await apiAdoptPreview(wid);
+      setAdoptPreview(out);
+      const next: Record<number, boolean> = {};
+      for (const it of out.items) {
+        if (it.selected) next[it.pid] = true;
+      }
+      setAdoptChecked(next);
+    } catch (e) {
+      toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
+    } finally {
+      setAdoptLoading(false);
+    }
+  };
+
+  const closeAdopt = () => {
+    setAdoptPreview(null);
+    setAdoptChecked({});
+  };
+
+  const adoptApplyCount = useMemo(() => {
+    if (!adoptPreview) return 0;
+    return adoptPreview.items.filter(
+      (it) => (it.status === "adoptable" || it.status === "id_conflict") && adoptChecked[it.pid],
+    ).length;
+  }, [adoptPreview, adoptChecked]);
+
+  const applyAdoptChoices = async () => {
+    const wid = ws.state.workspaceId;
+    if (!wid || !adoptPreview || adoptApplying) return;
+    const choices: AdoptChoice[] = adoptPreview.items
+      .filter((it) => (it.status === "adoptable" || it.status === "id_conflict") && adoptChecked[it.pid])
+      .map((it) => ({ pid: it.pid, action: "add" as const }));
+    if (choices.length === 0) {
+      toast(t("pages.config.selectChangesFirst"), "warn");
+      return;
+    }
+    setAdoptApplying(true);
+    try {
+      let baseHash = yaml.state.hash;
+      if (!baseHash) baseHash = (await apiYamlGet()).hash;
+      await apiAdoptApply(wid, choices, baseHash);
+      toast(t("pages.discover.adopt.applied", { n: choices.length }), "ok");
+      closeAdopt();
+      await yaml.actions.reload();
+      await ws.actions.refreshSpec();
+    } catch (e) {
+      toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
+    } finally {
+      setAdoptApplying(false);
+    }
+  };
+
   const renderRow = (s: ForeignService) => {
     const matched = matchesFor(s);
     const owned = matched.filter((m) => m.owned);
@@ -612,6 +684,26 @@ export function DiscoverPage() {
                 <FolderOpen className="size-3" />
               </button>
             ) : null}
+            {(() => {
+              // cwd 落在当前工作区内且未被现有服务认领 → 可发起纳管
+              const root = ws.state.workspaceId ?? "";
+              const norm = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+              const inRoot =
+                !!root &&
+                !!s.cwd &&
+                (norm(s.cwd) === norm(root) || norm(s.cwd).startsWith(`${norm(root)}/`));
+              if (!inRoot || owned.length > 0) return null;
+              return (
+                <button
+                  type="button"
+                  title={t("pages.discover.adopt.rowTitle", { name: s.name, pid: s.pid })}
+                  onClick={() => void openAdopt()}
+                  className="grid size-6 cursor-pointer place-items-center rounded-[var(--r-sm,8px)] text-[var(--t3,#8a8f98)] transition-colors duration-150 hover:bg-[rgb(94_106_210_/_0.1)] hover:text-[var(--st-accent,#5e6ad2)] active:scale-95"
+                >
+                  <Magnet className="size-3" />
+                </button>
+              );
+            })()}
             <button
               type="button"
               title={t("pages.discover.killTreeTitle", { name: s.name, pid: s.pid })}
@@ -764,22 +856,41 @@ export function DiscoverPage() {
                   </span>
                 ) : null}
                 {ws.state.workspaceId ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void openReadmeImport()}
-                    disabled={readmeLoading}
-                    className="gap-1"
-                    title={t("pages.discover.readmeImportHint")}
-                  >
-                    <FileInput className={cn("size-3.5", readmeLoading && "animate-pulse")} />
-                    {readmeLoading ? t("pages.discover.readmeImporting") : t("pages.discover.readmeImport")}
-                  </Button>
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void openAdopt()}
+                      disabled={adoptLoading}
+                      className="gap-1"
+                      title={t("pages.discover.adopt.hint")}
+                    >
+                      <Magnet className={cn("size-3.5", adoptLoading && "animate-pulse")} />
+                      {adoptLoading ? t("pages.discover.adopt.importing") : t("pages.discover.adopt.import")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void openReadmeImport()}
+                      disabled={readmeLoading}
+                      className="gap-1"
+                      title={t("pages.discover.readmeImportHint")}
+                    >
+                      <FileInput className={cn("size-3.5", readmeLoading && "animate-pulse")} />
+                      {readmeLoading ? t("pages.discover.readmeImporting") : t("pages.discover.readmeImport")}
+                    </Button>
+                  </>
                 ) : (
-                  <Button variant="outline" size="sm" disabled className="gap-1" title={t("pages.config.openWsFirst")}>
-                    <FileInput className="size-3.5" />
-                    {t("pages.discover.readmeImport")}
-                  </Button>
+                  <>
+                    <Button variant="outline" size="sm" disabled className="gap-1" title={t("pages.config.openWsFirst")}>
+                      <Magnet className="size-3.5" />
+                      {t("pages.discover.adopt.import")}
+                    </Button>
+                    <Button variant="outline" size="sm" disabled className="gap-1" title={t("pages.config.openWsFirst")}>
+                      <FileInput className="size-3.5" />
+                      {t("pages.discover.readmeImport")}
+                    </Button>
+                  </>
                 )}
                 <Button variant="soft" size="sm" onClick={() => void refresh()} disabled={loading} className="gap-1">
                   <RefreshCw className={cn(loading && "animate-spin")} /> {t("common.refresh")}
@@ -1119,6 +1230,50 @@ export function DiscoverPage() {
                   applyCount={readmeApplyCount}
                   onApply={() => void applyReadmeChoices()}
                   onClose={closeReadmeImport}
+                />
+              </div>
+            )
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={adoptPreview != null} onOpenChange={(o) => !o && closeAdopt()}>
+        <DialogContent className="flex max-h-[86vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl" showCloseButton={false}>
+          {adoptPreview ? (
+            adoptPreview.items.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 p-8">
+                <Magnet className="size-8 text-[var(--line-strong,#d0d6e0)]" />
+                <DialogHeader className="items-center text-center">
+                  <DialogTitle>{t("pages.discover.adopt.emptyTitle")}</DialogTitle>
+                  <DialogDescription asChild>
+                    <div className="space-y-1">
+                      {adoptPreview.warnings.map((w, i) => (
+                        <div key={i}>{w}</div>
+                      ))}
+                    </div>
+                  </DialogDescription>
+                </DialogHeader>
+                <Button variant="outline" size="sm" className="mt-2" onClick={closeAdopt}>
+                  {t("common.close")}
+                </Button>
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col p-3">
+                <AdoptPanel
+                  preview={adoptPreview}
+                  checked={adoptChecked}
+                  onToggle={(pid, v) => setAdoptChecked((m) => ({ ...m, [pid]: v }))}
+                  onSelectAll={(v) => {
+                    const next: Record<number, boolean> = {};
+                    for (const it of adoptPreview.items) {
+                      if (it.status === "adoptable" || it.status === "id_conflict") next[it.pid] = v;
+                    }
+                    setAdoptChecked(next);
+                  }}
+                  applying={adoptApplying}
+                  applyCount={adoptApplyCount}
+                  onApply={() => void applyAdoptChoices()}
+                  onClose={closeAdopt}
                 />
               </div>
             )

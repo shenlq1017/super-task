@@ -17,6 +17,8 @@ import type {
   SuperTaskFile,
   TaskfileImportItem,
   TaskfilePreviewOut,
+  AdoptItem,
+  AdoptPreviewOut,
   TemplateSummary,
   ToolchainProbe,
   ToolchainProbeOut,
@@ -336,10 +338,10 @@ const state = {
 
 function defaultDiscover(): ForeignService[] {
   return [
-    { pid: 41001, name: "java.exe", kind: "java", ports: [8080, 8081], cwd: "C:\\demo\\modules\\api", cmd_line: "java -jar target/api.jar", cpu_percent: 3.2, memory_bytes: 486539264 },
-    { pid: 41240, name: "node.exe", kind: "node", ports: [5173], cwd: "C:\\demo\\web", cmd_line: "node C:\\demo\\web\\node_modules\\vite\\bin\\vite.js", cpu_percent: 0.6, memory_bytes: 113246208 },
-    { pid: 41355, name: "python.exe", kind: "python", ports: [8000], cwd: null, cmd_line: null, cpu_percent: 1.1, memory_bytes: 41943040 },
-    { pid: 41500, name: "esbuild.exe", kind: "other", ports: [9229], cwd: "C:\\demo\\web", cmd_line: "esbuild --serve=9229", cpu_percent: null, memory_bytes: null },
+    { pid: 41001, name: "java.exe", kind: "java", ports: [8080, 8081], cwd: "C:\\demo\\modules\\api", cmd_line: "java -jar target/api.jar", parent_pid: null, cpu_percent: 3.2, memory_bytes: 486539264 },
+    { pid: 41240, name: "node.exe", kind: "node", ports: [5173], cwd: "C:\\demo\\web", cmd_line: "node C:\\demo\\web\\node_modules\\vite\\bin\\vite.js", parent_pid: null, cpu_percent: 0.6, memory_bytes: 113246208 },
+    { pid: 41355, name: "python.exe", kind: "python", ports: [8000], cwd: null, cmd_line: null, parent_pid: null, cpu_percent: 1.1, memory_bytes: 41943040 },
+    { pid: 41500, name: "esbuild.exe", kind: "other", ports: [9229], cwd: "C:\\demo\\web", cmd_line: "esbuild --serve=9229", parent_pid: 41240, cpu_percent: null, memory_bytes: null },
   ];
 }
 
@@ -974,6 +976,118 @@ function mockTaskfilePreview(): TaskfilePreviewOut {
     tasks: items,
     warnings: ["includes 不支持且未跟随：1 个子 Taskfile 已跳过，需要的任务请手工补录"],
   };
+}
+
+/** 孤儿进程纳管预览（ipc.md §10.16）：从 mock 发现列表 + 当前 spec 按真实规则简化推导。 */
+function mockAdoptPreview(): AdoptPreviewOut {
+  const procs = state.discover ?? defaultDiscover();
+  const items: AdoptItem[] = [];
+  const warnings: string[] = [];
+  let excluded = 0;
+  const usedIds = new Set<string>();
+  const usedPorts = new Set<number>();
+  const root = "c:\\demo"; // demo 工作区根（mock 口径，大小写不敏感）
+  const norm = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const rootN = norm(root);
+  const relUnderRoot = (p: string): string | null => {
+    const raw = p.replace(/\\/g, "/");
+    const n = norm(raw);
+    if (n === rootN) return ".";
+    if (!n.startsWith(`${rootN}/`)) return null;
+    return raw.slice(rootN.length + 1).replace(/\/+$/, "");
+  };
+  const declared = new Map<number, string>();
+  for (const [id, s] of Object.entries(state.spec.services)) {
+    if (s.port != null) declared.set(s.port, id);
+    for (const p of s.ports ?? []) declared.set(p, id);
+  }
+  for (const p of procs) {
+    const rel = p.cwd ? relUnderRoot(p.cwd) : null;
+    const hit = p.ports.map((x) => declared.get(x)).find((v) => v !== undefined);
+    if (hit) {
+      items.push({
+        pid: p.pid,
+        process_name: p.name,
+        process_kind: p.kind,
+        ports: p.ports,
+        cmd_line: p.cmd_line,
+        cwd: p.cwd,
+        parent_pid: p.parent_pid ?? null,
+        parent_name: procs.find((q) => q.pid === p.parent_pid)?.name ?? null,
+        status: rel ? "matched" : "unadoptable",
+        reason: rel
+          ? `监听端口 ${p.ports[0]} 已由服务 "${hit}" 声明（外部实例在打开工作区时自动识别，无需纳管）`
+          : `端口 ${p.ports[0]} 已被服务 "${hit}" 声明，且进程工作目录不在工作区内——可能为该服务的外部实例（如 compose 宿主进程），也可能是端口冲突`,
+        service_id: hit,
+        candidate_id: null,
+        draft: null,
+        warnings: [],
+        selected: false,
+      });
+      continue;
+    }
+    if (rel) {
+      const dirName = rel === "." ? "" : rel.split("/").pop() ?? "";
+      const base = (dirName || p.name.replace(/\.exe$/i, "")).replace(/[^A-Za-z0-9_-]/g, "-").replace(/^-+/, "") || "svc";
+      let id = base;
+      if (usedIds.has(base) || state.spec.services[base]) {
+        let i = 2;
+        while (usedIds.has(`${base}-${i}`) || state.spec.services[`${base}-${i}`]) i += 1;
+        id = `${base}-${i}`;
+      }
+      usedIds.add(id);
+      const port = p.ports[0];
+      const portConflict = port != null && usedPorts.has(port);
+      usedPorts.add(port);
+      const argv = (p.cmd_line ?? p.name).split(" ").filter(Boolean);
+      const program = argv[0]?.split(/[\\/]/).pop()?.replace(/\.exe$/i, "") ?? p.name;
+      const args = argv.slice(1);
+      if (p.ports.length > 1) {
+        warnings.push(`进程 ${p.pid} 还监听 ${p.ports.slice(1).join("、")}：仅 ${port} 写入 port，其余端口请保存后在配置页手工补 ports/health`);
+      }
+      items.push({
+        pid: p.pid,
+        process_name: p.name,
+        process_kind: p.kind,
+        ports: p.ports,
+        cmd_line: p.cmd_line,
+        cwd: p.cwd,
+        parent_pid: p.parent_pid ?? null,
+        parent_name: procs.find((q) => q.pid === p.parent_pid)?.name ?? null,
+        status: "adoptable",
+        reason: null,
+        service_id: id,
+        candidate_id: null,
+        draft: {
+          kind: "generic",
+          enabled: true,
+          labels: { origin: "adopted", "adopted-from": `pid ${p.pid} (${p.name})` },
+          port,
+          ports: [],
+          env: {},
+          env_file: [],
+          depends_on: [],
+          extra_args: [],
+          build_args: [],
+          jvm_args: [],
+          dir: rel === "." ? null : rel,
+          args,
+          program,
+        },
+        warnings: portConflict ? [`端口 ${port} 与其他候选冲突，同时添加将无法通过校验（端口重复），请二选一`] : [],
+        selected: !portConflict,
+      });
+      continue;
+    }
+    excluded += 1;
+  }
+  if (excluded > 0) {
+    warnings.push(`另有 ${excluded} 个监听进程与当前工作区无关（工作目录在工作区外且端口无交集），未列入`);
+  }
+  if (items.some((i) => i.status === "adoptable" || i.status === "id_conflict")) {
+    warnings.push("运行中进程的环境变量无法读取：纳管后服务将以工作区环境启动，需要的变量请用 env 补齐");
+  }
+  return { items, warnings };
 }
 
 /** Browser / `vite` without WebView: same shapes as Tauri, no real spawn. */
@@ -2397,6 +2511,58 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     }
     const text = toYaml(state.spec);
     return { spec: state.spec, hash: hashOf(text), warnings: ["已导入一次性迁移脚本（mock）"] };
+  }
+
+  // -------------------------------------------------------------------------
+  // 孤儿进程纳管（ipc.md §10.16）
+  // -------------------------------------------------------------------------
+
+  if (command === "workspace.adoptPreview") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    return mockAdoptPreview();
+  }
+
+  if (command === "workspace.adoptApply") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    const choices = (args?.choices as { pid: number; action: string }[]) ?? [];
+    const currentHash = hashOf(toYaml(state.spec));
+    if ((args?.baseHash as string) !== currentHash) {
+      throw { protocol: PROTOCOL, code: "YAML_CONFLICT", message: "supertask.yaml 已被外部修改，请重新加载后重试", retryable: false };
+    }
+    const preview = mockAdoptPreview();
+    const warnings: string[] = [];
+    let applied = 0;
+    for (const c of choices) {
+      if (c.action !== "add") continue;
+      const item = preview.items.find((i) => i.pid === c.pid);
+      if (!item) {
+        warnings.push(`进程 ${c.pid} 已退出或不在当前发现列表中，已跳过`);
+        continue;
+      }
+      if (item.status === "matched") {
+        warnings.push(`进程 ${item.pid} 的端口已由服务 ${item.service_id} 声明，未重复添加`);
+        continue;
+      }
+      if (item.status === "unadoptable") {
+        warnings.push(`进程 ${item.pid} 无法纳入：${item.reason ?? ""}`);
+        continue;
+      }
+      const key = item.candidate_id ?? item.service_id;
+      if (state.spec.services[key]) {
+        warnings.push(`服务 ${key} 已存在，跳过进程 ${item.pid}（如需覆盖请在配置页操作）`);
+        continue;
+      }
+      if (item.draft) {
+        state.spec.services[key] = item.draft;
+        applied += 1;
+        warnings.push(`已添加服务 ${key}（来源：进程 ${item.process_name} ${item.pid}）`);
+      }
+    }
+    if (applied === 0) warnings.push("未添加任何服务");
+    const text = toYaml(state.spec);
+    return { spec: state.spec, hash: hashOf(text), warnings };
   }
 
   // -------------------------------------------------------------------------
