@@ -314,6 +314,50 @@ pub fn load_file_layers(
     Ok((env, warnings))
 }
 
+/// 方向七·AI 原生：收集「输出脱敏」用的密钥值集合——主密钥文件 + 全部服务
+/// env_file 的全部值 + `required` 声明 key 的用户环境变量值。
+/// best-effort：单个文件缺失/解析失败不影响其余来源；去重返回（≥4 字符的
+/// 长度过滤与替换语义由 `ai::sanitize` 负责）。只用于出口掩码，不做他途。
+pub fn collect_redaction_values(spec: &SuperTaskFile, root: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    fn push(out: &mut Vec<String>, v: String) {
+        if !v.is_empty() && !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    if let Ok(Some(path)) = secret_file_path(spec, root) {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(entries) = parse_dotenv(&text) {
+                for (_, _, v) in entries {
+                    push(&mut out, v);
+                }
+            }
+        }
+    }
+    for svc in spec.services.values() {
+        for rel in &svc.env_file {
+            if crate::sandbox::assert_rel_safe(rel).is_err() {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(root.join(rel)) {
+                if let Ok(entries) = parse_dotenv(&text) {
+                    for (_, _, v) in entries {
+                        push(&mut out, v);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(sec) = &spec.secrets {
+        for key in &sec.required {
+            if let Ok(v) = std::env::var(key) {
+                push(&mut out, v);
+            }
+        }
+    }
+    out
+}
+
 /// secrets.validate：required key 是否可解析（文件或用户环境）；env_file 语法检查。
 pub fn validate(
     spec: &SuperTaskFile,
@@ -409,6 +453,38 @@ mod tests {
         assert_eq!(e2.code(), ErrorCode::SecretParse);
         let e3 = parse_dotenv("no equals sign\n").unwrap_err();
         assert_eq!(e3.code(), ErrorCode::SecretParse);
+    }
+
+    #[test]
+    fn collect_redaction_values_unions_files_best_effort() {
+        let dir = std::env::temp_dir().join(format!("st-sec-redact-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(".env.local"), "API_KEY=abcd1234xyz\n").unwrap();
+        fs::write(
+            dir.join(".env.api"),
+            "DB_PASSWORD=hunter2pass\nLOG_LEVEL=info\n",
+        )
+        .unwrap();
+        let y = "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8080\n    env_file: [.env.api]\nsecrets:\n  backend: file\n  file: .env.local\n";
+        let spec = spec_with_secrets(y);
+        let vals = collect_redaction_values(&spec, &dir);
+        assert!(vals.contains(&"abcd1234xyz".to_string()));
+        assert!(vals.contains(&"hunter2pass".to_string()));
+        assert!(
+            vals.contains(&"info".to_string()),
+            "env_file 值一并纳入（安全优先口径）"
+        );
+        let red = crate::ai::sanitize::Redactor::from_values(vals);
+        let out = red.text("connect API_KEY=abcd1234xyz\nDB_PASSWORD=hunter2pass\nport: 8080");
+        assert!(!out.contains("abcd1234xyz"));
+        assert!(!out.contains("hunter2pass"));
+        assert!(out.contains("port: 8080"));
+        // env_file 缺失不致命：主密钥文件仍然生效
+        let y2 = "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8080\n    env_file: [.env.missing]\nsecrets:\n  backend: file\n  file: .env.local\n";
+        let vals2 = collect_redaction_values(&spec_with_secrets(y2), &dir);
+        assert!(vals2.contains(&"abcd1234xyz".to_string()));
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

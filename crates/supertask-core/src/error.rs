@@ -209,6 +209,36 @@ impl Error {
         Self::new(ErrorCode::FeatureSoon, format!("{cmd} 将在 {since} 提供"))
             .details(serde_yaml::Value::String(since.to_string()))
     }
+
+    /// 方向七·AI 原生：出口脱敏——对 message 与 details 里的所有字符串应用 `red`。
+    /// MCP/CLI 出口统一调用（AGENTS 规则 3：密钥不进错误输出）。
+    pub fn redact_with(&mut self, red: &dyn Fn(&str) -> String) {
+        let Self::App {
+            message, details, ..
+        } = self;
+        *message = red(message);
+        if let Some(d) = details {
+            redact_yaml_value(d, red);
+        }
+    }
+}
+
+fn redact_yaml_value(v: &mut serde_yaml::Value, red: &dyn Fn(&str) -> String) {
+    match v {
+        serde_yaml::Value::String(s) => *s = red(s),
+        serde_yaml::Value::Sequence(items) => {
+            for item in items {
+                redact_yaml_value(item, red);
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            for val in map.values_mut() {
+                redact_yaml_value(val, red);
+            }
+        }
+        serde_yaml::Value::Tagged(t) => redact_yaml_value(&mut t.value, red),
+        _ => {}
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -303,5 +333,27 @@ mod tests {
                 "{expected}"
             );
         }
+    }
+
+    #[test]
+    fn redact_with_masks_message_and_details() {
+        let details: serde_yaml::Value = serde_yaml::from_str(
+            "cmd: run with abcd1234xyz\nrows:\n  - plain\n  - token abcd1234xyz\nn: 3\n",
+        )
+        .unwrap();
+        let mut err =
+            Error::new(ErrorCode::Spawn, "启动失败: API_KEY=abcd1234xyz").details(details);
+        let red = |s: &str| crate::ai::sanitize::sanitize_text(s, &["abcd1234xyz".to_string()]);
+        err.redact_with(&red);
+        let text = err.to_string();
+        assert!(!text.contains("abcd1234xyz"), "{text}");
+        let details = match &err {
+            Error::App {
+                details: Some(d), ..
+            } => serde_yaml::to_string(d).unwrap(),
+            _ => panic!("details missing"),
+        };
+        assert!(!details.contains("abcd1234xyz"), "{details}");
+        assert!(details.contains("plain"));
     }
 }

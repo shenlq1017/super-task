@@ -4,6 +4,11 @@
 //! 1. workspace secret 值 / `supertask.ai` key（调用方通过 `secret_values` 传入，精确子串替换）；
 //! 2. 形似 token / password / authorization 的行 → 整行替换为 [`REDACTED`]；
 //! 3. 短值（< 4 字符）不参与精确替换，避免把端口号等普通数字打穿文本。
+//!
+//! 方向七·AI 原生：[`Redactor`] 把值集合缓存起来，供引擎诊断与 MCP/CLI 出口
+//! 统一脱敏复用（同一套掩码语义，幂等）。
+
+use std::path::Path;
 
 /// 掩码后的占位文本（spec §4.3）。
 pub const REDACTED: &str = "<redacted>";
@@ -106,6 +111,55 @@ pub fn tail_truncate(lines: &[String], max_lines: usize, max_bytes: usize) -> Ve
     out[start..].iter().map(|s| (*s).clone()).collect()
 }
 
+/// 方向七·AI 原生：可复用的输出脱敏器。缓存声明密钥值集合，供引擎诊断与
+/// MCP/CLI 出口统一调用；`text` 语义与 [`sanitize_text`] 完全一致（幂等）。
+pub struct Redactor {
+    values: Vec<String>,
+}
+
+impl Redactor {
+    pub fn from_values(values: Vec<String>) -> Self {
+        Self { values }
+    }
+
+    /// best-effort：从工作区根加载 yaml 并收集声明密钥值。
+    /// yaml 缺失/非法 → 空值集（敏感行整行掩码仍然生效）。
+    pub fn for_workspace(root: &Path) -> Self {
+        Self::from_values(collect_workspace_values(root))
+    }
+
+    pub fn text(&self, s: &str) -> String {
+        sanitize_text(s, &self.values)
+    }
+
+    /// 递归脱敏 JSON 里的所有字符串值（MCP 出口统一调用；幂等）。
+    pub fn redact_json(&self, v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::String(s) => *s = self.text(s),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    self.redact_json(item);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for val in map.values_mut() {
+                    self.redact_json(val);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 工作区级密钥值收集（引擎未打开时的出口兜底）：加载根目录 yaml 后交给
+/// [`crate::secrets::collect_redaction_values`]；任何失败 → 空集合。
+pub fn collect_workspace_values(root: &Path) -> Vec<String> {
+    match crate::engine::load_yaml_at(root) {
+        Ok((_, _, spec, _)) => crate::secrets::collect_redaction_values(&spec, root),
+        Err(_) => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +222,42 @@ mod tests {
         assert_eq!(out2.last().unwrap().len(), 200, "保尾部");
         let total: usize = out2.iter().map(|l| l.len() + 1).sum();
         assert!(total <= 1000 + 200, "最后一行允许保留，总字节受控");
+    }
+
+    #[test]
+    fn redactor_is_idempotent_and_masks_values() {
+        let red = Redactor::from_values(vec!["abcd1234xyz".to_string()]);
+        let once = red.text("connecting API_TOKEN=abcd1234xyz ok");
+        assert!(!once.contains("abcd1234xyz"));
+        assert!(red.text(&once) == once, "重复脱敏应幂等");
+    }
+
+    #[test]
+    fn redactor_json_walk_masks_nested_strings() {
+        let red = Redactor::from_values(vec!["abcd1234xyz".to_string()]);
+        let mut v = serde_json::json!({
+            "a": "token=abcd1234xyz",
+            "list": ["plain", { "deep": "abcd1234xyz" }],
+            "n": 42,
+        });
+        red.redact_json(&mut v);
+        assert!(!v.to_string().contains("abcd1234xyz"));
+        assert_eq!(v["list"][0], "plain");
+        assert_eq!(v["n"], 42);
+    }
+
+    #[test]
+    fn collect_workspace_values_tolerates_missing_yaml() {
+        let dir = crate::sandbox::test_temp_dir().join("st-sanitize-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(Redactor::for_workspace(&dir)
+            .text("password: whatever")
+            .contains(REDACTED));
+        assert_eq!(
+            Redactor::for_workspace(&dir).text("port: 8080"),
+            "port: 8080"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

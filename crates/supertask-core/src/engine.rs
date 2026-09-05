@@ -1242,6 +1242,131 @@ impl Engine {
         Ok(())
     }
 
+    // -------------------------------------------------------------------
+    // 方向七·AI 原生：错误聚合 / 等待就绪 / 出口脱敏
+    // -------------------------------------------------------------------
+
+    /// 当前工作区的输出脱敏值集合（secrets 声明文件 + 全部 env_file + env backend key）。
+    pub fn redaction_values(&self) -> Result<Vec<String>> {
+        let g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        Ok(crate::secrets::collect_redaction_values(&g.spec, &g.root))
+    }
+
+    /// 按服务聚合的错误摘要（只读）：ready 判定、错误来源（exit/health/generic）、
+    /// 最近日志摘录。消息与摘录出口前统一脱敏（AGENTS 规则 3）。
+    pub fn diagnostics(&self) -> Result<DiagnosticsView> {
+        let (mut view, values) = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            (
+                build_diagnostics(&g),
+                crate::secrets::collect_redaction_values(&g.spec, &g.root),
+            )
+        };
+        redact_service_diags(
+            &crate::ai::sanitize::Redactor::from_values(values),
+            &mut view.services,
+        );
+        Ok(view)
+    }
+
+    /// 等待目标服务全部就绪（只观察不启动）。任一目标 Exited/Unhealthy → failed、
+    /// 任一目标 Stopped → stopped、全部就绪 → reached、超时 → timeout
+    /// （超时是结果不是错误）。`targets` 缺省 = graph::start_order
+    /// （enabled 服务拓扑序，与 start 缺省集合一致）。
+    pub fn wait_workspace_ready(
+        &self,
+        targets: Option<Vec<String>>,
+        timeout: Duration,
+    ) -> Result<WaitReadyView> {
+        let started_at = Instant::now();
+        let targets = {
+            let g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            match targets {
+                Some(ids) => {
+                    for id in &ids {
+                        if !g.spec.services.contains_key(id) {
+                            return Err(Error::new(ErrorCode::NotFound, format!("没有服务 {id}")));
+                        }
+                    }
+                    ids
+                }
+                None => crate::graph::start_order(&g.spec)?,
+            }
+        };
+        let timeout = if timeout.is_zero() {
+            Duration::from_secs(30)
+        } else {
+            timeout
+        };
+        let deadline = started_at + timeout;
+        loop {
+            {
+                let g = self.inner.lock().expect("engine lock");
+                if g.workspace_id.is_empty() {
+                    return Err(Error::new(ErrorCode::NoWorkspace, "工作区已关闭"));
+                }
+                let poll: Vec<(RtState, bool)> =
+                    targets.iter().map(|id| target_poll(&g, id)).collect();
+                if let Some(outcome) = wait_poll_outcome(&poll) {
+                    return self.wait_view_locked(&g, &targets, outcome, started_at, timeout);
+                }
+                if Instant::now() >= deadline {
+                    return self.wait_view_locked(
+                        &g,
+                        &targets,
+                        WaitReadyOutcome::Timeout,
+                        started_at,
+                        timeout,
+                    );
+                }
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// 出口视图：目标服务的当前诊断 + 脱敏（与轮询同一锁作用域，状态一致）。
+    fn wait_view_locked(
+        &self,
+        g: &Inner,
+        targets: &[String],
+        outcome: WaitReadyOutcome,
+        started_at: Instant,
+        timeout: Duration,
+    ) -> Result<WaitReadyView> {
+        let diag = build_diagnostics(g);
+        let mut services: Vec<ServiceDiagView> = diag
+            .services
+            .into_iter()
+            .filter(|s| targets.iter().any(|t| t == &s.id))
+            .collect();
+        let pending = if outcome == WaitReadyOutcome::Timeout {
+            services
+                .iter()
+                .filter(|s| !s.ready)
+                .map(|s| s.id.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        redact_service_diags(
+            &crate::ai::sanitize::Redactor::from_values(crate::secrets::collect_redaction_values(
+                &g.spec, &g.root,
+            )),
+            &mut services,
+        );
+        Ok(WaitReadyView {
+            outcome,
+            timeout_ms: timeout.as_millis() as u64,
+            elapsed_ms: started_at.elapsed().as_millis() as u64,
+            targets: targets.to_vec(),
+            pending,
+            services,
+        })
+    }
+
     pub fn try_recv_event(&self) -> Option<EngineEvent> {
         self.events_rx.lock().expect("rx").try_recv().ok()
     }
@@ -3501,6 +3626,214 @@ fn load_env_snapshots(root: &Path, slots: &mut HashMap<String, Slot>) {
             slot.env_snapshot = Some(snap);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 方向七·AI 原生：错误聚合 / 等待就绪（MCP supertask_errors / supertask_wait_ready
+// 数据源；视图只被 CLI/MCP 消费，不进 ipc::v*）。所有自由文本出口前统一脱敏。
+// ---------------------------------------------------------------------------
+
+/// 单服务诊断错误：source 说明错误来自哪条链路。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagErrorView {
+    /// "exit"（进程退出）| "health"（健康检查失败）| "generic"（构建失败/重启放弃等 last_error）
+    pub source: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceDiagView {
+    pub id: String,
+    pub kind: String,
+    pub state: RtState,
+    /// Running 且（未配置健康检查或健康采样 ok）
+    pub ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<DiagErrorView>,
+    /// 最近日志摘录（已脱敏；仅 error 非空时携带，≤ [`DIAG_RECENT_LINES`] 行）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticsView {
+    pub workspace_id: String,
+    pub ready: bool,
+    pub ready_count: usize,
+    pub total_count: usize,
+    pub services: Vec<ServiceDiagView>,
+}
+
+/// 等待就绪结果：outcome 可区分 reached / failed / stopped / timeout（超时是结果不是错误）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WaitReadyOutcome {
+    Reached,
+    Failed,
+    Stopped,
+    Timeout,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaitReadyView {
+    pub outcome: WaitReadyOutcome,
+    pub timeout_ms: u64,
+    pub elapsed_ms: u64,
+    pub targets: Vec<String>,
+    /// timeout 时仍未就绪的目标
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<String>,
+    pub services: Vec<ServiceDiagView>,
+}
+
+/// recent_lines 摘录行数上限。
+const DIAG_RECENT_LINES: usize = 5;
+
+/// ready 判定（诊断与等待共用同一口径）。`health_configured` 来自 spec——
+/// 运行时视图无法区分「未配置」与「尚未采样」；`type: none` 视为未配置
+/// （与 spawn 路径的 health_none 口径一致）。
+fn svc_ready(state: RtState, health: Option<&HealthView>, health_configured: bool) -> bool {
+    state == RtState::Running && (!health_configured || health.is_some_and(|h| h.ok))
+}
+
+/// spec 是否配置了真实健康检查（type != none；apply_defaults 会给 spring-boot/node
+/// 补 tcp 默认值，所以「无 health 段」的服务同样视为已配置）。
+fn health_configured_of(spec: &SuperTaskFile, id: &str) -> bool {
+    spec.services
+        .get(id)
+        .map(|s| {
+            s.health
+                .as_ref()
+                .is_some_and(|h| h.r#type != HealthType::None)
+        })
+        .unwrap_or(false)
+}
+
+/// 等待就绪的轮询判定（纯函数，便于单测）：输入各目标的 (state, ready)。
+/// 优先级：failed（Exited/Unhealthy）> stopped > 全部就绪 reached；None = 继续等。
+fn wait_poll_outcome(targets: &[(RtState, bool)]) -> Option<WaitReadyOutcome> {
+    let mut all_ready = true;
+    let mut failed = false;
+    let mut stopped = false;
+    for &(state, ready) in targets {
+        if matches!(state, RtState::Exited | RtState::Unhealthy) {
+            failed = true;
+        } else if state == RtState::Stopped {
+            stopped = true;
+        }
+        if !ready {
+            all_ready = false;
+        }
+    }
+    if failed {
+        Some(WaitReadyOutcome::Failed)
+    } else if stopped {
+        Some(WaitReadyOutcome::Stopped)
+    } else if all_ready {
+        Some(WaitReadyOutcome::Reached)
+    } else {
+        None
+    }
+}
+
+/// 单服务的错误归因（原始文本；脱敏在出口统一做）。
+fn diag_error_for(v: &ServiceRuntimeView) -> Option<DiagErrorView> {
+    match v.state {
+        RtState::Exited => Some(DiagErrorView {
+            source: "exit".into(),
+            message: v.last_error.clone().unwrap_or_else(|| {
+                format!(
+                    "进程退出码 {}",
+                    v.last_exit.as_ref().map(|e| e.code).unwrap_or(-1)
+                )
+            }),
+            exit_code: v.last_exit.as_ref().map(|e| e.code),
+            at_ms: v.last_exit.as_ref().map(|e| e.at_ms),
+        }),
+        RtState::Unhealthy => Some(DiagErrorView {
+            source: "health".into(),
+            message: v
+                .health
+                .as_ref()
+                .map(|h| h.detail.clone())
+                .or_else(|| v.last_error.clone())
+                .unwrap_or_else(|| "健康检查失败".into()),
+            exit_code: None,
+            at_ms: v.health.as_ref().map(|h| h.at_ms),
+        }),
+        _ => v.last_error.as_ref().map(|m| DiagErrorView {
+            source: "generic".into(),
+            message: m.clone(),
+            exit_code: None,
+            at_ms: None,
+        }),
+    }
+}
+
+/// 聚合诊断视图（原始文本）。调用方持有引擎锁；出口先脱敏再返回。
+fn build_diagnostics(g: &Inner) -> DiagnosticsView {
+    let snap = build_snapshot(g);
+    let mut services = Vec::new();
+    let mut ready_count = 0usize;
+    for (id, v) in &snap.services {
+        let health_configured = health_configured_of(&g.spec, id);
+        let ready = svc_ready(v.state, v.health.as_ref(), health_configured);
+        if ready {
+            ready_count += 1;
+        }
+        let error = diag_error_for(v);
+        let recent_lines = if error.is_some() {
+            let src = LogSource {
+                kind: LogSourceKind::Service,
+                id: id.clone(),
+            };
+            let (items, _) = g.logs.snapshot(Some(&src), DIAG_RECENT_LINES);
+            items.into_iter().map(|l| l.text).collect()
+        } else {
+            Vec::new()
+        };
+        services.push(ServiceDiagView {
+            id: id.clone(),
+            kind: v.kind.clone(),
+            state: v.state,
+            ready,
+            error,
+            recent_lines,
+        });
+    }
+    DiagnosticsView {
+        workspace_id: snap.workspace_id,
+        ready: ready_count == snap.services.len(),
+        ready_count,
+        total_count: snap.services.len(),
+        services,
+    }
+}
+
+/// 出口脱敏：错误消息与日志摘录过 Redactor（幂等）。
+fn redact_service_diags(red: &crate::ai::sanitize::Redactor, services: &mut [ServiceDiagView]) {
+    for s in services.iter_mut() {
+        if let Some(e) = &mut s.error {
+            e.message = red.text(&e.message);
+        }
+        for line in &mut s.recent_lines {
+            *line = red.text(line);
+        }
+    }
+}
+
+/// 等待轮询的单目标观测。
+fn target_poll(g: &Inner, id: &str) -> (RtState, bool) {
+    let Some(slot) = g.slots.get(id) else {
+        return (RtState::Stopped, false);
+    };
+    let health_configured = health_configured_of(&g.spec, id);
+    let ready = svc_ready(slot.state, slot.health.as_ref(), health_configured);
+    (slot.state, ready)
 }
 
 fn build_snapshot(g: &Inner) -> RuntimeSnapshot {
@@ -7192,6 +7525,253 @@ data:
         eng.close().unwrap();
         let eng2 = Engine::fail_for_test();
         assert!(eng2.data_list().is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- 方向七·AI 原生：错误聚合 / 等待就绪 ----
+
+    /// 两个服务、健康检查显式 type: none（不写会走 spring-boot 默认 tcp）：
+    /// ready 即 Running。
+    fn diag_yaml() -> &'static str {
+        r#"
+version: 1
+services:
+  ok:
+    kind: spring-boot
+    module: x
+    port: 1
+    health:
+      type: none
+  bad:
+    kind: spring-boot
+    module: y
+    port: 2
+    health:
+      type: none
+"#
+    }
+
+    /// 健康检查指向必然不通的端口 + 超长 grace：停在 Starting（grace 内不转 Unhealthy）。
+    fn slow_ready_yaml() -> String {
+        r#"
+version: 1
+services:
+  slow:
+    kind: spring-boot
+    module: x
+    port: 1
+    health:
+      type: tcp
+    grace_secs: 3600
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn wait_poll_outcome_classifies_priority() {
+        use WaitReadyOutcome::{Failed, Reached, Stopped};
+        let ready = (RtState::Running, true);
+        assert_eq!(wait_poll_outcome(&[ready, ready]), Some(Reached));
+        assert_eq!(
+            wait_poll_outcome(&[ready, (RtState::Exited, false)]),
+            Some(Failed)
+        );
+        assert_eq!(
+            wait_poll_outcome(&[ready, (RtState::Unhealthy, false)]),
+            Some(Failed)
+        );
+        // failed 优先于 stopped
+        assert_eq!(
+            wait_poll_outcome(&[(RtState::Stopped, false), (RtState::Exited, false)]),
+            Some(Failed)
+        );
+        assert_eq!(
+            wait_poll_outcome(&[ready, (RtState::Stopped, false)]),
+            Some(Stopped)
+        );
+        assert_eq!(
+            wait_poll_outcome(&[ready, (RtState::Starting, false)]),
+            None
+        );
+        assert_eq!(
+            wait_poll_outcome(&[ready, (RtState::Building, false)]),
+            None
+        );
+        // 空目标视为已就绪（vacuous reached）
+        assert_eq!(wait_poll_outcome(&[]), Some(Reached));
+    }
+
+    #[test]
+    fn redact_service_diags_masks_messages_and_lines() {
+        let mut view = DiagnosticsView {
+            workspace_id: "w".into(),
+            ready: false,
+            ready_count: 0,
+            total_count: 1,
+            services: vec![ServiceDiagView {
+                id: "api".into(),
+                kind: "node".into(),
+                state: RtState::Exited,
+                ready: false,
+                error: Some(DiagErrorView {
+                    source: "exit".into(),
+                    message: "connect API_KEY=abcd1234xyz".into(),
+                    exit_code: Some(1),
+                    at_ms: None,
+                }),
+                recent_lines: vec!["password: hunter2x".into(), "port: 8080".into()],
+            }],
+        };
+        let red = crate::ai::sanitize::Redactor::from_values(vec!["abcd1234xyz".to_string()]);
+        redact_service_diags(&red, &mut view.services);
+        let err = view.services[0].error.as_ref().unwrap();
+        assert!(!err.message.contains("abcd1234xyz"));
+        assert_eq!(
+            view.services[0].recent_lines[0],
+            crate::ai::sanitize::REDACTED
+        );
+        assert_eq!(view.services[0].recent_lines[1], "port: 8080");
+    }
+
+    #[test]
+    fn wait_ready_reaches_for_started_targets() {
+        let root = write_ws_yaml(diag_yaml());
+        let eng = Engine::ping_for_test();
+        eng.open(&root).unwrap();
+        eng.start_one("ok").unwrap();
+        assert!(
+            wait_eq(&eng, "ok", RtState::Running),
+            "ok={:?}",
+            eng.state_of("ok")
+        );
+        let out = eng
+            .wait_workspace_ready(Some(vec!["ok".into()]), Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(out.outcome, WaitReadyOutcome::Reached);
+        assert_eq!(out.targets, vec!["ok".to_string()]);
+        assert_eq!(out.services.len(), 1);
+        assert!(out.services[0].ready);
+        assert!(out.pending.is_empty());
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wait_ready_stopped_when_target_never_started() {
+        let root = write_ws_yaml(diag_yaml());
+        let eng = Engine::ping_for_test();
+        eng.open(&root).unwrap();
+        // 缺省 targets = start_order（enabled 全集）；bad 未启动 → stopped 早退
+        let out = eng
+            .wait_workspace_ready(None, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(out.outcome, WaitReadyOutcome::Stopped);
+        assert_eq!(out.services.len(), 2);
+        assert!(out.pending.is_empty());
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wait_ready_fails_on_exited_target_with_error_source() {
+        let root = write_ws_yaml(diag_yaml());
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+        eng.start_one("ok").unwrap();
+        assert!(wait_eq(&eng, "ok", RtState::Exited));
+        let out = eng
+            .wait_workspace_ready(Some(vec!["ok".into()]), Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(out.outcome, WaitReadyOutcome::Failed);
+        let err = out.services[0]
+            .error
+            .as_ref()
+            .expect("exited carries error");
+        assert_eq!(err.source, "exit");
+        assert_eq!(err.exit_code, Some(1));
+        assert!(err.message.contains("退出码 1"), "{}", err.message);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wait_ready_timeout_lists_pending_and_distinguishes_unready() {
+        let root = write_ws_yaml(&slow_ready_yaml());
+        let eng = Engine::ping_for_test();
+        eng.open(&root).unwrap();
+        eng.start_one("slow").unwrap();
+        // tcp 打端口 1（必不通）+ grace 3600s：停在 Starting，等待期不会转 Unhealthy
+        assert!(
+            wait_eq(&eng, "slow", RtState::Starting),
+            "slow={:?}",
+            eng.state_of("slow")
+        );
+        let out = eng
+            .wait_workspace_ready(None, Duration::from_millis(600))
+            .unwrap();
+        assert_eq!(out.outcome, WaitReadyOutcome::Timeout);
+        assert_eq!(out.pending, vec!["slow".to_string()]);
+        assert!(!out.services[0].ready);
+        assert_eq!(out.services[0].state, RtState::Starting);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wait_ready_unknown_target_not_found() {
+        let root = write_ws_yaml(diag_yaml());
+        let eng = Engine::ping_for_test();
+        eng.open(&root).unwrap();
+        assert_eq!(
+            eng.wait_workspace_ready(Some(vec!["nope".into()]), Duration::from_secs(1))
+                .unwrap_err()
+                .code(),
+            ErrorCode::NotFound
+        );
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diagnostics_reports_ready_split_and_states() {
+        let root = write_ws_yaml(diag_yaml());
+        let eng = Engine::ping_for_test();
+        eng.open(&root).unwrap();
+        eng.start_one("ok").unwrap();
+        assert!(wait_eq(&eng, "ok", RtState::Running));
+        let view = eng.diagnostics().unwrap();
+        assert_eq!(view.total_count, 2);
+        assert_eq!(view.ready_count, 1);
+        assert!(!view.ready);
+        let ok = view.services.iter().find(|s| s.id == "ok").unwrap();
+        assert!(ok.ready);
+        assert!(ok.error.is_none());
+        let bad = view.services.iter().find(|s| s.id == "bad").unwrap();
+        assert_eq!(bad.state, RtState::Stopped);
+        assert!(!bad.ready);
+        assert!(bad.error.is_none(), "无错误与有错误可区分");
+        assert!(bad.recent_lines.is_empty());
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diagnostics_reports_exit_error_with_source() {
+        let root = write_ws_yaml(ping_yaml());
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+        eng.start_one("ping").unwrap();
+        assert!(wait_eq(&eng, "ping", RtState::Exited));
+        let view = eng.diagnostics().unwrap();
+        assert_eq!(view.ready_count, 0);
+        let err = view.services[0]
+            .error
+            .as_ref()
+            .expect("exited carries error");
+        assert_eq!(err.source, "exit");
+        assert_eq!(err.exit_code, Some(1));
+        assert!(err.message.contains("退出码 1"), "{}", err.message);
+        eng.close().unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 }
