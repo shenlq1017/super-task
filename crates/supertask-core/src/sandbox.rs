@@ -104,7 +104,10 @@ mod tests {
     #[test]
     fn blocks_escape() {
         assert!(assert_rel_safe("../etc").is_err());
+        #[cfg(windows)]
         assert!(assert_rel_safe("C:\\Windows").is_err());
+        #[cfg(unix)]
+        assert!(assert_rel_safe("/etc").is_err());
         assert!(assert_rel_safe("web/../web").is_ok());
         assert!(assert_rel_safe("web/app").is_ok());
     }

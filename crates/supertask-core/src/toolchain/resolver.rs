@@ -56,8 +56,9 @@ pub fn resolve_tool_with(
                 env_delta.insert(
                     "PATH".into(),
                     format!(
-                        "{};{}",
+                        "{}{}{}",
                         parent.display(),
+                        if cfg!(windows) { ";" } else { ":" },
                         std::env::var("PATH").unwrap_or_default()
                     ),
                 );
@@ -208,18 +209,22 @@ mod tests {
     #[test]
     fn mise_which_returns_program_and_path_env_delta() {
         let fake = crate::toolchain::runner::FakeRunner::new();
-        fake.push_ok("C:\\mise\\installs\\java\\21\\bin\\java.exe");
+        // which 输出与 PATH 前缀按平台取（Unix 下 `\` 不是分隔符，parent 会变空）
+        #[cfg(windows)]
+        let (which, bin_prefix) = (
+            "C:\\mise\\installs\\java\\21\\bin\\java.exe",
+            "C:\\mise\\installs\\java\\21\\bin;",
+        );
+        #[cfg(not(windows))]
+        let (which, bin_prefix) = (
+            "/opt/mise/installs/java/21/bin/java",
+            "/opt/mise/installs/java/21/bin:",
+        );
+        fake.push_ok(which);
         let tool =
             resolve_tool(&fake, ProviderKind::Mise, ToolKind::Java, Path::new("C:/w")).unwrap();
-        assert_eq!(
-            tool.program,
-            PathBuf::from("C:\\mise\\installs\\java\\21\\bin\\java.exe")
-        );
-        assert!(tool
-            .env_delta
-            .get("PATH")
-            .unwrap()
-            .starts_with("C:\\mise\\installs\\java\\21\\bin;"));
+        assert_eq!(tool.program, PathBuf::from(which));
+        assert!(tool.env_delta.get("PATH").unwrap().starts_with(bin_prefix));
     }
 
     #[test]

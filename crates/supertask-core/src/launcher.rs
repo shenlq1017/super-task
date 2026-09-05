@@ -1504,7 +1504,14 @@ services:
         let wrapper = root.join("gradlew.bat");
         #[cfg(not(windows))]
         let wrapper = root.join("gradlew");
+        #[cfg(unix)]
+        let make_exec = |p: &std::path::Path| {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+        };
         fs::write(&wrapper, "@echo off").unwrap();
+        #[cfg(unix)]
+        make_exec(&wrapper);
         let (prog, args, warns) =
             resolve_gradle_launcher(&root, ".", "mod", "gradlew.bat", &[":mod:bootRun".into()])
                 .unwrap();
@@ -1519,6 +1526,8 @@ services:
         fs::write(root.join("mod/gradlew.bat"), "@echo off").unwrap();
         #[cfg(not(windows))]
         fs::write(root.join("mod/gradlew"), "#!/bin/sh").unwrap();
+        #[cfg(unix)]
+        make_exec(&root.join("mod/gradlew"));
         let (prog, _, _) =
             resolve_gradle_launcher(&root, ".", "mod", "gradlew.bat", &[":mod:bootRun".into()])
                 .unwrap();
@@ -1537,6 +1546,8 @@ services:
         fs::write(root.join("srv/gradlew.bat"), "@echo off").unwrap();
         #[cfg(not(windows))]
         fs::write(root.join("srv/gradlew"), "#!/bin/sh").unwrap();
+        #[cfg(unix)]
+        make_exec(&root.join("srv/gradlew"));
         let (prog, _, _) =
             resolve_gradle_launcher(&root, "srv", "mod", "gradlew.bat", &[":mod:bootRun".into()])
                 .unwrap();

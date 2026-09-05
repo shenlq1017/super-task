@@ -884,8 +884,13 @@ mod tests {
         ))
         .unwrap_err();
         assert_eq!(e.code(), ErrorCode::DataInvalid);
-        // 绝对路径 / .. 逃逸 / 空目录
-        for dir in ["C:/tmp/db", "../outside/db", "."] {
+        // 绝对路径 / .. 逃逸 / 空目录（绝对路径样例按平台取）
+        let abs = if cfg!(windows) {
+            "C:/tmp/db"
+        } else {
+            "/tmp/db"
+        };
+        for dir in [abs, "../outside/db", "."] {
             let y = format!("data:\n  volumes:\n    v:\n      dir: {dir:?}\n");
             let e = parse_yaml(&svc_yaml(&y)).unwrap_err();
             assert_eq!(e.code(), ErrorCode::DataInvalid, "dir={dir}");

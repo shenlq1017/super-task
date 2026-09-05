@@ -726,7 +726,7 @@ mod imp {
         let ppid = std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .ok()
             .and_then(|stat| {
-                let after = stat.rsplit_once(')')?.1.split_whitespace();
+                let mut after = stat.rsplit_once(')')?.1.split_whitespace();
                 after.nth(1)?.parse::<u32>().ok()
             });
         Some((cwd, cmd_line, ppid))

@@ -287,7 +287,10 @@ fn linux_local_ip() -> Option<String> {
         while !p.is_null() {
             let a = &*p;
             p = a.ifa_next;
-            let Some(sa) = a.ifa_addr else { continue };
+            let sa = a.ifa_addr;
+            if sa.is_null() {
+                continue;
+            }
             if (*sa).sa_family as i32 != libc::AF_INET {
                 continue;
             }
@@ -908,10 +911,16 @@ fn linux_cores() -> (Option<u32>, Option<u32>) {
             }
         }
     }
-    (
-        (logical > 0).then_some(logical).or_else(fallback),
-        (!cores.is_empty()).then(|| cores.len() as u32),
-    )
+    // 返回 (physical, logical)，与 windows_cores 口径一致（system_info 按此解构）。
+    let logical_n = (logical > 0).then_some(logical).or_else(fallback);
+    let physical_n = (!cores.is_empty()).then(|| cores.len() as u32);
+    // WSL2 等合成 cpuinfo 可能给出不一致拓扑（physical > logical），
+    // 此时按「取不到」处理返回 null，不伪造。
+    let physical_n = match (physical_n, logical_n) {
+        (Some(p), Some(l)) if p > l => None,
+        (p, _) => p,
+    };
+    (physical_n, logical_n)
 }
 
 #[cfg(windows)]
