@@ -768,7 +768,9 @@ const jaJP = {
         noNeeds: "このワークスペースには needs が未宣言です。supertask.yaml のトップレベルに追加できます（例: needs: [\"node@20\"]）",
         install: "インストール",
         installing: "インストール中…",
+        installAndPin: "インストールしてピン留め",
         installDone: "{{id}} {{version}} をインストールし、ニーズを満たしました",
+        installDonePinned: "{{id}} {{version}} をインストールして toolchain.* にピン留めしました。ニーズを満たしました",
         warnings: "ヒント",
         status: {
           satisfied: "既存",

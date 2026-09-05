@@ -768,7 +768,9 @@ const enUS = {
         noNeeds: "This workspace declares no needs; add them at the top level of supertask.yaml, e.g. needs: [\"node@20\"]",
         install: "Install",
         installing: "Installing…",
+        installAndPin: "Install & pin",
         installDone: "Installed {{id}} {{version}} — the need is satisfied",
+        installDonePinned: "Installed {{id}} {{version}} and pinned to toolchain.* — the need is satisfied",
         warnings: "Notes",
         status: {
           satisfied: "Present",

@@ -865,7 +865,9 @@ const zhCN = {
         noNeeds: "本工作区未声明 needs；可在 supertask.yaml 顶层添加，如 needs: [\"node@20\"]",
         install: "安装",
         installing: "安装中…",
+        installAndPin: "安装并钉扎",
         installDone: "已安装 {{id}} {{version}}，需求已满足",
+        installDonePinned: "已安装 {{id}} {{version}} 并钉扎到 toolchain.*，需求已满足",
         warnings: "提示",
         status: {
           satisfied: "已存在",

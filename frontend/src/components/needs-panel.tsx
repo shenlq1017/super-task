@@ -6,7 +6,7 @@
  * （发起与终态轮询由调用方负责，本组件只回调）。
  */
 import { useTranslation } from "react-i18next";
-import { Download, Loader2, Search } from "lucide-react";
+import { Download, Loader2, Pin, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -28,7 +28,7 @@ function NeedRow({
 }: {
   item: NeedItem;
   installing: boolean;
-  onInstall: (item: NeedItem) => void;
+  onInstall: (item: NeedItem, pin: boolean) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -44,16 +44,29 @@ function NeedRow({
           </Badge>
         ) : null}
         {item.status === "installable" ? (
-          <Button
-            variant="default"
-            size="sm"
-            className="ml-auto h-7 shrink-0 gap-1 px-2 text-[0.72rem]"
-            disabled={installing}
-            onClick={() => onInstall(item)}
-          >
-            {installing ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
-            {installing ? t("pages.env.needs.installing") : t("pages.env.needs.install")}
-          </Button>
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            {/* 钉扎是显式选择（默认不写 yaml）；安装本身两者一致，复用 toolchain.install persist */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-[0.72rem]"
+              disabled={installing}
+              onClick={() => onInstall(item, true)}
+            >
+              {installing ? <Loader2 className="size-3.5 animate-spin" /> : <Pin className="size-3.5" />}
+              {t("pages.env.needs.installAndPin")}
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              className="h-7 gap-1 px-2 text-[0.72rem]"
+              disabled={installing}
+              onClick={() => onInstall(item, false)}
+            >
+              {installing ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+              {installing ? t("pages.env.needs.installing") : t("pages.env.needs.install")}
+            </Button>
+          </span>
         ) : null}
       </div>
       {item.status === "satisfied" && item.found_path ? (
@@ -88,7 +101,7 @@ export function NeedsPanel({
   /** 正在安装的工具 id（该行按钮禁用）。 */
   installingIds: string[];
   onResolve: () => void;
-  onInstall: (item: NeedItem) => void;
+  onInstall: (item: NeedItem, pin: boolean) => void;
 }) {
   const { t } = useTranslation();
   const declared = needs ?? [];

@@ -295,7 +295,7 @@ export function EnvPage() {
   const [needsLoading, setNeedsLoading] = useState(false);
   const [needsError, setNeedsError] = useState<string | null>(null);
   /** needs 面板发起的安装 op → 终态成功时给 needs 专属 toast 并自动重跑 resolve。 */
-  const needsOps = useRef(new Map<string, { id: string; version: string }>());
+  const needsOps = useRef(new Map<string, { id: string; version: string; pinned: boolean }>());
 
   const setManagerPick = (m: ManagerPick) => {
     setManagerPickState(m);
@@ -370,7 +370,13 @@ export function EnvPage() {
         const needOp = needsOps.current.get(op.operation_id);
         if (needOp) {
           needsOps.current.delete(op.operation_id);
-          toast(t("pages.env.needs.installDone", { id: needOp.id, version: needOp.version }), "ok");
+          if (needOp.pinned) void yaml.actions.reload(); // 钉扎已写回 toolchain.*，刷新本地 spec/hash
+          toast(
+            needOp.pinned
+              ? t("pages.env.needs.installDonePinned", { id: needOp.id, version: needOp.version })
+              : t("pages.env.needs.installDone", { id: needOp.id, version: needOp.version }),
+            "ok",
+          );
           void resolveNeeds();
         } else {
           toast(t("pages.env.opDone", { tool, verb: t(`pages.env.verb_${verb}`) }), "ok");
@@ -448,8 +454,9 @@ export function EnvPage() {
     }
   };
 
-  /** needs installable 行安装：复用 toolchain.install 长操作链路（tool=id，版本/manager 取 resolve 建议值）。 */
-  const installNeed = async (item: NeedItem) => {
+  /** needs installable 行安装：复用 toolchain.install 长操作链路（tool=id，版本/manager 取 resolve 建议值）。
+   *  pin=true 时经 persist 一并把版本写回 toolchain.*（§10.17 钉扎写回；YAML_CONFLICT 仅写回失败，安装保留）。 */
+  const installNeed = async (item: NeedItem, pin: boolean) => {
     const tool = item.id as ToolKey;
     // installable 只会是已知工具 id（防御）；同工具进行中禁止重复发起（§15.1）
     if (!(tool in DEFAULT_VERSION) || pending[tool]) return;
@@ -457,11 +464,11 @@ export function EnvPage() {
       const out = await apiToolchainInstall(tool, {
         version: item.install_version ?? undefined,
         manager: item.via,
-        persist: false,
-        baseHash: null,
+        persist: pin,
+        baseHash: pin ? yaml.state.hash : null,
       });
       handledOps.current.delete(out.operation_id);
-      needsOps.current.set(out.operation_id, { id: item.id, version: item.install_version ?? "" });
+      needsOps.current.set(out.operation_id, { id: item.id, version: item.install_version ?? "", pinned: pin });
       setPending((prev) => ({ ...prev, [tool]: { opId: out.operation_id, verb: "install" } }));
     } catch (e) {
       toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
@@ -669,7 +676,7 @@ export function EnvPage() {
               .filter(([, p]) => p != null)
               .map(([k]) => k)}
             onResolve={() => void resolveNeeds()}
-            onInstall={(item) => void installNeed(item)}
+            onInstall={(item, pin) => void installNeed(item, pin)}
           />
         )}
 

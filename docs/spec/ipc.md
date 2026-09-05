@@ -984,6 +984,10 @@ true 强制重探工具链。
 
 **安装执行口径**：installable 项由前端「安装」按钮复用环境页既有 `toolchain.install`
 流程（hub 长操作，进度走 `st-operation`）；resolve 全程不落盘、无任何副作用。
+**钉扎写回（2026-09-06）**：「安装并钉扎」= 同一命令带 `persist: true` + `base_hash`，
+安装成功后把安装版本写回 `toolchain.*`（npm/pnpm/yarn 写 `package_manager`），重新
+resolve 即翻转为 satisfied；`YAML_CONFLICT` 时安装结果保留、仅写回失败（§4.3 既有
+语义）；不钉扎的「安装」与本节行为完全一致。
 
 **错误码**：运行期不新增（不可满足是状态不是错误）；加载期新增 `NEEDS_INVALID`
 （id/版本要求格式、lts 别名、`@` 数量、条目数超限，见 §7）。
