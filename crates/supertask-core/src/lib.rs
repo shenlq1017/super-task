@@ -1,5 +1,6 @@
 //! SuperTask engine. Spec: `docs/spec/`.
 
+pub mod adopt;
 pub mod ai;
 pub mod appdata;
 pub mod cloud;

@@ -1403,6 +1403,52 @@ pub fn import_taskfile_apply(
 }
 
 // ---------------------------------------------------------------------------
+// 孤儿进程纳管（ipc.md §10.16）：发现结果 → generic 服务草稿 → 人确认写回
+// ---------------------------------------------------------------------------
+
+/// `workspace.adoptPreview`：对当前工作区做 dry-run 预览（纯内存计算，不落盘、
+/// 不杀进程）。进程退出 / 发现表读取失败沿用 discover 的错误语义。
+#[tauri::command(rename = "workspace.adoptPreview")]
+pub fn workspace_adopt_preview(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::adopt::AdoptPreview, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    let procs = supertask_core::discover::discover_services().map_err(ipc_err)?;
+    Ok(supertask_core::adopt::preview(
+        &current,
+        Path::new(&workspace_id),
+        &procs,
+    ))
+}
+
+/// `workspace.adoptApply`：按用户确认合并草稿；应用前重新发现进程（与预览同一
+/// 确定性规则，退出的进程按警告跳过）。写回走 saveForm 机制（base_hash 冲突 →
+/// `YAML_CONFLICT`），只新增所选服务，不触碰其他字段。
+#[tauri::command(rename = "workspace.adoptApply")]
+pub fn workspace_adopt_apply(
+    state: EngineState<'_>,
+    workspace_id: String,
+    choices: Vec<supertask_core::adopt::AdoptChoice>,
+    base_hash: String,
+) -> Result<YamlSaveOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    let procs = supertask_core::discover::discover_services().map_err(ipc_err)?;
+    let (merged, mut warnings) =
+        supertask_core::adopt::apply(&current, Path::new(&workspace_id), &procs, &choices)
+            .map_err(ipc_err)?;
+    let (spec, hash, save_warnings) = state.save_form(&merged, &base_hash).map_err(ipc_err)?;
+    warnings.extend(warnings_to_strings(&save_warnings));
+    Ok(YamlSaveOut {
+        spec,
+        hash,
+        warnings,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // 1.1 Desktop: 自动更新（v1.1 规格 §9，ipc.md §10.6）
 // ---------------------------------------------------------------------------
 

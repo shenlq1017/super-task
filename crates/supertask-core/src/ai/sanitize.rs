@@ -38,7 +38,7 @@ fn is_sensitive_line(line: &str) -> bool {
 }
 
 /// 词边界的关键词匹配：前后不能是字母/数字（`tokenizer` 不算 `token`）。
-fn contains_keyword(haystack: &str, keyword: &str) -> bool {
+pub(crate) fn contains_keyword(haystack: &str, keyword: &str) -> bool {
     let mut from = 0;
     while let Some(pos) = haystack[from..].find(keyword) {
         let start = from + pos;

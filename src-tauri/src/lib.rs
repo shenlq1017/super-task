@@ -358,6 +358,8 @@ pub fn run() {
             commands::import_taskfile_apply,
             commands::import_readme_preview,
             commands::import_readme_apply,
+            commands::workspace_adopt_preview,
+            commands::workspace_adopt_apply,
             commands::system_discover,
             commands::system_kill_process,
             commands::yaml_get,

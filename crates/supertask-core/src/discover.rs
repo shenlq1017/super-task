@@ -27,6 +27,8 @@ pub struct ForeignService {
     pub cwd: Option<String>,
     /// 完整命令行；读取失败为 None
     pub cmd_line: Option<String>,
+    /// 父进程 pid；平台不支持或读取失败为 None（孤儿进程纳管用它标注进程关系）
+    pub parent_pid: Option<u32>,
     /// CPU 占用百分比（相对整机逻辑核，0~100*N）。首次采样无差值或读取失败为 None
     pub cpu_percent: Option<f32>,
     /// 物理内存占用（工作集，字节）。读取失败为 None
@@ -217,6 +219,7 @@ pub fn discover_services() -> Result<Vec<ForeignService>> {
                 ports: ports.clone(),
                 cwd: None,
                 cmd_line: None,
+                parent_pid: None,
                 cpu_percent: None,
                 memory_bytes: None,
             },
@@ -225,9 +228,10 @@ pub fn discover_services() -> Result<Vec<ForeignService>> {
     // 只对有监听端口的少数 pid 读 PEB 详情；单个 pid 读取失败不影响整体。
     let mut svcs: Vec<ForeignService> = out.into_values().collect();
     for s in &mut svcs {
-        if let Some((cwd, cmd_line)) = imp::process_details(s.pid) {
+        if let Some((cwd, cmd_line, ppid)) = imp::process_details(s.pid) {
             s.cwd = (!cwd.is_empty()).then_some(cwd);
             s.cmd_line = (!cmd_line.is_empty()).then_some(cmd_line);
+            s.parent_pid = ppid;
         }
         let (cpu_percent, memory_bytes) = imp::process_stats(s.pid);
         s.cpu_percent = cpu_percent;
@@ -544,8 +548,8 @@ mod imp {
         inherited_from_unique_process_id: usize,
     }
 
-    /// 读另一进程的 (cwd, cmdline)。同用户进程无需管理员权限；失败返回 None。
-    pub fn process_details(pid: u32) -> Option<(String, String)> {
+    /// 读另一进程的 (cwd, cmdline, 父pid)。同用户进程无需管理员权限；失败返回 None。
+    pub fn process_details(pid: u32) -> Option<(String, String, Option<u32>)> {
         unsafe {
             let h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid).ok()?;
             if h.is_invalid() {
@@ -559,8 +563,9 @@ mod imp {
 
     /// 读 PEB → RTL_USER_PROCESS_PARAMETERS。x64 稳定布局：
     /// ProcessParameters @ PEB+0x20；CurrentDirectory.DosPath @ params+0x38；
-    /// CommandLine @ params+0x70。
-    unsafe fn read_details(h: HANDLE) -> Option<(String, String)> {
+    /// CommandLine @ params+0x70。父 pid 来自 PBI 的
+    /// InheritedFromUniqueProcessId（Windows 的唯一进程 id 即 pid）。
+    unsafe fn read_details(h: HANDLE) -> Option<(String, String, Option<u32>)> {
         let mut pbi = ProcessBasicInfo {
             exit_status: 0,
             peb_base_address: std::ptr::null_mut(),
@@ -579,13 +584,14 @@ mod imp {
         if status != 0 || pbi.peb_base_address.is_null() {
             return None;
         }
+        let ppid = u32::try_from(pbi.inherited_from_unique_process_id).ok();
         let params = read_u64(h, pbi.peb_base_address as usize + 0x20)? as usize;
         if params == 0 {
             return None;
         }
         let cwd = read_unicode_string(h, params + 0x38).filter(|s| !s.is_empty())?;
         let cmd_line = read_unicode_string(h, params + 0x70);
-        Some((cwd, cmd_line.unwrap_or_default()))
+        Some((cwd, cmd_line.unwrap_or_default(), ppid))
     }
 
     unsafe fn read_u64(h: HANDLE, addr: usize) -> Option<u64> {
@@ -704,7 +710,7 @@ mod imp {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn process_details(pid: u32) -> Option<(String, String)> {
+    pub fn process_details(pid: u32) -> Option<(String, String, Option<u32>)> {
         let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
             .ok()?
             .to_string_lossy()
@@ -716,7 +722,14 @@ mod imp {
             .map(|s| String::from_utf8_lossy(s).into_owned())
             .collect::<Vec<_>>()
             .join(" ");
-        Some((cwd, cmd_line))
+        // /proc/<pid>/stat：pid (comm) state ppid …——comm 可含空格括号，取最后一个 ')' 之后
+        let ppid = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                let after = stat.rsplit_once(')')?.1.split_whitespace();
+                after.nth(1)?.parse::<u32>().ok()
+            });
+        Some((cwd, cmd_line, ppid))
     }
 
     #[cfg(target_os = "linux")]
@@ -771,8 +784,8 @@ mod imp {
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub fn process_details(pid: u32) -> Option<(String, String)> {
-        // cwd：`lsof -a -p <pid> -d cwd -Fn` 的 `n<路径>` 行；cmdline：ps command
+    pub fn process_details(pid: u32) -> Option<(String, String, Option<u32>)> {
+        // cwd：`lsof -a -p <pid> -d cwd -Fn` 的 `n<路径>` 行；cmdline：ps command；ppid：ps ppid
         let out = std::process::Command::new("lsof")
             .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
             .output()
@@ -789,7 +802,17 @@ mod imp {
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
-        Some((cwd, cmd_line))
+        let ppid = std::process::Command::new("ps")
+            .args(["-o", "ppid=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            });
+        Some((cwd, cmd_line, ppid))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -851,6 +874,7 @@ mod tests {
             ports,
             cwd: cwd.map(str::to_string),
             cmd_line: cmd.map(str::to_string),
+            parent_pid: None,
             cpu_percent: None,
             memory_bytes: None,
         }

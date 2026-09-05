@@ -80,6 +80,9 @@ pub mod cmd {
     // ---- 1.4 (types only; handlers in later phases) ----
     pub const IMPORT_TASKFILE_PREVIEW: &str = "import.taskfilePreview";
     pub const IMPORT_TASKFILE_APPLY: &str = "import.taskfileApply";
+    // ---- 孤儿进程纳管（ipc.md §10.16）----
+    pub const WORKSPACE_ADOPT_PREVIEW: &str = "workspace.adoptPreview";
+    pub const WORKSPACE_ADOPT_APPLY: &str = "workspace.adoptApply";
     // ---- 1.6 ----
     pub const GATEWAY_STATUS: &str = "gateway.status";
     pub const GATEWAY_PREVIEW: &str = "gateway.preview";
