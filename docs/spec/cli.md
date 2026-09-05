@@ -63,7 +63,13 @@
   - `supertask_logs`：`service`（string）、`lines`（integer，默认 200）、`grep`（string，可选）。
   - `supertask_run_script`：`id`（string，必填，缺失返回 `SPEC_INVALID`）。
   - `supertask_cancel_script`：无参数。
-- 仅 `supertask_status` / `supertask_logs` 为只读（不取锁）；其余可变工具在首次调用时惰性获取工作区锁（holder=mcp）。
+  - `supertask_host_metrics`：无参数；主机指标只读快照（整机视角，与工作区无关）：CPU
+    总占用与四分占比、内存/交换空间、磁盘、CPU 温度（尽力采样）、网络上传下载速率、
+    `platform` 与 `sampledAtMs`。差分字段（CPU 占比、网络速率）首次调用为 null；取不到的
+    字段为 null 而非 0；百分比/速率/温度保留 1 位小数。脱敏：除 `platform` 枚举值外不含
+    字符串字段——无 IP、路径、进程或环境信息；不持久化、不进日志、不上传。
+- 仅 `supertask_status` / `supertask_logs` / `supertask_host_metrics` 为只读（不取锁，其中
+  host metrics 与工作区有效性无关）；其余可变工具在首次调用时惰性获取工作区锁（holder=mcp）。
 - **断开即清场**：编辑器退出/重载会关闭 stdio，MCP 进程停止全部服务、释放锁并退出（防孤儿优先）。可变工具描述中已明示。
 - 桌面已打开同一工作区时，可变工具返回 `WORKSPACE_LOCKED`（details 带 holder/pid），只读工具仍可用。
 

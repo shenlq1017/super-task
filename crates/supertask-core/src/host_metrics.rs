@@ -753,6 +753,271 @@ pub fn sample_host_metrics(temp: TempMode) -> HostMetrics {
     }
 }
 
+// -------------------------------------------------- Static system info ----
+
+/// `system.info` 输出：静态系统信息（监控页「系统信息」卡片用）。纯静态只读、
+/// 无参数、不失败、不持久化、不进日志；与 [`HostMetrics`] 的动态采样分列，
+/// 也不进 MCP（AI 用主机指标走 `supertask_host_metrics`）。取不到的字段为 null，
+/// 不伪造为 0；不含主机名 / 用户名 / 路径等可识别信息。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemInfo {
+    /// `std::env::consts::OS`（windows / macos / linux）。
+    pub platform: &'static str,
+    /// `std::env::consts::ARCH`（x86_64 / aarch64 …）。
+    pub arch: &'static str,
+    /// 系统名（如 "Windows 11 Pro" / "Ubuntu"）。
+    pub os_name: Option<String>,
+    /// 系统版本（Windows 形如 "24H2 (26200)"；Linux 为 os-release VERSION_ID）。
+    pub os_version: Option<String>,
+    /// 物理核数；虚拟化或平台拿不到时为 null。
+    pub cpu_physical_cores: Option<u32>,
+    /// 逻辑核数（SMT 线程总数）。
+    pub cpu_logical_cores: Option<u32>,
+    /// 物理内存总量（字节）。
+    pub total_memory_bytes: Option<u64>,
+    /// 应用版本（workspace 统一升版，与安装包一致）。
+    pub app_version: &'static str,
+}
+
+#[cfg(windows)]
+fn windows_os_info() -> (Option<String>, Option<String>) {
+    fn reg_sz(name: &str) -> Option<String> {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+        let wide = |s: &str| {
+            s.encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
+        let subkey = wide("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
+        let value = wide(name);
+        let mut buf = [0u16; 512];
+        let mut size = (buf.len() * std::mem::size_of::<u16>()) as u32;
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                PCWSTR(subkey.as_ptr()),
+                PCWSTR(value.as_ptr()),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut size),
+            )
+        };
+        if rc.is_err() {
+            return None;
+        }
+        let text = String::from_utf16_lossy(&buf[..(size as usize / 2).min(buf.len())]);
+        let text = text.trim_end_matches('\0').trim();
+        (!text.is_empty()).then(|| text.to_string())
+    }
+    let name = reg_sz("ProductName");
+    // 20H2+ 用 DisplayVersion（"24H2"），更早的用 ReleaseId（"21H1"）。
+    let release = reg_sz("DisplayVersion").or_else(|| reg_sz("ReleaseId"));
+    let build = reg_sz("CurrentBuildNumber");
+    let version = match (release, build) {
+        (Some(r), Some(b)) => Some(format!("{r} ({b})")),
+        (None, Some(b)) => Some(format!("Build {b}")),
+        (r, None) => r,
+    };
+    (name, version)
+}
+
+/// Physical = RelationProcessorCore 计数；logical = 各核掩码位数和（SMT 线程总数）。
+#[cfg(windows)]
+fn windows_cores() -> (Option<u32>, Option<u32>) {
+    use windows::Win32::System::SystemInformation::{
+        GetLogicalProcessorInformation, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION,
+    };
+    let mut len = 0u32;
+    // First call with a null buffer reports the required array size.
+    let _ = unsafe { GetLogicalProcessorInformation(None, &mut len) };
+    if len == 0 {
+        return (None, None);
+    }
+    let item = std::mem::size_of::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION>();
+    let mut buf = vec![SYSTEM_LOGICAL_PROCESSOR_INFORMATION::default(); len as usize / item];
+    if unsafe { GetLogicalProcessorInformation(Some(buf.as_mut_ptr()), &mut len) }.is_err() {
+        return (None, None);
+    }
+    let mut physical = 0u32;
+    let mut logical = 0u32;
+    for e in &buf[..len as usize / item] {
+        if e.Relationship == RelationProcessorCore {
+            physical += 1;
+            logical += e.ProcessorMask.count_ones();
+        }
+    }
+    (
+        (physical > 0).then_some(physical),
+        (logical > 0).then_some(logical),
+    )
+}
+
+/// os-release：NAME（兜底 PRETTY_NAME）+ VERSION_ID。
+#[cfg(target_os = "linux")]
+fn linux_os_info() -> (Option<String>, Option<String>) {
+    let Ok(text) = std::fs::read_to_string("/etc/os-release") else {
+        return (None, None);
+    };
+    let field = |key: &str| {
+        text.lines().find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            let v = v.trim().trim_matches('"');
+            (k == key && !v.is_empty()).then(|| v.to_string())
+        })
+    };
+    (
+        field("NAME").or_else(|| field("PRETTY_NAME")),
+        field("VERSION_ID"),
+    )
+}
+
+/// Logical = processor 行数（兜底 available_parallelism）；physical = (physical id,
+/// core id) 去重数。
+#[cfg(target_os = "linux")]
+fn linux_cores() -> (Option<u32>, Option<u32>) {
+    let fallback = || {
+        std::thread::available_parallelism()
+            .ok()
+            .map(|n| n.get() as u32)
+    };
+    let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") else {
+        return (None, fallback());
+    };
+    let mut logical = 0u32;
+    let mut cores = std::collections::HashSet::new();
+    for block in text.split("\n\n") {
+        let (mut package, mut core, mut has_cpu) = (None, None, false);
+        for line in block.lines() {
+            let Some((k, v)) = line.split_once(':') else {
+                continue;
+            };
+            match k.trim() {
+                "processor" => has_cpu = true,
+                "physical id" => package = Some(v.trim().to_string()),
+                "core id" => core = Some(v.trim().to_string()),
+                _ => {}
+            }
+        }
+        if has_cpu {
+            logical += 1;
+            if let (Some(p), Some(c)) = (package, core) {
+                cores.insert((p, c));
+            }
+        }
+    }
+    (
+        (logical > 0).then_some(logical).or_else(fallback),
+        (!cores.is_empty()).then(|| cores.len() as u32),
+    )
+}
+
+#[cfg(windows)]
+fn static_os_info() -> (Option<String>, Option<String>) {
+    windows_os_info()
+}
+#[cfg(target_os = "linux")]
+fn static_os_info() -> (Option<String>, Option<String>) {
+    linux_os_info()
+}
+#[cfg(not(any(windows, target_os = "linux")))]
+fn static_os_info() -> (Option<String>, Option<String>) {
+    (None, None)
+}
+
+#[cfg(windows)]
+fn static_cores() -> (Option<u32>, Option<u32>) {
+    windows_cores()
+}
+#[cfg(target_os = "linux")]
+fn static_cores() -> (Option<u32>, Option<u32>) {
+    linux_cores()
+}
+#[cfg(not(any(windows, target_os = "linux")))]
+fn static_cores() -> (Option<u32>, Option<u32>) {
+    (
+        None,
+        std::thread::available_parallelism()
+            .ok()
+            .map(|n| n.get() as u32),
+    )
+}
+
+#[cfg(windows)]
+fn static_total_memory() -> Option<u64> {
+    windows_memory().map(|m| m.total)
+}
+#[cfg(target_os = "linux")]
+fn static_total_memory() -> Option<u64> {
+    linux_memory().map(|m| m.total)
+}
+#[cfg(not(any(windows, target_os = "linux")))]
+fn static_total_memory() -> Option<u64> {
+    None
+}
+
+/// 采样静态系统信息。无缓存：每次调用微秒级（一次 GLPI + 四次注册表读），
+/// UI 挂载时取一次即可。
+pub fn system_info() -> SystemInfo {
+    let (os_name, os_version) = static_os_info();
+    let (cpu_physical_cores, cpu_logical_cores) = static_cores();
+    SystemInfo {
+        platform: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        os_name,
+        os_version,
+        cpu_physical_cores,
+        cpu_logical_cores,
+        total_memory_bytes: static_total_memory(),
+        app_version: env!("CARGO_PKG_VERSION"),
+    }
+}
+
+// ------------------------------------------------------------ MCP view ----
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+impl HostMetrics {
+    /// MCP `supertask_host_metrics` 视图：结构稳定、只读、脱敏。与 [`HostMetrics`]
+    /// 的差异：不含 `net_local_ip`（主机可识别信息，对「还能不能起一个服务」无增益）；
+    /// 增加 `platform`，让调用方按平台解释字段语义（Windows 无 Nice 恒 0、swap 为
+    /// 提交内存口径）。百分比/速率/温度统一保留 1 位小数；不可得字段为 null，不伪造为 0。
+    pub fn mcp_value(&self) -> serde_json::Value {
+        let r = |v: Option<f32>| v.map(|x| round1(x as f64));
+        let r64 = |v: Option<f64>| v.map(round1);
+        serde_json::json!({
+            "platform": std::env::consts::OS,
+            "cpuPercent": r(self.cpu_percent),
+            "cpuUserPercent": r(self.cpu_user_percent),
+            "cpuSystemPercent": r(self.cpu_system_percent),
+            "cpuNicePercent": r(self.cpu_nice_percent),
+            "cpuIdlePercent": r(self.cpu_idle_percent),
+            "memoryUsedBytes": self.memory_used_bytes,
+            "memoryTotalBytes": self.memory_total_bytes,
+            "memoryAvailableBytes": self.memory_available_bytes,
+            "swapUsedBytes": self.swap_used_bytes,
+            "swapTotalBytes": self.swap_total_bytes,
+            "diskUsedBytes": self.disk_used_bytes,
+            "diskTotalBytes": self.disk_total_bytes,
+            "cpuTempC": r(self.cpu_temp_c),
+            "cpuTempSupported": self.cpu_temp_supported,
+            "netUploadBps": r64(self.net_upload_bps),
+            "netDownloadBps": r64(self.net_download_bps),
+            "sampledAtMs": self.sampled_at_ms,
+        })
+    }
+
+    /// 采样并映射为 MCP 视图。温度档固定 [`TempMode::Auto`]（桌面缺省；Windows 上
+    /// 最多每分钟一次 WMI 探测，调用方高频轮询不会放大进程开销）。
+    pub fn mcp_sample() -> serde_json::Value {
+        sample_host_metrics(TempMode::Auto).mcp_value()
+    }
+}
+
 // --------------------------------------------------------------- Others ----
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -895,5 +1160,199 @@ mod tests {
         assert_eq!(plausible_celsius(0.0), None);
         assert_eq!(plausible_celsius(f32::NAN), None);
         assert_eq!(plausible_celsius(900.0), None);
+    }
+
+    fn synthetic_metrics() -> HostMetrics {
+        HostMetrics {
+            cpu_percent: Some(33.333_33),
+            cpu_user_percent: Some(12.35),
+            cpu_system_percent: Some(20.0),
+            cpu_nice_percent: Some(0.0),
+            cpu_idle_percent: Some(66.666_66),
+            memory_used_bytes: Some(4_000),
+            memory_total_bytes: Some(16_000),
+            memory_available_bytes: Some(12_000),
+            swap_used_bytes: Some(500),
+            swap_total_bytes: Some(8_000),
+            disk_used_bytes: Some(100_000),
+            disk_total_bytes: Some(1_000_000),
+            cpu_temp_c: Some(45.56),
+            cpu_temp_supported: true,
+            net_upload_bps: Some(1_234.56),
+            net_download_bps: None,
+            net_local_ip: Some("192.168.1.10".into()),
+            sampled_at_ms: 1_700_000_000_000,
+        }
+    }
+
+    #[test]
+    fn mcp_view_shape_is_stable_and_sanitized() {
+        let v = synthetic_metrics().mcp_value();
+        let obj = v.as_object().expect("mcp view must be an object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cpuIdlePercent",
+                "cpuNicePercent",
+                "cpuPercent",
+                "cpuSystemPercent",
+                "cpuTempC",
+                "cpuTempSupported",
+                "cpuUserPercent",
+                "diskTotalBytes",
+                "diskUsedBytes",
+                "memoryAvailableBytes",
+                "memoryTotalBytes",
+                "memoryUsedBytes",
+                "netDownloadBps",
+                "netUploadBps",
+                "platform",
+                "sampledAtMs",
+                "swapTotalBytes",
+                "swapUsedBytes",
+            ]
+        );
+        // 脱敏：除 platform（枚举值）外不允许任何字符串字段——无 IP / 路径 / 进程 / 环境变量。
+        assert_eq!(v["platform"], std::env::consts::OS);
+        for (k, val) in obj {
+            if *k != "platform" {
+                assert!(!val.is_string(), "{k} must not carry free text");
+            }
+        }
+        assert!(v.get("netLocalIp").is_none(), "local IP must be dropped");
+        assert!(v["netDownloadBps"].is_null(), "缺失值保持 null，不伪造为 0");
+    }
+
+    #[test]
+    fn mcp_view_rounds_percentages_and_rates() {
+        let v = synthetic_metrics().mcp_value();
+        assert_eq!(v["cpuPercent"], 33.3);
+        assert_eq!(v["cpuIdlePercent"], 66.7);
+        assert_eq!(v["cpuTempC"], 45.6);
+        assert_eq!(v["netUploadBps"], 1234.6);
+        // 字节为整数，不受舍入影响
+        assert_eq!(v["memoryUsedBytes"], 4_000);
+        assert_eq!(v["sampledAtMs"], 1_700_000_000_000u64);
+    }
+
+    #[test]
+    fn mcp_view_all_none_stays_null_and_platform_semantics_hold() {
+        let m = HostMetrics {
+            cpu_percent: None,
+            cpu_user_percent: None,
+            cpu_system_percent: None,
+            cpu_nice_percent: None,
+            cpu_idle_percent: None,
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            memory_available_bytes: None,
+            swap_used_bytes: None,
+            swap_total_bytes: None,
+            disk_used_bytes: None,
+            disk_total_bytes: None,
+            cpu_temp_c: None,
+            cpu_temp_supported: false,
+            net_upload_bps: None,
+            net_download_bps: None,
+            net_local_ip: None,
+            sampled_at_ms: 7,
+        };
+        let v = m.mcp_value();
+        for k in [
+            "cpuPercent",
+            "cpuUserPercent",
+            "cpuSystemPercent",
+            "cpuNicePercent",
+            "cpuIdlePercent",
+            "memoryUsedBytes",
+            "memoryTotalBytes",
+            "memoryAvailableBytes",
+            "swapUsedBytes",
+            "swapTotalBytes",
+            "diskUsedBytes",
+            "diskTotalBytes",
+            "cpuTempC",
+            "netUploadBps",
+            "netDownloadBps",
+        ] {
+            assert!(v[k].is_null(), "{k} must be null when unavailable");
+        }
+        assert_eq!(v["cpuTempSupported"], false);
+        assert_eq!(v["platform"], std::env::consts::OS);
+        assert_eq!(v["sampledAtMs"], 7);
+    }
+
+    #[test]
+    fn mcp_sample_is_consistent_and_sanitized() {
+        let v = HostMetrics::mcp_sample();
+        assert!(v["sampledAtMs"].as_u64().unwrap() > 0);
+        if let (Some(used), Some(total)) = (
+            v["memoryUsedBytes"].as_u64(),
+            v["memoryTotalBytes"].as_u64(),
+        ) {
+            assert!(used <= total);
+        }
+        for k in [
+            "cpuPercent",
+            "cpuUserPercent",
+            "cpuSystemPercent",
+            "cpuIdlePercent",
+        ] {
+            if let Some(p) = v[k].as_f64() {
+                assert!((0.0..=100.0).contains(&p), "{k} out of range: {p}");
+            }
+        }
+        for (k, val) in v.as_object().unwrap() {
+            if *k != "platform" {
+                assert!(!val.is_string(), "{k} must not carry free text");
+            }
+        }
+        assert!(v.get("netLocalIp").is_none());
+    }
+
+    #[test]
+    fn system_info_is_well_formed() {
+        let si = system_info();
+        assert!(!si.platform.is_empty());
+        assert!(!si.arch.is_empty());
+        assert_eq!(si.app_version, env!("CARGO_PKG_VERSION"));
+        if let Some(n) = si.cpu_logical_cores {
+            assert!(n > 0, "logical cores must be positive when present");
+        }
+        if let (Some(p), Some(l)) = (si.cpu_physical_cores, si.cpu_logical_cores) {
+            assert!(p <= l, "physical cores ({p}) exceed logical ({l})");
+        }
+        if let Some(m) = si.total_memory_bytes {
+            assert!(m > 0, "total memory must be positive when present");
+        }
+        for s in [&si.os_name, &si.os_version] {
+            if let Some(s) = s {
+                assert!(!s.trim().is_empty(), "os strings must not be blank");
+            }
+        }
+    }
+
+    #[test]
+    fn system_info_shape_is_stable() {
+        let v = serde_json::to_value(system_info()).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "appVersion",
+                "arch",
+                "cpuLogicalCores",
+                "cpuPhysicalCores",
+                "osName",
+                "osVersion",
+                "platform",
+                "totalMemoryBytes",
+            ]
+        );
+        assert_eq!(v["platform"], std::env::consts::OS);
+        assert_eq!(v["arch"], std::env::consts::ARCH);
     }
 }

@@ -1657,6 +1657,13 @@ pub fn system_metrics(
     supertask_core::host_metrics::sample_host_metrics(temp.unwrap_or_default())
 }
 
+/// `system.info`：静态系统信息（监控页「系统信息」卡片）。只读、无参数、不持久化；
+/// 与 `system.metrics` 的动态采样分列。
+#[tauri::command(rename = "system.info")]
+pub fn system_info() -> supertask_core::host_metrics::SystemInfo {
+    supertask_core::host_metrics::system_info()
+}
+
 /// `docker.probe`：三态探测，会话内缓存，`refresh` 强制刷新（规格 §4.1）。
 #[tauri::command(rename = "docker.probe")]
 pub fn docker_probe(

@@ -390,6 +390,7 @@ pub fn run() {
             commands::git_status,
             commands::git_pull,
             commands::system_metrics,
+            commands::system_info,
             commands::docker_probe,
             commands::docker_ps,
             commands::docker_images,

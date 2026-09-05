@@ -1,4 +1,4 @@
-//! `supertask mcp`（1.5 §5）：stdio 传输、tools only、7 个工具。
+//! `supertask mcp`（1.5 §5）：stdio 传输、tools only、8 个工具。
 //! 业务走 supertask-core；tokio 只在本模块，引擎调用经 spawn_blocking 桥接（§3.2）。
 //!
 //! 生命周期：进程启动即就绪；**首个可变工具**触发取锁 + `engine.open`（holder=mcp）；
@@ -19,8 +19,9 @@ pub const TOOL_RESTART: &str = "supertask_restart";
 pub const TOOL_LOGS: &str = "supertask_logs";
 pub const TOOL_RUN_SCRIPT: &str = "supertask_run_script";
 pub const TOOL_CANCEL_SCRIPT: &str = "supertask_cancel_script";
+pub const TOOL_HOST_METRICS: &str = "supertask_host_metrics";
 
-/// 7 个工具的定义（名称 / 描述 / JSON Schema）。断连清场语义写进可变工具描述，
+/// 8 个工具的定义（名称 / 描述 / JSON Schema）。断连清场语义写进可变工具描述，
 /// 提示编辑器重载会停止服务（§5.1 文档明示义务）。
 pub fn tool_definitions() -> Vec<(&'static str, &'static str, Value)> {
     fn obj_schema(props: Value) -> Value {
@@ -64,6 +65,15 @@ pub fn tool_definitions() -> Vec<(&'static str, &'static str, Value)> {
         (
             TOOL_CANCEL_SCRIPT,
             "取消当前脚本。注意：编辑器重载/断开 MCP 会停止全部服务。",
+            obj_schema(json!({})),
+        ),
+        (
+            TOOL_HOST_METRICS,
+            "主机指标只读快照（整机视角，与工作区无关，不取锁）：CPU 总占用与四分占比、\
+             内存/交换空间、磁盘、CPU 温度（尽力采样）、网络上传下载速率。\
+             用于判断「还能不能起一个服务 / 是否适合跑大模型」。\
+             差分字段（CPU 占比、网络速率）首次调用为 null；取不到的字段为 null 而非 0；\
+             不含 IP、路径、进程或环境信息，不持久化。",
             obj_schema(json!({})),
         ),
     ]
@@ -121,6 +131,8 @@ impl McpServer {
         let args = args.cloned().unwrap_or(Value::Null);
         match tool {
             TOOL_STATUS => self.status(),
+            // 主机指标：纯主机级只读采样，不取锁、不开引擎、与工作区有效性无关。
+            TOOL_HOST_METRICS => Ok(supertask_core::host_metrics::HostMetrics::mcp_sample()),
             TOOL_LOGS => {
                 let id = args["service"].as_str();
                 let lines = args["lines"].as_u64().unwrap_or(200) as usize;
@@ -465,9 +477,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_cover_seven_tools() {
+    fn tool_definitions_cover_eight_tools() {
         let names: Vec<&str> = tool_definitions().into_iter().map(|(n, _, _)| n).collect();
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
         for expected in [
             TOOL_STATUS,
             TOOL_START,
@@ -476,9 +488,35 @@ mod tests {
             TOOL_LOGS,
             TOOL_RUN_SCRIPT,
             TOOL_CANCEL_SCRIPT,
+            TOOL_HOST_METRICS,
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
+    }
+
+    /// 主机指标：只读、不取锁，且在无 supertask.yaml 的目录同样可用（与工作区无关）。
+    /// 输出脱敏：除 platform（枚举值）外不含任何字符串字段。
+    #[test]
+    fn host_metrics_readonly_without_lock_or_workspace() {
+        let dir = std::env::temp_dir().join(format!("st-mcp-hostm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let server = McpServer::new(dir.clone());
+        let out = server.dispatch(TOOL_HOST_METRICS, None).unwrap();
+        let obj = out.as_object().expect("host metrics must be an object");
+        assert_eq!(out["platform"], std::env::consts::OS);
+        assert!(out["sampledAtMs"].as_u64().unwrap() > 0);
+        assert!(out.get("netLocalIp").is_none(), "local IP must be dropped");
+        for (k, v) in obj {
+            if *k != "platform" {
+                assert!(!v.is_string(), "{k} must not carry free text");
+            }
+        }
+        assert!(
+            lock::query(&dir).is_none(),
+            "host metrics must not create a lock"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// §13.3 断连清场：start 起真实 node 桩 → shutdown（等价 stdio 关闭）→

@@ -263,6 +263,7 @@
 | 命令 | 入参 | 出参 / 要点 |
 |------|------|-------------|
 | `system.metrics` | `{ temp?: "off"\|"auto"\|"fast" }` | 主机级采样（状态栏与「系统监控」页用）：CPU 总占用及四分占比（系统/用户/Nice/闲置）、内存 已用/总量/可用/交换空间、磁盘 已用/总量、CPU 温度、网络上传下载速率与本机 IPv4。整机视角，与 `metrics.snapshot` 口径不同；占比拆分与网络速率为差分采样，首次调用为 null；取不到的字段为 null（Windows 无 Nice，恒 0；交换空间在 Windows 为提交内存口径）；不持久化、不进日志、不上传；Windows `fast` 档常驻采样进程 |
+| `system.info` | — | 静态系统信息（监控页「系统信息」卡片用）：`platform`（windows/macos/linux）、`arch`、`osName`/`osVersion`（Windows 注册表 ProductName 与 DisplayVersion+Build；Linux os-release）、`cpuPhysicalCores`/`cpuLogicalCores`、`totalMemoryBytes`、`appVersion`（workspace 统一升版，与安装包一致）。纯静态只读，与 `system.metrics` 动态采样分列；取不到的字段为 null 不伪造为 0；不含主机名/用户名/路径；不持久化、不进日志、不进 MCP |
 | `ai.cli.probe` | `{ provider, cli_path?, cli_env? }` | 本机 AI CLI 可执行文件探测（跑 `--version`，**不保存配置**）；2.1「本地 CLI 供应商」支持 |
 | `app.writeTextFile` | `{ path, contents }` | `{ ok }`：文本写入用户选定路径（日志视图「下载」等）；路径由前端 save 对话框提供；失败 `LOG_EXPORT_FAILED` |
 
