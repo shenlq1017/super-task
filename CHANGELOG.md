@@ -6,6 +6,25 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 声明式需求 needs（方向三·环境供给）
+
+- `supertask.yaml` 新增顶层 `needs` 声明（typed 化）：`needs: ["node@20", "postgres@16"]`
+  逐条声明工作区需要的高频工具/中间件；版本为数值前缀语义（`node@20` 被已装 20.x.y
+  满足，无 `@` = 存在即满足），不支持区间表达式与 `lts` 别名；条目 ≤32 条，非法条目
+  （id/版本要求格式、`@` 数量）加载期 fail-fast 报 `NEEDS_INVALID`。
+- 环境页新增「声明式需求 needs」卡片：一键检查把每条声明解析为四态——已存在（显示
+  命中版本与路径）/ 可安装 / 可归档供给 / 不可满足（`reason` 说明检查过什么、
+  为什么不行、下一步做什么，如安装 mise）。
+- 解析是 **resolve-only dry-run**：不安装、不下载、不写盘，结果由（needs 声明、工具链
+  探测缓存、内置归档目录、当前平台）完全决定，相同输入两次调用结果一致；installable
+  项的一键安装复用页内既有工具链安装链路（mise 优先 / winget manifest 白名单），
+  安装失败只报错不清场，重新检查回到可安装。
+- 内置免安装归档目录（postgres 16.4 / mysql 8.0 / minio 2024，按五平台声明）本期仅
+  报告可供给性，下载/解压执行器是下一切片。
+- 新 IPC `workspace.needsResolve`（契约 ipc.md §10.17；`crates/supertask-core/src/needs.rs`
+  与 `engine.rs`，壳层 `src-tauri/src/commands.rs`）；`needs` 段规格见 `docs/spec/yaml.md` §7.2。
+- 测试：core `needs::` 28 项 + spec 校验 3 项离线单测（含 FakeRunner 端到端演示）。
+
 #### 孤儿进程纳管（方向二·纳管任意来源）
 
 - 发现页新增「纳管进程」：把当前工作区目录下运行中的外部监听进程反推成

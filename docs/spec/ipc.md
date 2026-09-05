@@ -134,6 +134,7 @@
 | `system.killProcess` | `{ pid }` | `{ ok }` 终止该监听进程整棵树（`taskkill /T /F`）。护栏：pid ≤ 4 / SuperTask 自身 / 当前无 LISTEN 端口 → 拒绝（`JobKill`）；UI 侧二次确认 |
 | `workspace.adoptPreview` | `{ workspace_id }` | `AdoptPreviewOut`（§10.16）孤儿进程纳管 dry-run：与当前工作区相关的监听进程 → generic 服务草稿 + 冲突/警告报告。**纯内存计算，不落盘、不杀进程**；命令行与草稿参数已脱敏 |
 | `workspace.adoptApply` | `{ workspace_id, choices: [{pid, action}], base_hash }` | `{ spec, hash, warnings[] }` 只新增用户确认的服务草稿；**apply 前重新发现进程**（退出的 pid 按警告跳过），写回走 saveForm（base_hash 冲突 → `YAML_CONFLICT`） |
+| `workspace.needsResolve` | `{ workspace_id, refresh? }` | `NeedsResolveOut`（§10.17）声明式需求 needs 解析：逐条给出四态（已存在/可安装/可归档供给/不可满足）+ reason 解释。**resolve-only dry-run：不安装、不下载、不写盘** |
 
 `workspace_id` = 规范化绝对路径。之后所有运行时命令带这个 id，**禁止**再传任意路径去 spawn。
 
@@ -412,6 +413,12 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
 | `UPDATE_BLOCKED_RUNNING` | 工作区仍有运行中任务 |
 | `UPDATE_SIGNATURE` | 更新包签名校验失败 |
 | `UPDATE_FAILED` | 更新检查/下载/安装失败 |
+
+2.2 新增（详见第 10 节）：
+
+| code | 何时 |
+|------|------|
+| `NEEDS_INVALID` | needs 项非法（id/版本要求格式、lts 别名、条目数超限） |
 
 ---
 
@@ -891,3 +898,64 @@ matched / unadoptable 不动作；重复添加同一 pid 或目标 id 已存在 
 **测试**：core `adopt::` 22 项单测（草稿推导、Windows 引号/反斜杠切词、大小写不敏感
 相对化、脱敏（预览 JSON 与 yaml 文本均无明文）、matched/id_conflict/unadoptable、
 同端口冲突、apply 幂等、进程退出跳过、to_yaml/parse_yaml 往返校验、确定性）。
+
+### 10.17 声明式需求 needs 解析（方向三·环境供给，2026-09-05）
+
+工作区 YAML 顶层 `needs: ["node@20", "postgres@16"]` 声明高频工具/中间件需求（字段规格
+见 yaml.md §7.2），环境页「声明式需求 needs」卡片一键检查。核心实现
+`crates/supertask-core/src/needs.rs`。机制与确定性口径：resolve 是**纯只读 dry-run**
+（不安装、不下载、不写盘），结果由 (needs 声明, 工具链探测缓存, 内置归档目录, 当前平台)
+完全决定，相同输入两次调用结果一致；与 `toolchain.install` 是分工而非替代——resolve
+只回答「缺什么、从哪补」，安装执行复用既有 `toolchain.install` 长操作链路。
+
+**解析规则（四态）**
+
+- `satisfied` 已存在 — PATH 探测（`ToolchainProbe`）或安装枚举（`DiscoveredInstall`）
+  命中满足版本要求的安装；不重复安装。
+- `installable` 可安装 — 已有供给来源可补齐：mise 优先（任意合法版本要求，具体小版本
+  由 mise 安装时解析），其次 winget（内置 manifest 白名单，**包 ID 不由用户输入**）；
+  执行复用既有 `toolchain.install` 长操作链路，本切片 resolve 本身不执行安装。
+- `archive` 可从归档供给 — 内置免安装归档目录（`ARCHIVE_CATALOG`：postgres 16.4 /
+  mysql 8.0 / minio 2024，按平台 windows-x64 / linux-x64 / linux-arm64 / darwin-x64 /
+  darwin-arm64 声明）；本切片仅报告可供给性，下载/解压执行器是下一切片。
+- `unsatisfiable` 不可满足 — `reason` 说明检查过什么、为什么不行、下一步做什么
+  （如安装 mise）。
+
+**版本语义**：数值前缀匹配，非区间表达式——`node@20` 被已装 20.x.y 满足、`@20.11`
+被 20.11.z 满足；无 `@` = 存在即满足；不支持 `>=` 等比较表达式与 `lts` 别名。条目语法
+`id` / `id@version-req`（id：`^[a-z][a-z0-9_-]{0,31}$`；version-req 沿用工具链版本
+字符集 ≤32 字符，额外禁止 `-` 前缀与第二个 `@`）；每条 ≤64 字符、每工作区 ≤32 条
+（`MAX_NEEDS`）。
+
+**供给语义**：版本 = 前缀要求（非区间）；来源 = 本机已有安装 / mise·winget（机器级
+共享，安装目录由 provider 决定，不写工作区）/ 内置归档目录（版本钉死）；隔离 = needs
+只声明要求，不产生项目级隔离（两个工作区共用同一本机安装，项目级版本隔离是后续切片）；
+失败回滚 = resolve 无副作用，安装失败由 toolchain 链路只报错不清场，YAML 与已有安装
+保持原样，重新 resolve 回到 installable。重复声明去重并计入 `warnings`；resolve 幂等
+只读，`refresh: true` 才强制重探工具链。
+
+**`workspace.needsResolve` 出参 `NeedsResolveOut { items[], warnings[] }`**
+（mirror `needs.rs::NeedItem`）
+
+| 字段 | 说明 |
+|------|------|
+| `need` / `id` / `version_req?` | YAML 原始声明 / 解析出的需求 id / 版本要求（无 `@` 时缺省） |
+| `status` | `satisfied` \| `installable` \| `archive` \| `unsatisfiable`（serde snake_case） |
+| `found_version?` / `found_path?` | satisfied：命中安装的版本与可执行文件路径（PATH 命中）或安装根目录（枚举命中） |
+| `via?` / `install_version?` | installable：建议供给器 `mise` \| `winget` 与建议安装版本（无版本要求时为 manifest 默认钉扎） |
+| `winget_id?` | installable（winget）：manifest 包 ID，绝不由用户输入 |
+| `archive_version?` | archive：目录可供给的版本 |
+| `reason` | 结论解释：检查过什么、为什么是这个来源/为什么不行、下一步做什么 |
+
+**入参** `{ workspace_id, refresh? }`：`refresh` 缺省 false（复用引擎探测缓存），
+true 强制重探工具链。
+
+**安装执行口径**：installable 项由前端「安装」按钮复用环境页既有 `toolchain.install`
+流程（hub 长操作，进度走 `st-operation`）；resolve 全程不落盘、无任何副作用。
+
+**错误码**：运行期不新增（不可满足是状态不是错误）；加载期新增 `NEEDS_INVALID`
+（id/版本要求格式、lts 别名、`@` 数量、条目数超限，见 §7）。
+
+**测试**：core `needs::` 28 项离线单测（条目语法、版本前缀矩阵、四态判定、平台差异、
+端到端演示：resolve → FakeRunner 安装链 → 重新 resolve satisfied）+ `spec::validate`
+3 项（round-trip / 非法条目 `NEEDS_INVALID` / 超 32 条）。

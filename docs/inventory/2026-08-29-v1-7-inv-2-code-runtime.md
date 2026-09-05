@@ -6,7 +6,7 @@
 
 ## 1. 模块一览（顶层目录实测）
 
-`crates/supertask-core/src/`：`appdata / cloud/ / discover / docker/ / engine / error / features / gateway/ / git / graph / health / ide / ipc/ (v12,v13,v15,v16) / launcher / lock / log/ (batch,file,ring,search) / merge / metrics / network / operation / pkg / ports / probe / proc/ (windows,unix) / profiles / runtime/ / sandbox / scan / secrets / spring / spec/ (file,validate) / taskfile / template / toolchain/ (discover,install,manifest,provider,resolver,runner,versions)`。
+`crates/supertask-core/src/`：`appdata / cloud/ / discover / docker/ / engine / error / features / gateway/ / git / graph / health / ide / ipc/ (v12,v13,v15,v16) / launcher / lock / log/ (batch,file,ring,search) / merge / needs / metrics / network / operation / pkg / ports / probe / proc/ (windows,unix) / profiles / runtime/ / sandbox / scan / secrets / spring / spec/ (file,validate) / taskfile / template / toolchain/ (discover,install,manifest,provider,resolver,runner,versions)`。
 
 另有独立 `crates/supertask-cloud-server/`：当前实测有 Cargo manifest、`lib.rs`、`main.rs`、`config.rs`、`auth.rs`、`entities.rs`、`state.rs`、`error.rs`、`http.rs`、`quota.rs`、`telemetry.rs`、`migrations/0001_init.sql` 和 `tests/api.rs`；已具备本地 HTTP router/API、healthz、配额/遥测和 in-process 集成测试。未知 type 仍受当前四类型校验限制；正式 HTTPS/运营和真机验收未完成。服务端事实与环境变量见 [docs/spec/cloud-server.md](../spec/cloud-server.md)。
 
@@ -56,6 +56,7 @@ typed 字段（`ServiceSpec.service` + `DockerSpec`）→ 校验（validate.rs c
 - `toolchain/install.rs`：安装链 = `mise --version` 探测 → `mise install <tool>@<ver>` 优先 → winget 兜底（内部刷新进程 PATH）→ **装完立即重新解析**（「安装成功 ≠ 工具可用」，`:70`）。测试全走 FakeRunner，不碰真机。
 - Python/Go/Bun 已进入同一探测/安装/版本列表链路；Bun 的 `package_manager` 可由 `bun.lock` / `packageManager` 扫描得到，Node 启动计划使用 `bun run`。
 - `toolchain/discover.rs` 只读枚举 Java/Node/Maven 已装版本；`launcher.rs:621-760` 将服务级 `SUPERTASK_JAVA_VERSION` 等选择置于子进程 PATH/JAVA_HOME，`.java-version` 是无 YAML pin 时的 Java 回退；Maven reactor 的 install 前置与 run 阶段共用该环境。
+- 声明式需求 needs（方向三）复用本节探测缓存与安装链路：resolve 只读消费 `ToolchainProbeBundle`（探测缓存 + 安装枚举 + managers 可用性），installable 项的安装执行复用 `toolchain/install.rs` 同一长操作链路；needs 自身零副作用（ipc.md §10.17）。
 
 ## 5. 扫描识别（scan.rs，1453 行）
 
@@ -73,6 +74,7 @@ typed 字段（`ServiceSpec.service` + `DockerSpec`）→ 校验（validate.rs c
 - **工作区锁**（1.5）：`lock.rs`（321 行）——所有权锁 + `WORKSPACE_LOCKED`；CLI status/logs/doctor 不取锁（cli.md §命令表）。
 - **导出/导入包**（1.5）：`pkg.rs`（485 行）——manifest + supertask.yaml，`--with-secrets` 含声明密钥明文；import 只落盘不启动、目标已有 yaml 拒绝（cli.md）。
 - **网关**（1.6）：`gateway/`（model / render/ / validate / probe）——render 纯函数零新依赖；probe 三引擎探测进 `ToolchainProbe.gateway`。
+- **声明式需求 needs**（方向三·环境供给）：`needs.rs`——resolve-only 四态解析（已存在/可安装/可归档供给/不可满足），内置归档目录 `ARCHIVE_CATALOG`，IPC `workspace.needsResolve`（ipc.md §10.17）。
 - **MCP**（1.5）：在 `crates/supertask-cli/src/mcp.rs`（不在 core）——rmcp stdio，7 工具（`:15-21`），断连清场。
 - **错误码**：`error.rs` `ErrorCode` enum 约 101 个变体；soon 机制：`features.rs:51-62` `SOON_COMMANDS`（cloud.login/cloud.sync/ai.complete）+ `FEATURE_SOON` 拒绝，禁止假成功。
 - **taskfile.rs**：1.4 Taskfile 导入（映射成 scripts）。

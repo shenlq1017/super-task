@@ -49,6 +49,7 @@
 | `services` | 必填 | map | 至少一个服务 |
 | `scripts` | 1.0 | map | 可空 |
 | `toolchain` | 1.2 | object | typed：`manager`/`java`/`maven`/`node`/`package_manager`，见 1.2 规格 §4 |
+| `needs` | 2.2 | string[] | typed：声明式需求 `node@20`/`postgres@16`，见 §7.2，解析契约见 ipc.md §10.17 |
 | `network` | 1.2 | object | typed：`proxy`（off/system/custom）/`maven.mirror`/`npm.registry`/`python.index_url`（1.7）/`go.goproxy`（1.7），见 1.2 规格 §7 |
 | `log_retention` | 1.2 | object | **顶层**保留策略，不要嵌进 `logging` |
 | `templates` | reserved | object | 1.1 来源模板元数据 |
@@ -293,6 +294,45 @@ path 以 `/` 开头；host 为空或合法 hostname（含 `*.localhost` 形式�
 target/upstream 恰一且 target 服务存在并有 `port`（或 `ports` 首个）。
 配置产物生成到 `.supertask/gateway/`（磁盘产物是缓存，不是编辑对象）。
 
+### 7.2 `needs`（2.2）
+
+声明式需求：`supertask.yaml` 逐条声明工作区需要的高频工具/中间件，引擎把每条解析为
+「已存在 / 可安装 / 可归档供给 / 不可满足」四态。解析是 **resolve-only dry-run**
+（不安装、不下载、不写盘），安装执行复用既有工具链安装链路；解析契约见 ipc.md §10.17。
+
+```yaml
+needs:
+  - node@20        # 数值前缀语义：本机 20.x.y 即满足
+  - postgres@16    # 内置归档目录可供给（本期仅报告可供给性）
+  - minio          # 无 @ = 存在即满足
+```
+
+语法规则（加载期 fail-fast，非法条目 `NEEDS_INVALID`）：
+
+- 条目为 `id` 或 `id@version-req`；id `^[a-z][a-z0-9_-]{0,31}$`，version-req 沿用
+  工具链版本字符集（字母数字与 `. - _ +`，≤32 字符，额外禁止 `-` 前缀与第二个 `@`）；
+  每条 ≤64 字符，每工作区 ≤32 条（`MAX_NEEDS`）。
+- 版本匹配是**数值前缀语义**（`node@20` 被已装 20.x.y 满足、`@20.11` 被 20.11.z
+  满足），不是区间表达式：不支持 `>=` 等比较表达式，也不支持 `lts` 别名（请写具体版本）。
+- 不校验 id 是否在支持范围内：合法语法的未知 id 能加载、round-trip，resolve 时报
+  `unsatisfiable` 并在 `reason` 说明支持范围。
+
+四态与供给语义（详见 ipc.md §10.17）：
+
+- `satisfied` 已存在 — PATH 探测或安装枚举命中满足版本的安装，不重复安装。
+- `installable` 可安装 — mise（优先，任意合法版本要求）或 winget（内置 manifest
+  白名单，包 ID 不由用户输入）可补齐；安装目录由 provider 决定，机器级共享，
+  不写工作区。
+- `archive` 可从归档供给 — 内置免安装归档目录（版本钉死）；本期仅报告可供给性，
+  下载/解压执行器在后续切片。
+- `unsatisfiable` 不可满足 — `reason` 说明检查过什么、为什么不行、下一步做什么。
+- 隔离与回滚：needs 只声明「要求」，不产生项目级隔离（两个工作区共用同一本机安装，
+  项目级版本隔离是后续切片）；resolve 无副作用，安装失败由工具链链路只报错不清场，
+  YAML 与已有安装保持原样，重新 resolve 回到 installable。
+
+JSON Schema 对该段的处理与其它顶层段一致（`needs` 声明为 `string[]`，条目级语法
+校验由引擎负责，schema 不重复）。
+
 ---
 
 ## 8. 校验顺序
@@ -301,10 +341,11 @@ target/upstream 恰一且 target 服务存在并有 `port`（或 `ports` 首个�
 2. YAML 语法  
 3. `version`  
 4. id 字符集、服务数  
-5. 每服务 kind 特有必填  
-6. `depends_on` 引用存在  
-7. 端口重复 → **警告** `PORT_DUP`（1.0 不阻断；1.2 阻断）  
-8. 成环只在 **启动** 时硬失败（打开文件仍允许，便于人改）  
+5. 顶层 `needs` 静态校验：逐条按 `parse_need` 口径（id/版本要求格式）+ 条目数上限（§7.2，非法 `NEEDS_INVALID`）  
+6. 每服务 kind 特有必填  
+7. `depends_on` 引用存在  
+8. 端口重复 → **警告** `PORT_DUP`（1.0 不阻断；1.2 阻断）  
+9. 成环只在 **启动** 时硬失败（打开文件仍允许，便于人改）  
 
 `enabled: false` 的服务仍参与引用检查（别人可以 depends_on 它，启动时再报）。
 

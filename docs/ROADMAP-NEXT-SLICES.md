@@ -63,4 +63,22 @@
 
 ---
 
+## 方向三：环境供给
+
+> 已交付：声明式 needs 的 resolve-only dry-run 与 mise/winget 供给接入（docs/spec/ipc.md §10.17）。以下为剩余切片。
+
+### E. 归档供给执行器（免安装中间件下载/校验/解压）
+
+- **目标**：让 archive 状态从「可供给性报告」变成可执行供给（下载官方 zip/单文件
+  → sha256 校验 → 解压到 app data 工作区隔离目录 → PATH 注入/解析）。
+- **已有材料**：`needs.rs` 的 `ARCHIVE_CATALOG` 与平台键、`toolchain/runner.rs`
+  SpawnSpec/FakeRunner 注入模式、`pkg.rs` 的 zip 读写与 zip-slip/sha256 先例、
+  `network::tool_env` 代理注入。
+- **验收雏形**：相同目录+平台得到确定性下载计划；下载/解压可被 fake transport 全
+  离线测试；安装目录不出沙箱；中断后重试状态一致；凭据/代理不进日志。
+- **待细化**：传输 trait 与 fake 注入点、sha256 清单托管方式（内置 vs 远端化）、
+  解压后如何进入服务 PATH/launcher 解析、错误码（沿用 vs 新增 `ARCHIVE_*`）。
+
+---
+
 （后续方向切片交付后在此追加）
