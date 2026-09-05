@@ -29,6 +29,7 @@ import {
   type TaskfilePreviewOut,
   type AdoptPreviewOut,
   type AdoptChoice,
+  type NeedsResolveOut,
   type WorkspaceOpenOut,
   type YamlSaveOut,
   type YamlView,
@@ -484,6 +485,10 @@ export const apiAdoptPreview = (workspaceId: string) =>
 /** 应用纳管选择；应用前重算，写回走 saveForm（base_hash 冲突 → YAML_CONFLICT）。 */
 export const apiAdoptApply = (workspaceId: string, choices: AdoptChoice[], baseHash: string) =>
   invoke<YamlSaveOut>(cmd.WORKSPACE_ADOPT_APPLY, { workspaceId, choices, baseHash });
+
+/** 声明式需求 needs 解析（ipc.md §10.17）：resolve-only dry-run，纯只读零副作用。 */
+export const apiNeedsResolve = (workspaceId: string, refresh = false) =>
+  invoke<NeedsResolveOut>(cmd.WORKSPACE_NEEDS_RESOLVE, { workspaceId, refresh });
 
 // ---------------------------------------------------------------------------
 // 网关（1.6，ipc.md §10.10）

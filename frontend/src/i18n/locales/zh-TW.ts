@@ -806,6 +806,24 @@ const zhTW = {
       "failureNextSteps": "下一步：檢查網路/許可權/PATH，或換用其他 provider 後重試。",
       "retryAction": "重試",
       "advanced": "高階",
+      // 宣告式需求 needs（ipc.md §10.17）
+      "needs": {
+        "title": "宣告式需求 needs",
+        "hint": "在 supertask.yaml 頂層宣告工作區需要的工具與中介軟體，此處一鍵解析本機可供給性；解析為唯讀 dry-run，不會安裝任何東西。",
+        "check": "檢查需求",
+        "checking": "解析中…",
+        "noNeeds": "本工作區未宣告 needs；可在 supertask.yaml 頂層新增，如 needs: [\"node@20\"]",
+        "install": "安裝",
+        "installing": "安裝中…",
+        "installDone": "已安裝 {{id}} {{version}}，需求已滿足",
+        "warnings": "提示",
+        "status": {
+          "satisfied": "已存在",
+          "installable": "可安裝",
+          "archive": "可從封存供給",
+          "unsatisfiable": "無法滿足",
+        },
+      },
     },
     "welcome": {
       "title": "歡迎使用 SuperTask",
@@ -1459,6 +1477,8 @@ const zhTW = {
     "AI_REQUEST_FAILED": "AI 端點請求失敗：請檢查端點地址、Key 與服務狀態",
     "AI_TIMEOUT": "AI 請求超時：可到 /ai 頁調大超時時間後重試",
     "AI_CONTEXT_TOO_LARGE": "上下文過大：請縮小日誌範圍（減少行數）後重試",
+    // 宣告式需求 needs（ipc.md §10.17）
+    "NEEDS_INVALID": "needs 宣告非法：請檢查 id 與版本要求格式",
   },
   "operations": {
     "serviceCrash": "服務 {{id}} 異常退出（退出碼 {{code}}），可到日誌頁檢視",

@@ -19,6 +19,8 @@ import type {
   TaskfilePreviewOut,
   AdoptItem,
   AdoptPreviewOut,
+  NeedItem,
+  NeedsResolveOut,
   TemplateSummary,
   ToolchainProbe,
   ToolchainProbeOut,
@@ -235,6 +237,9 @@ function demoSpec(): SuperTaskFile {
       },
     },
     logging: null,
+    // 声明式需求 needs（ipc.md §10.17）：node 已装满足、python 可安装、postgres 走归档目录，
+    // 覆盖三种可操作状态（UI 演示 resolve → 安装 → 重新 resolve 翻转）
+    needs: ["node@20", "python@3.12", "postgres@16"],
     // 1.3：compose sidecar + 显式镜像构建条目（feature spec §5.1/§6）
     docker: {
       compose_file: "compose.yaml",
@@ -450,6 +455,8 @@ function toYaml(spec: SuperTaskFile): string {
     lines.push(`  ${id}:`);
     lines.push(`    cmds: [${sc.cmds.map((c) => `"${c}"`).join(", ")}]`);
   }
+  // 声明式需求 needs（ipc.md §10.17）：顶层段，保存回环后仍在 spec/text 中
+  if (spec.needs?.length) lines.push(`needs: [${spec.needs.join(", ")}]`);
   return lines.join("\n") + "\n";
 }
 
@@ -2563,6 +2570,221 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     if (applied === 0) warnings.push("未添加任何服务");
     const text = toYaml(state.spec);
     return { spec: state.spec, hash: hashOf(text), warnings };
+  }
+
+  // -------------------------------------------------------------------------
+  // 声明式需求 needs（ipc.md §10.17）：resolve-only dry-run，纯只读零副作用。
+  // 简化但忠实镜像 core needs::resolve 的四态判定：
+  // 工具 probe → 安装枚举 → mise（优先）/ winget 白名单 → 归档目录 → 未知 id。
+  // mock 平台恒为 windows-x64（归档目录全部覆盖，平台缺口分支不触发）。
+  // -------------------------------------------------------------------------
+
+  /** 声明解析（`id` / `id@req`）；非法声明不抛错，兜底为 unsatisfiable（与 core 防御口径一致）。 */
+  function mockParseNeed(raw: string): { id: string; req: string | null; error: string | null } {
+    const s = raw.trim();
+    if (!s) return { id: "", req: null, error: "需求声明不能为空" };
+    if (s.length > 64) return { id: s.split("@")[0] ?? "", req: null, error: "需求声明过长（≤64 字符）" };
+    const at = s.indexOf("@");
+    const id = at === -1 ? s : s.slice(0, at);
+    const req = at === -1 ? null : s.slice(at + 1);
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(id)) {
+      return { id, req: null, error: `需求 id 非法：${JSON.stringify(id)}（只允许小写字母开头的 a-z 0-9 - _，≤32 字符）` };
+    }
+    if (req != null) {
+      if (!req) return { id, req: null, error: "@ 后缺少版本要求，如 node@20" };
+      if (req.includes("@")) return { id, req: null, error: "版本要求中不允许再次出现 @" };
+      if (req.toLowerCase() === "lts") return { id, req: null, error: "needs 请使用具体版本（如 node@20），不支持 lts 别名" };
+      if (req.startsWith("-")) return { id, req: null, error: "版本要求不能以 - 开头" };
+      if (req.length > 32 || /[^0-9A-Za-z._+-]/.test(req)) {
+        return { id, req: null, error: `版本要求字符集非法：${JSON.stringify(req)}（只允许数字、字母、. - _ +，≤32 字符）` };
+      }
+    }
+    return { id, req, error: null };
+  }
+
+  const MOCK_ARCHIVE_CATALOG: Record<string, string> = { postgres: "16.4", mysql: "8.0", minio: "2024" };
+  // mirror core toolchain::manifest WINGET_PACKAGES（逻辑版本 → 包 ID）
+  const MOCK_WINGET: Record<string, [string, string][]> = {
+    java: [["21", "EclipseAdoptium.Temurin.21.JDK"], ["17", "EclipseAdoptium.Temurin.17.JDK"], ["11", "EclipseAdoptium.Temurin.11.JDK"]],
+    maven: [["3.9", "Apache.Maven"], ["3", "Apache.Maven"]],
+    node: [["20", "OpenJS.NodeJS.LTS"], ["22", "OpenJS.NodeJS.22"], ["18", "OpenJS.NodeJS.18"]],
+    npm: [["20", "OpenJS.NodeJS.LTS"]],
+    pnpm: [["9", "pnpm.pnpm"], ["10", "pnpm.pnpm"]],
+    yarn: [["1", "Yarn.Yarn"]],
+    bun: [["1", "Oven-sh.Bun"]],
+    python: [["3.13", "Python.Python.3.13"], ["3.12", "Python.Python.3.12"], ["3.11", "Python.Python.3.11"]],
+    go: [["1.23", "GoLang.Go"], ["1.22", "GoLang.Go"]],
+  };
+
+  function mockNeedsResolve(): NeedsResolveOut {
+    const needs = state.spec.needs ?? [];
+    if (needs.length === 0) return { items: [], warnings: [] };
+    const probe = ensureProbe();
+    const probeSlot = (t: string) => probe[t as keyof Omit<ToolchainProbe, "gateway">] as ToolProbe;
+    // 数值版本段：v20.11.1 / go1.23.1 / 21.0.4+9 → [20,11,1] 等；解析不出 → null
+    const versionNums = (v: string): number[] | null => {
+      const s = v.trim().replace(/^v/, "").replace(/^go/, "");
+      const out: number[] = [];
+      for (const part of s.split(".")) {
+        const digits = /^\d+/.exec(part)?.[0];
+        if (!digits) break;
+        out.push(Number(digits));
+        if (digits.length !== part.length) break;
+      }
+      return out.length ? out : null;
+    };
+    // 前缀语义：req 的数值段是 found 的前缀；无要求时存在即满足
+    const matches = (req: string | null, found: string | null | undefined): boolean => {
+      if (!found) return false;
+      if (!req) return true;
+      const r = versionNums(req);
+      const f = versionNums(found);
+      if (!r || !f) return false;
+      return r.length <= f.length && r.every((n, i) => n === f[i]);
+    };
+    const items: NeedItem[] = [];
+    const warnings: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of needs) {
+      const trimmed = raw.trim();
+      if (seen.has(trimmed)) {
+        warnings.push(`needs 中「${trimmed}」重复声明，已忽略重复项。`);
+        continue;
+      }
+      seen.add(trimmed);
+      const decl = mockParseNeed(raw);
+      const need = trimmed;
+      if (decl.error) {
+        items.push({ need, id: decl.id, status: "unsatisfiable", reason: decl.error });
+        continue;
+      }
+      const id = decl.id;
+      const req = decl.req;
+      if (id in MOCK_DEFAULT_VERSIONS) {
+        const p = probeSlot(id);
+        // 1) 已存在：PATH 命中优先，其次安装枚举（未激活也算已存在，不重复安装）
+        if (p.found && matches(req, p.version)) {
+          items.push({
+            need,
+            id,
+            ...(req != null ? { version_req: req } : {}),
+            status: "satisfied",
+            ...(p.version != null ? { found_version: p.version } : {}),
+            ...(p.path != null ? { found_path: p.path } : {}),
+            reason: `本机 PATH 已检测到 ${id} ${p.version ?? "（版本未知）"}，满足 ${need}。`,
+          });
+          continue;
+        }
+        const inst = (probe.installs ?? []).find((i) => i.tool === id && matches(req, i.version));
+        if (inst) {
+          const reason = p.found
+            ? `本机已安装 ${id} ${inst.version}（${inst.home}），满足 ${need}；PATH 上的是 ${p.version ?? "（版本未知）"}，启动服务前请确认版本解析顺序。`
+            : `本机已安装 ${id} ${inst.version}（${inst.home}），满足 ${need}；该安装未在 PATH 激活，启动服务前请确认 PATH。`;
+          items.push({
+            need,
+            id,
+            ...(req != null ? { version_req: req } : {}),
+            status: "satisfied",
+            found_version: inst.version,
+            found_path: inst.home,
+            reason,
+          });
+          continue;
+        }
+        // 2) 已有供给来源：mise 优先（与 provider auto 顺序一致），mock 数据走 winget 白名单
+        const prefix = p.found
+          ? `已检测到 ${id} ${p.version ?? "（版本未知）"}，不满足 ${need}。`
+          : `本机未发现满足 ${need} 的安装。`;
+        if (MOCK_MANAGERS.mise) {
+          const ver = req ?? MOCK_DEFAULT_VERSIONS[id];
+          items.push({
+            need,
+            id,
+            ...(req != null ? { version_req: req } : {}),
+            status: "installable",
+            via: "mise",
+            install_version: ver,
+            reason: `${prefix}可用 mise 安装 ${id}@${ver}（具体小版本由 mise 在安装时解析，执行复用工具链安装链路）。`,
+          });
+          continue;
+        }
+        if (MOCK_MANAGERS.winget) {
+          const target = req ?? MOCK_DEFAULT_VERSIONS[id];
+          const nums = versionNums(target);
+          const hit = (MOCK_WINGET[id] ?? []).find(([v]) => {
+            const lv = versionNums(v);
+            return !!nums && !!lv && lv.length <= nums.length && lv.every((n, i) => n === nums[i]);
+          });
+          if (hit) {
+            items.push({
+              need,
+              id,
+              ...(req != null ? { version_req: req } : {}),
+              status: "installable",
+              via: "winget",
+              install_version: hit[0],
+              winget_id: hit[1],
+              reason: `${prefix}可用 winget 安装 ${id}（包 ${hit[1]}，逻辑版本 ${hit[0]}，安装包取该版本最新补丁）。`,
+            });
+            continue;
+          }
+          const supported = (MOCK_WINGET[id] ?? []).map(([v]) => v).join("/");
+          items.push({
+            need,
+            id,
+            ...(req != null ? { version_req: req } : {}),
+            status: "unsatisfiable",
+            reason: `${prefix}winget 清单支持 ${id}：${supported}，${target} 不在列表内；可安装 mise 以获得更宽的版本范围。`,
+          });
+          continue;
+        }
+        items.push({
+          need,
+          id,
+          ...(req != null ? { version_req: req } : {}),
+          status: "unsatisfiable",
+          reason: `${prefix}且 mise / winget 均不可用；请先安装 mise（推荐）或 winget，或手动安装后重新检查。`,
+        });
+        continue;
+      }
+      // 归档目录（内置免安装，版本钉死；平台恒 windows-x64 且目录全覆盖）
+      if (id in MOCK_ARCHIVE_CATALOG) {
+        const ver = MOCK_ARCHIVE_CATALOG[id];
+        if (matches(req, ver)) {
+          items.push({
+            need,
+            id,
+            ...(req != null ? { version_req: req } : {}),
+            status: "archive",
+            archive_version: ver,
+            reason: `可从免安装归档供给 ${id} ${ver}（windows-x64）；归档下载/解压执行器尚未接入，本切片仅报告可供给性。`,
+          });
+          continue;
+        }
+        items.push({
+          need,
+          id,
+          ...(req != null ? { version_req: req } : {}),
+          status: "unsatisfiable",
+          reason: `归档目录中 ${id} 最高版本 ${ver}，不满足 ${need}。`,
+        });
+        continue;
+      }
+      items.push({
+        need,
+        id,
+        ...(req != null ? { version_req: req } : {}),
+        status: "unsatisfiable",
+        reason: `未知需求 id「${id}」：当前支持语言工具 java/maven/node/npm/pnpm/yarn/bun/python/go，归档目录 postgres/mysql/minio。`,
+      });
+    }
+    return { items, warnings };
+  }
+
+  if (command === "workspace.needsResolve") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    return mockNeedsResolve();
   }
 
   // -------------------------------------------------------------------------

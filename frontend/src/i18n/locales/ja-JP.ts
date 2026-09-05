@@ -185,6 +185,8 @@ const jaJP = {
     AI_REQUEST_FAILED: "AI エンドポイントへのリクエストに失敗しました：URL・キー・サービス状態を確認してください",
     AI_TIMEOUT: "AI リクエストがタイムアウトしました：/ai ページでタイムアウトを延ばして再試行してください",
     AI_CONTEXT_TOO_LARGE: "コンテキストが大きすぎます：ログの行数を減らして再試行してください",
+    // 宣言的 needs（ipc.md §10.17）
+    NEEDS_INVALID: "needs 宣言が不正です：id とバージョン要件の形式を確認してください",
   },
   operations: {
     serviceCrash: "サービス {{id}} が異常終了しました（終了コード {{code}}）。ログページで確認できます",
@@ -712,6 +714,24 @@ const jaJP = {
       failureNextSteps: "次の手順: ネットワーク / 権限 / PATH を確認するか、別の provider で再試行してください。",
       retryAction: "再試行",
       advanced: "詳細",
+      // 宣言的 needs（ipc.md §10.17）
+      needs: {
+        title: "宣言的ニーズ needs",
+        hint: "supertask.yaml のトップレベルでワークスペースに必要なツールとミドルウェアを宣言すると、ここでこのマシンでの供給可否を一括解決できます。解決は読み取り専用のドライランで、確認だけでは何もインストールしません。",
+        check: "ニーズを確認",
+        checking: "解決中…",
+        noNeeds: "このワークスペースには needs が未宣言です。supertask.yaml のトップレベルに追加できます（例: needs: [\"node@20\"]）",
+        install: "インストール",
+        installing: "インストール中…",
+        installDone: "{{id}} {{version}} をインストールし、ニーズを満たしました",
+        warnings: "ヒント",
+        status: {
+          satisfied: "既存",
+          installable: "インストール可",
+          archive: "アーカイブから供給可",
+          unsatisfiable: "解決不可",
+        },
+      },
     },
     welcome: {
       title: "SuperTask へようこそ",

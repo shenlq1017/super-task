@@ -185,6 +185,8 @@ const enUS = {
     AI_REQUEST_FAILED: "AI endpoint request failed: check the endpoint URL, key and service status",
     AI_TIMEOUT: "AI request timed out: increase the timeout on the /ai page and retry",
     AI_CONTEXT_TOO_LARGE: "Context too large: narrow the log range (fewer lines) and retry",
+    // Declarative needs (ipc.md §10.17)
+    NEEDS_INVALID: "Invalid needs declaration: check the id and version requirement format",
   },
   operations: {
     serviceCrash: "Service {{id}} exited unexpectedly (exit code {{code}}); check the Logs page",
@@ -712,6 +714,24 @@ const enUS = {
       failureNextSteps: "Next: check network / permissions / PATH, or retry with another provider.",
       retryAction: "Retry",
       advanced: "Advanced",
+      // Declarative needs (ipc.md §10.17)
+      needs: {
+        title: "Declarative needs",
+        hint: "Declare the tools and middleware your workspace needs at the top level of supertask.yaml; this resolves what this machine can provide. Resolving is a read-only dry-run — nothing is installed by checking.",
+        check: "Check needs",
+        checking: "Resolving…",
+        noNeeds: "This workspace declares no needs; add them at the top level of supertask.yaml, e.g. needs: [\"node@20\"]",
+        install: "Install",
+        installing: "Installing…",
+        installDone: "Installed {{id}} {{version}} — the need is satisfied",
+        warnings: "Notes",
+        status: {
+          satisfied: "Present",
+          installable: "Installable",
+          archive: "From archive",
+          unsatisfiable: "Unsatisfiable",
+        },
+      },
     },
     welcome: {
       title: "Welcome to SuperTask",

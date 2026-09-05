@@ -75,6 +75,8 @@ export const cmd = {
   // 孤儿进程纳管（ipc.md §10.16）
   WORKSPACE_ADOPT_PREVIEW: "workspace.adoptPreview",
   WORKSPACE_ADOPT_APPLY: "workspace.adoptApply",
+  // 声明式需求 needs（ipc.md §10.17）
+  WORKSPACE_NEEDS_RESOLVE: "workspace.needsResolve",
   // 1.6（ipc.md §10.10）：网关
   GATEWAY_STATUS: "gateway.status",
   GATEWAY_PREVIEW: "gateway.preview",
@@ -431,6 +433,8 @@ export type ServiceSpec = {
   restart?: string | null;
   /** Empty arrays are omitted from the Rust IPC JSON payload. */
   extra_args?: string[];
+  /** 2.2：构建参数（镜像构建场景）；空数组在 Rust IPC JSON 中缺省。 */
+  build_args?: string[];
   cwd?: string | null;
   launch?: string | null;
   module?: string | null;
@@ -530,6 +534,8 @@ export type SuperTaskFile = {
   scripts: Record<string, ScriptSpec>;
   logging?: LoggingSpec | null;
   toolchain?: ToolchainSpec | null;
+  /** 声明式需求 needs（ipc.md §10.17）：如 ["node@20", "postgres@16"]。 */
+  needs?: string[];
   network?: NetworkSpec | null;
   docker?: DockerSpec | null;
   gateway?: GatewayConf | null;
@@ -941,6 +947,38 @@ export type AdoptPreviewOut = { items: AdoptItem[]; warnings: string[] };
 
 /** `workspace.adoptApply` 选择项：用户确认纳管的 pid。 */
 export type AdoptChoice = { pid: number; action: "add" | "keep" };
+
+// ---------------------------------------------------------------------------
+// DTOs — 声明式需求 needs（ipc.md §10.17，mirror `crates/supertask-core/src/needs.rs`）
+// ---------------------------------------------------------------------------
+
+export type NeedStatus = "satisfied" | "installable" | "archive" | "unsatisfiable";
+
+export type NeedItem = {
+  /** YAML 中的原始声明（如 `node@20`）。 */
+  need: string;
+  /** 解析出的需求 id（如 `node`）。 */
+  id: string;
+  /** 版本要求（无 `@` 时缺省）。 */
+  version_req?: string;
+  status: NeedStatus;
+  /** satisfied：命中的安装版本。 */
+  found_version?: string;
+  /** satisfied：命中安装的路径（PATH 命中）或安装根目录（枚举命中）。 */
+  found_path?: string;
+  /** installable：建议供给器。 */
+  via?: "mise" | "winget";
+  /** installable：建议安装版本（无要求时为 manifest 默认钉扎）。 */
+  install_version?: string;
+  /** installable（winget）：manifest 包 ID。 */
+  winget_id?: string;
+  /** archive：目录可供给的版本。 */
+  archive_version?: string;
+  /** 结论解释：检查过什么、为什么不行、下一步做什么。 */
+  reason: string;
+};
+
+export type NeedsResolveOut = { items: NeedItem[]; warnings: string[] };
 
 // ---------------------------------------------------------------------------
 // 1.6 DTOs — 网关（ipc.md §10.10，mirror `crates/supertask-core/src/ipc/v16.rs`）

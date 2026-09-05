@@ -28,16 +28,17 @@ import {
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { NeedsPanel } from "@/components/needs-panel";
 import { useSession } from "../providers/session-provider";
 import { useWorkspace } from "../providers/workspace-provider";
 import { useYaml } from "@/providers/yaml-provider";
 import { useOperations } from "../providers/operation-provider";
 import { useToast } from "@/components/ui/toast";
 import { useUnsavedEntry } from "@/providers/unsaved-guard";
-import { apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade, apiToolchainVersions, apiYamlSaveForm } from "../ipc/api";
-import { IpcFailure, type DiscoveredInstall, type ManagerAvailability, type NetworkSpec, type SuperTaskFile, type ToolProbe, type ToolchainProbeOut } from "../ipc/protocol";
+import { apiNeedsResolve, apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade, apiToolchainVersions, apiYamlSaveForm } from "../ipc/api";
+import { IpcFailure, type DiscoveredInstall, type ManagerAvailability, type NeedItem, type NeedsResolveOut, type NetworkSpec, type SuperTaskFile, type ToolProbe, type ToolchainProbeOut } from "../ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
-import { errorDisplayText } from "@/lib/error-messages";
+import { errorDisplayText, formatIpcFailure } from "@/lib/error-messages";
 import { cn } from "@/lib/utils";
 
 type ToolKey = "java" | "maven" | "node" | "npm" | "pnpm" | "yarn" | "bun" | "python" | "go";
@@ -289,6 +290,12 @@ export function EnvPage() {
   pendingRef.current = pending;
   const handledOps = useRef(new Set<string>());
   const refreshGen = useRef(0);
+  // 声明式需求 needs（ipc.md §10.17）：resolve 输出 / 加载 / 错误
+  const [needsOut, setNeedsOut] = useState<NeedsResolveOut | null>(null);
+  const [needsLoading, setNeedsLoading] = useState(false);
+  const [needsError, setNeedsError] = useState<string | null>(null);
+  /** needs 面板发起的安装 op → 终态成功时给 needs 专属 toast 并自动重跑 resolve。 */
+  const needsOps = useRef(new Map<string, { id: string; version: string }>());
 
   const setManagerPick = (m: ManagerPick) => {
     setManagerPickState(m);
@@ -323,6 +330,22 @@ export function EnvPage() {
     }
   };
 
+  // 检查需求（ipc.md §10.17）：resolve-only dry-run，纯只读零副作用；默认 refresh=false
+  const resolveNeeds = async () => {
+    if (!ws.state.workspaceId) return;
+    setNeedsLoading(true);
+    try {
+      setNeedsOut(await apiNeedsResolve(ws.state.workspaceId));
+      setNeedsError(null);
+    } catch (e) {
+      const msg = e instanceof IpcFailure ? formatIpcFailure(e) : String(e);
+      setNeedsError(msg);
+      toast(msg, "err");
+    } finally {
+      setNeedsLoading(false);
+    }
+  };
+
   useEffect(() => {
     void refresh();
     void loadVersions();
@@ -343,8 +366,17 @@ export function EnvPage() {
       if (op.state === "succeeded") {
         void refresh(true);
         if (verb === "pin") void yaml.actions.reload();
-        toast(t("pages.env.opDone", { tool, verb: t(`pages.env.verb_${verb}`) }), "ok");
+        // needs 面板发起的安装：needs 专属 toast + 自动重跑 resolve 让行翻转为已存在
+        const needOp = needsOps.current.get(op.operation_id);
+        if (needOp) {
+          needsOps.current.delete(op.operation_id);
+          toast(t("pages.env.needs.installDone", { id: needOp.id, version: needOp.version }), "ok");
+          void resolveNeeds();
+        } else {
+          toast(t("pages.env.opDone", { tool, verb: t(`pages.env.verb_${verb}`) }), "ok");
+        }
       } else {
+        needsOps.current.delete(op.operation_id);
         const label = opErrorLabel(op.error_code);
         toast(op.message ? `${label}（${op.message}）` : label, "err");
       }
@@ -413,6 +445,26 @@ export function EnvPage() {
       setActionDialog(null);
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel((e as IpcFailure).code) : String(e), "err");
+    }
+  };
+
+  /** needs installable 行安装：复用 toolchain.install 长操作链路（tool=id，版本/manager 取 resolve 建议值）。 */
+  const installNeed = async (item: NeedItem) => {
+    const tool = item.id as ToolKey;
+    // installable 只会是已知工具 id（防御）；同工具进行中禁止重复发起（§15.1）
+    if (!(tool in DEFAULT_VERSION) || pending[tool]) return;
+    try {
+      const out = await apiToolchainInstall(tool, {
+        version: item.install_version ?? undefined,
+        manager: item.via,
+        persist: false,
+        baseHash: null,
+      });
+      handledOps.current.delete(out.operation_id);
+      needsOps.current.set(out.operation_id, { id: item.id, version: item.install_version ?? "" });
+      setPending((prev) => ({ ...prev, [tool]: { opId: out.operation_id, verb: "install" } }));
+    } catch (e) {
+      toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
     }
   };
 
@@ -604,6 +656,21 @@ export function EnvPage() {
           <p className="mt-3 text-[0.75rem] text-[var(--t3,#8a8f98)]">
             {t("pages.env.pinHint")}
           </p>
+        )}
+
+        {/* 声明式需求 needs（ipc.md §10.17）：resolve-only 检查 + installable 一键安装（复用工具链安装链路） */}
+        {ws.state.workspaceId != null && (
+          <NeedsPanel
+            needs={ws.state.spec?.needs}
+            output={needsOut}
+            loading={needsLoading}
+            error={needsError}
+            installingIds={Object.entries(pending)
+              .filter(([, p]) => p != null)
+              .map(([k]) => k)}
+            onResolve={() => void resolveNeeds()}
+            onInstall={(item) => void installNeed(item)}
+          />
         )}
 
         {/* 1.7 §7：网络（代理 + 镜像）——写入 workspace network 段，启动时注入 env */}

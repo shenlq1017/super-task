@@ -805,6 +805,24 @@ const zhCN = {
       failureNextSteps: "下一步：检查网络/权限/PATH，或换用其他 provider 后重试。",
       retryAction: "重试",
       advanced: "高级",
+      // 声明式需求 needs（ipc.md §10.17）
+      needs: {
+        title: "声明式需求 needs",
+        hint: "在 supertask.yaml 顶层声明工作区需要的工具与中间件，此处一键解析本机可供给性；解析为只读 dry-run，不会安装任何东西。",
+        check: "检查需求",
+        checking: "解析中…",
+        noNeeds: "本工作区未声明 needs；可在 supertask.yaml 顶层添加，如 needs: [\"node@20\"]",
+        install: "安装",
+        installing: "安装中…",
+        installDone: "已安装 {{id}} {{version}}，需求已满足",
+        warnings: "提示",
+        status: {
+          satisfied: "已存在",
+          installable: "可安装",
+          archive: "可从归档供给",
+          unsatisfiable: "不可满足",
+        },
+      },
     },
     welcome: {
       title: "欢迎使用 SuperTask",
@@ -1464,6 +1482,8 @@ const zhCN = {
     AI_REQUEST_FAILED: "AI 端点请求失败：请检查端点地址、Key 与服务状态",
     AI_TIMEOUT: "AI 请求超时：可到 /ai 页调大超时时间后重试",
     AI_CONTEXT_TOO_LARGE: "上下文过大：请缩小日志范围（减少行数）后重试",
+    // ---- 声明式需求 needs（ipc.md §10.17）新增错误码 ----
+    NEEDS_INVALID: "needs 声明非法：请检查 id 与版本要求格式",
   },
   operations: {
     serviceCrash: "服务 {{id}} 异常退出（退出码 {{code}}），可到日志页查看",
