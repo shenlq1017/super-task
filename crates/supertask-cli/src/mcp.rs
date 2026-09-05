@@ -1,9 +1,13 @@
-//! `supertask mcp`（1.5 §5）：stdio 传输、tools only、8 个工具。
+//! `supertask mcp`（1.5 §5）：stdio 传输、tools only、10 个工具。
 //! 业务走 supertask-core；tokio 只在本模块，引擎调用经 spawn_blocking 桥接（§3.2）。
 //!
 //! 生命周期：进程启动即就绪；**首个可变工具**触发取锁 + `engine.open`（holder=mcp）；
 //! `supertask_status` / `supertask_logs` 只读、无需持锁。**断连即清场**：stdio 关闭
 //! → stop_all → close（释放锁）→ 进程退出（防孤儿优先）。
+//!
+//! 方向七·AI 原生：`supertask_errors`（错误聚合）与 `supertask_wait_ready`（等待就绪，
+//! outcome 区分 reached/failed/stopped/timeout）；`dispatch` 出口对所有工具返回值与
+//! 错误信封统一脱敏（声明密钥值替换 + 敏感行整行掩码，幂等）。
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -20,8 +24,15 @@ pub const TOOL_LOGS: &str = "supertask_logs";
 pub const TOOL_RUN_SCRIPT: &str = "supertask_run_script";
 pub const TOOL_CANCEL_SCRIPT: &str = "supertask_cancel_script";
 pub const TOOL_HOST_METRICS: &str = "supertask_host_metrics";
+pub const TOOL_ERRORS: &str = "supertask_errors";
+pub const TOOL_WAIT_READY: &str = "supertask_wait_ready";
 
-/// 8 个工具的定义（名称 / 描述 / JSON Schema）。断连清场语义写进可变工具描述，
+/// 等待就绪的默认与钳制边界（毫秒）。
+const WAIT_READY_DEFAULT_MS: u64 = 30_000;
+const WAIT_READY_MIN_MS: u64 = 500;
+const WAIT_READY_MAX_MS: u64 = 120_000;
+
+/// 10 个工具的定义（名称 / 描述 / JSON Schema）。断连清场语义写进可变工具描述，
 /// 提示编辑器重载会停止服务（§5.1 文档明示义务）。
 pub fn tool_definitions() -> Vec<(&'static str, &'static str, Value)> {
     fn obj_schema(props: Value) -> Value {
@@ -76,6 +87,25 @@ pub fn tool_definitions() -> Vec<(&'static str, &'static str, Value)> {
              不含 IP、路径、进程或环境信息，不持久化。",
             obj_schema(json!({})),
         ),
+        (
+            TOOL_ERRORS,
+            "按服务聚合的错误摘要与就绪判定（不改动服务，但会取得工作区锁）：每个服务的状态、\
+             是否就绪、错误来源（exit=进程退出 / health=健康检查失败 / generic=构建失败等）、\
+             脱敏后的错误摘要与最近日志摘录。一次调用即可判断「当前栈哪里没就绪、为什么」。\
+             返回 error 为 null 表示该服务当前没有捕获到的错误。",
+            obj_schema(json!({})),
+        ),
+        (
+            TOOL_WAIT_READY,
+            "等待服务就绪（只等待不启动；会取得工作区锁并阻塞至多 timeout_ms）。返回 outcome：\
+             reached=全部就绪；failed=有服务退出或不健康（附脱敏错误摘要）；\
+             stopped=有服务未启动或被停止（先调 supertask_start）；timeout=超时（pending 列出\
+             未就绪服务）。注意：编辑器重载/断开 MCP 会停止全部服务。",
+            obj_schema(json!({
+                "timeout_ms": { "type": "integer", "description": "最长等待毫秒数，默认 30000，钳到 [500, 120000]" },
+                "services": { "type": "array", "items": { "type": "string" }, "description": "服务 id 列表，缺省全部 enabled 服务" },
+            })),
+        ),
     ]
 }
 
@@ -127,9 +157,10 @@ impl McpServer {
     }
 
     /// 工具分发（业务真源，测试直接调用）。返回 data JSON 或引擎错误。
+    /// 出口统一脱敏：所有工具的返回值与错误信封都过一遍声明密钥掩码（幂等）。
     pub fn dispatch(&self, tool: &str, args: Option<&Value>) -> Result<Value, Error> {
         let args = args.cloned().unwrap_or(Value::Null);
-        match tool {
+        let out = match tool {
             TOOL_STATUS => self.status(),
             // 主机指标：纯主机级只读采样，不取锁、不开引擎、与工作区有效性无关。
             TOOL_HOST_METRICS => Ok(supertask_core::host_metrics::HostMetrics::mcp_sample()),
@@ -150,8 +181,64 @@ impl McpServer {
                 e.cancel_script()?;
                 Ok(json!({ "ok": true }))
             }),
+            TOOL_ERRORS => self.errors(),
+            TOOL_WAIT_READY => self.wait_ready(&args),
             _ => Err(Error::new(ErrorCode::NotFound, format!("未知工具: {tool}"))),
+        };
+        self.redact_out(out)
+    }
+
+    /// 方向七·AI 原生：出口统一脱敏——值替换来自 secrets 声明（主密钥文件 +
+    /// 全部服务 env_file + env backend key），另加敏感行整行掩码；无声明时仅掩码。
+    /// 引擎已打开时用引擎内值集合，否则从工作区文件 best-effort 收集。
+    fn redact_out(&self, out: Result<Value, Error>) -> Result<Value, Error> {
+        let values = {
+            let g = self.engine.lock().expect("mcp engine lock");
+            match g.as_ref() {
+                Some(e) => e.redaction_values().unwrap_or_default(),
+                None => supertask_core::ai::sanitize::collect_workspace_values(self.root.as_path()),
+            }
+        };
+        let red = supertask_core::ai::sanitize::Redactor::from_values(values);
+        match out {
+            Ok(mut data) => {
+                red.redact_json(&mut data);
+                Ok(data)
+            }
+            Err(mut err) => {
+                err.redact_with(&|s: &str| red.text(s));
+                Err(err)
+            }
         }
+    }
+
+    /// 错误聚合（方向七）：引擎诊断视图。会取锁打开引擎（不改动服务状态）。
+    fn errors(&self) -> Result<Value, Error> {
+        self.with_engine(|e| {
+            let view = e.diagnostics()?;
+            serde_json::to_value(view).map_err(|err| {
+                Error::new(ErrorCode::Protocol, format!("诊断视图序列化失败: {err}"))
+            })
+        })
+    }
+
+    /// 等待就绪（方向七）：只等待不启动；超时是结果不是错误。
+    /// 持 dispatch_lock 阻塞至多 timeout_ms（与 run_script 的等待语义一致）。
+    fn wait_ready(&self, args: &Value) -> Result<Value, Error> {
+        let timeout_ms = args["timeout_ms"].as_u64().unwrap_or(WAIT_READY_DEFAULT_MS);
+        let timeout_ms = timeout_ms.clamp(WAIT_READY_MIN_MS, WAIT_READY_MAX_MS);
+        let services: Option<Vec<String>> = args["services"].as_array().map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        });
+        self.with_engine(|e| {
+            let view =
+                e.wait_workspace_ready(services, std::time::Duration::from_millis(timeout_ms))?;
+            serde_json::to_value(view).map_err(|err| {
+                Error::new(ErrorCode::Protocol, format!("等待视图序列化失败: {err}"))
+            })
+        })
     }
 
     /// 只读快照：引擎未打开时退化为文件级只读（不取锁）。
@@ -476,10 +563,93 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    // ---- 方向七·AI 原生：错误聚合 / 等待就绪 / 出口统一脱敏 ----
+
+    /// supertask_errors：取锁打开引擎（不改动服务），未启动服务的错误为 null、
+    /// ready=false；断连清场释放锁。
     #[test]
-    fn tool_definitions_cover_eight_tools() {
+    fn errors_opens_engine_and_reports_stopped_without_error() {
+        let root = temp_root("errors-stopped");
+        let server = McpServer::new(root.clone());
+        let out = server.dispatch(TOOL_ERRORS, None).unwrap();
+        assert_eq!(out["ready"], false);
+        assert_eq!(out["ready_count"], 0);
+        assert_eq!(out["total_count"], 1);
+        let svc = &out["services"][0];
+        assert_eq!(svc["id"], "api");
+        assert_eq!(svc["state"], "stopped");
+        assert_eq!(svc["ready"], false);
+        assert!(
+            svc.get("error").is_none() || svc["error"].is_null(),
+            "无错误与有错误可区分"
+        );
+        assert!(
+            lock::query(&root).is_some(),
+            "errors opens engine and holds lock"
+        );
+        server.shutdown();
+        assert!(lock::query(&root).is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// supertask_wait_ready：目标从未启动 → stopped 早退（不空等）；
+    /// timeout_ms=0 钳制后同样立即返回，未知服务 → NOT_FOUND。
+    #[test]
+    fn wait_ready_stopped_immediately_and_validates_targets() {
+        let root = temp_root("wait-stopped");
+        let server = McpServer::new(root.clone());
+        let out = server
+            .dispatch(
+                TOOL_WAIT_READY,
+                Some(&json!({ "timeout_ms": 500, "services": ["api"] })),
+            )
+            .unwrap();
+        assert_eq!(out["outcome"], "stopped");
+        assert_eq!(out["targets"][0], "api");
+        let out = server
+            .dispatch(TOOL_WAIT_READY, Some(&json!({ "timeout_ms": 0 })))
+            .unwrap();
+        assert_eq!(out["outcome"], "stopped");
+        let err = server
+            .dispatch(
+                TOOL_WAIT_READY,
+                Some(&json!({ "timeout_ms": 500, "services": ["nope"] })),
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotFound);
+        server.shutdown();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 出口统一脱敏：声明密钥值从日志工具输出中掩掉，敏感行整行掩码，
+    /// 无声明密钥的普通行不受影响。
+    #[test]
+    fn logs_output_redacts_declared_secrets_and_sensitive_lines() {
+        let root = temp_root("logs-redact");
+        std::fs::write(root.join(".env.local"), "API_TOKEN=abcd1234xyz\n").unwrap();
+        let logs = root.join(".supertask").join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(
+            logs.join("api.log"),
+            "connecting with API_TOKEN=abcd1234xyz\npassword: hunter2x\nport: 18099\n",
+        )
+        .unwrap();
+        let server = McpServer::new(root.clone());
+        let out = server
+            .dispatch(TOOL_LOGS, Some(&json!({ "service": "api", "lines": 10 })))
+            .unwrap();
+        let text = out.to_string();
+        assert!(!text.contains("abcd1234xyz"), "{text}");
+        assert!(!text.contains("hunter2x"), "{text}");
+        assert!(text.contains("<redacted>"));
+        assert!(text.contains("port: 18099"), "普通行保持原样");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn tool_definitions_cover_ten_tools() {
         let names: Vec<&str> = tool_definitions().into_iter().map(|(n, _, _)| n).collect();
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 10);
         for expected in [
             TOOL_STATUS,
             TOOL_START,
@@ -489,6 +659,8 @@ mod tests {
             TOOL_RUN_SCRIPT,
             TOOL_CANCEL_SCRIPT,
             TOOL_HOST_METRICS,
+            TOOL_ERRORS,
+            TOOL_WAIT_READY,
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
