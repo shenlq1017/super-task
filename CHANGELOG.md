@@ -6,6 +6,19 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 三平台发布产物（方向八·多平台，M2）
+
+- `release.yml` 新增 macOS 与 Linux 构建任务，tag 触发后与 Windows 安装包进同一个
+  draft Release：macOS（Apple Silicon `aarch64` + Intel `x86_64` 的 DMG）、
+  Linux（x86_64 AppImage / deb）。CNB 镜像任务改为等三平台全部完成后遍历上传所有产物。
+- macOS / Linux **不写** `latest.json`（`includeUpdaterJson: false`）：已验证的
+  Windows 自动更新链路使用的更新清单不受多平台构建影响；macOS / Linux 自动更新
+  等签名公证（M3）与 AppImage 通道（M5）。
+- Linux 在 `ubuntu-22.04` 构建（旧 glibc 兼顾用户侧发行版兼容面），安装 Tauri 2
+  系统依赖与 `libfuse2`（AppImage 打包工具需要），产物限定 `--bundles appimage,deb`。
+- 未签名说明：macOS 包首次运行会被 Gatekeeper 拦截，右键打开或 `xattr -cr` 放行；
+  README 平台表已同步为「实验性」。
+
 #### 日志模式就绪判定（方向一·服务监管与自愈）
 
 - 健康判定新增 `health.type: log` 与 `health.pattern`：对服务**本次启动以来**的日志行

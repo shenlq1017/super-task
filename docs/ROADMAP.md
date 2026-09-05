@@ -271,12 +271,15 @@
 > 全量测试、CLI smoke、Tauri 壳 `cargo check`；Linux 构建前装 Tauri 2 系统依赖），
 > 并修复实测暴露的 `system_info` 核数字段互换、Linux 编译与跨平台测试问题
 > （进 `CHANGELOG.md`）。CI 已成为后续打包与真机冒烟的前置门槛。
+>
+> 已交付移出：**macOS / Linux 发布产物**——`release.yml` 增 macOS（aarch64 + x86_64
+> DMG）与 Linux（x86_64 AppImage / deb）任务，产物进同一 draft Release；不写
+> latest.json 保住已验证的 Windows 更新链路；README 平台表改「实验性」（进 `CHANGELOG.md`）。
 
 | 候选点 | 现状 | 价值 | 成本 | 说明 |
 |---|---|---|---|---|
-| 产出 macOS（Apple Silicon + Intel）与 Linux 构建 | 发布流程只有 Windows 任务 | ★★★ | 中 | 发布流程加两个任务；更新检测端点已按平台通用，无需改 |
 | macOS 签名与公证 | 无 | ★★★ | 中 | 未签名的包会被 Gatekeeper 拦下，等于不可用；需要开发者账号 |
-| Linux 打包分发 | 无 | ★★ | 中 | 建议 AppImage 作为自动更新通道（deb / rpm 不适合就地自更新） |
+| Linux 打包分发 | 产物已产出（AppImage / deb） | ★★ | 中 | 剩 AppImage 作为自动更新通道（deb / rpm 不适合就地自更新） |
 | 三平台真机冒烟 | 从未做过 | ★★★ | 中 | 起停、进程树清理、健康检查、日志、端口回收、通知与托盘，六项 |
 | 平台差异收敛 | 进程与探测已有平台分支 | ★★ | 中 | 路径约定、权限模型、caddy / nginx 安装方式与命令行差异 |
 
