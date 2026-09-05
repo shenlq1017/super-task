@@ -62,6 +62,8 @@ export const cmd = {
   TEMPLATES_LIST: "templates.list",
   TEMPLATES_CREATE: "templates.create",
   TEMPLATES_PREVIEW: "templates.preview",
+  TEMPLATES_IMPORT: "templates.import",
+  TEMPLATES_EXPORT: "templates.export",
   // 1.5（ipc.md §10.9）：导出包
   WORKSPACE_EXPORT_PACKAGE: "workspace.exportPackage",
   WORKSPACE_IMPORT_PACKAGE: "workspace.importPackage",
@@ -758,6 +760,12 @@ export type TemplateSummary = {
 };
 
 export type TemplatesListOut = { templates: TemplateSummary[] };
+
+/** `templates.import` 输出：导入本地库的模板 id + 落盘文件数（不含清单）。 */
+export type TemplateImportOut = { id: string; files: number };
+
+/** `templates.export` 输出：生成的可分享 zip 路径。 */
+export type TemplateExportOut = { path: string };
 
 /** `templates.preview` 输出：将生成的 services / 文件清单 / 警告（纯计算）。 */
 export type TemplatesPreviewOut = {

@@ -18,6 +18,8 @@ import {
   type ScriptRuntimeView,
   type ServiceRuntimeView,
   type SuperTaskFile,
+  type TemplateExportOut,
+  type TemplateImportOut,
   type TemplatesListOut,
   type WorkspaceExportPackageOut,
   type WorkspaceImportPackageOut,
@@ -395,6 +397,22 @@ export const apiTemplatesPreview = (args: {
     ...(args.blocks ? { blocks: args.blocks } : {}),
     ...(args.ports && Object.keys(args.ports).length > 0 ? { ports: args.ports } : {}),
     ...(args.params && Object.keys(args.params).length > 0 ? { params: args.params } : {}),
+  });
+
+/** 导入模板包（zip）到本地模板库（方向九：社区模板分享）。 */
+export const apiTemplatesImport = (args: { zipPath: string }) =>
+  invoke<TemplateImportOut>(cmd.TEMPLATES_IMPORT, { zipPath: args.zipPath });
+
+/** 导出模板为可分享 zip 包（方向九：社区模板分享）。 */
+export const apiTemplatesExport = (args: {
+  templateId: string;
+  source?: TemplateSource;
+  targetDir: string;
+}) =>
+  invoke<TemplateExportOut>(cmd.TEMPLATES_EXPORT, {
+    templateId: args.templateId,
+    ...(args.source ? { source: args.source } : {}),
+    targetDir: args.targetDir,
   });
 
 // ---------------------------------------------------------------------------

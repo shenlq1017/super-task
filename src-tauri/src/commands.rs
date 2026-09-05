@@ -1093,6 +1093,60 @@ pub fn templates_preview(
     .map_err(ipc_err)?)
 }
 
+#[derive(Serialize)]
+pub struct TemplateExportOut {
+    pub path: String,
+}
+
+/// 导入模板包（zip）到本地模板库（方向九：社区模板分享）。
+#[tauri::command(rename = "templates.import")]
+pub fn templates_import(
+    exiting: State<'_, Exiting>,
+    zip_path: String,
+) -> Result<template::TemplateImportOut, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    if zip_path.is_empty() {
+        return Err(err(ErrorCode::SpecInvalid, "模板包路径不能为空"));
+    }
+    let local_dir =
+        state::templates_dir().ok_or_else(|| err(ErrorCode::NotFound, "本地模板目录不可用"))?;
+    template::import_template(std::path::Path::new(&zip_path), &local_dir).map_err(ipc_err)
+}
+
+/// 导出模板为可分享 zip 包（方向九：社区模板分享）。
+#[tauri::command(rename = "templates.export")]
+pub fn templates_export(
+    exiting: State<'_, Exiting>,
+    template_id: String,
+    source: Option<String>,
+    target_dir: String,
+) -> Result<TemplateExportOut, IpcError> {
+    ensure_not_exiting(&exiting)?;
+    if target_dir.is_empty() {
+        return Err(err(ErrorCode::SpecInvalid, "目标目录不能为空"));
+    }
+    let source = match source.as_deref() {
+        None | Some("builtin") => template::TemplateSourceKind::Builtin,
+        Some("local") => template::TemplateSourceKind::Local,
+        Some(other) => {
+            return Err(err(
+                ErrorCode::SpecInvalid,
+                format!("未知模板来源: {other}"),
+            ))
+        }
+    };
+    let path = template::export_template(
+        &template_id,
+        source,
+        std::path::Path::new(&target_dir),
+        state::templates_dir().as_deref(),
+    )
+    .map_err(ipc_err)?;
+    Ok(TemplateExportOut {
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
 /// clone 远端仓库为新工作区（长操作，立即返回 operation_id）。
 #[tauri::command(rename = "git.clone")]
 pub fn git_clone(

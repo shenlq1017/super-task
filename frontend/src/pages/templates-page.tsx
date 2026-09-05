@@ -3,12 +3,14 @@ import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
   ChevronRight,
+  Download,
   Eye,
   FolderSearch,
   LayoutTemplate,
   Loader2,
   RefreshCw,
   Search,
+  Upload,
   X,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -28,7 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
-import { apiTemplatesCreate, apiTemplatesList, apiTemplatesPreview, type TemplatesCreateArgs } from "../ipc/api";
+import { apiTemplatesCreate, apiTemplatesExport, apiTemplatesImport, apiTemplatesList, apiTemplatesPreview, type TemplatesCreateArgs } from "../ipc/api";
 import { isTauri } from "../ipc/invoke";
 import {
   IpcFailure,
@@ -259,6 +261,8 @@ function TemplateCard({
   onPreview,
   onCreate,
   onCompose,
+  onExport,
+  exporting,
 }: {
   template: TemplateSummary;
   selected: boolean;
@@ -266,6 +270,8 @@ function TemplateCard({
   onPreview: () => void;
   onCreate: () => void;
   onCompose: () => void;
+  onExport?: () => void;
+  exporting?: boolean;
 }) {
   const { t } = useTranslation();
   const [filesOpen, setFilesOpen] = useState(false);
@@ -352,6 +358,21 @@ function TemplateCard({
           {t("pages.templates.filesOverview", { n: template.files.length })}
         </button>
         <div className="flex shrink-0 items-center gap-1.5">
+          {onExport ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1"
+              disabled={exporting}
+              onClick={(e) => {
+                e.stopPropagation();
+                onExport();
+              }}
+            >
+              {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+              {t("pages.templates.exportCta")}
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="sm"
@@ -573,6 +594,69 @@ export function TemplatesPage() {
     }
     const p = window.prompt(t("pages.git.promptParent"), parentPath);
     if (p) setParentPath(p);
+  };
+
+  const [importing, setImporting] = useState(false);
+  const [exportingId, setExportingId] = useState<string | null>(null);
+
+  /** 导入模板包（zip）到本地库：文件对话框选包 → templates.import → 刷新列表。 */
+  const importPackage = async () => {
+    if (importing) return;
+    let picked: string | null = null;
+    if (isTauri()) {
+      try {
+        const selected = await openDialog({
+          multiple: false,
+          filters: [{ name: "Template package", extensions: ["zip"] }],
+        });
+        if (typeof selected === "string") picked = selected;
+      } catch {
+        // 插件不可用时降级为手动输入
+      }
+    }
+    if (!picked) {
+      const p = window.prompt(t("pages.templates.importPrompt"), "");
+      if (p) picked = p;
+    }
+    if (!picked) return;
+    setImporting(true);
+    try {
+      const out = await apiTemplatesImport({ zipPath: picked });
+      toast(t("pages.templates.importedOk", { id: out.id }), "ok");
+      await loadTemplates({ soft: true });
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  /** 导出模板为可分享 zip：目录对话框选目标 → templates.export。 */
+  const exportPackage = async (tpl: TemplateSummary) => {
+    if (exportingId) return;
+    let dir: string | null = null;
+    if (isTauri()) {
+      try {
+        const selected = await openDialog({ directory: true, multiple: false });
+        if (typeof selected === "string") dir = selected;
+      } catch {
+        // 插件不可用时降级为手动输入
+      }
+    }
+    if (!dir) {
+      const p = window.prompt(t("pages.templates.exportPrompt"), "");
+      if (p) dir = p;
+    }
+    if (!dir) return;
+    setExportingId(tpl.id);
+    try {
+      const out = await apiTemplatesExport({ templateId: tpl.id, source: tpl.source, targetDir: dir });
+      toast(t("pages.templates.exportedTo", { path: out.path }), "ok");
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setExportingId(null);
+    }
   };
 
   const allStacks = useMemo(() => {
@@ -880,6 +964,16 @@ export function TemplatesPage() {
                 <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
                 {t("common.refresh")}
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1"
+                disabled={importing || loading}
+                onClick={() => void importPackage()}
+              >
+                {importing ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+                {t("pages.templates.importCta")}
+              </Button>
               {hasActiveFilters ? (
                 <Button variant="ghost" size="sm" onClick={clearFilters}>
                   {t("pages.templates.clearFilters")}
@@ -950,6 +1044,8 @@ export function TemplatesPage() {
                     onPreview={() => openDetail(tpl.id)}
                     onCreate={() => openCreate(tpl.id)}
                     onCompose={() => openWizard(tpl.id)}
+                    onExport={tpl.source === "local" ? () => void exportPackage(tpl) : undefined}
+                    exporting={exportingId === tpl.id}
                   />
                 ))}
               </div>

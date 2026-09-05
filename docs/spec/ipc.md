@@ -518,9 +518,19 @@ templates.create
 templates.preview
   input:  { template_id, source?, blocks?, ports?, params? }
   output: { services: object, files: string[], warnings: string[] }
+
+templates.import
+  input:  { zip_path }
+  output: { id: string, files: number }
+
+templates.export
+  input:  { template_id, source?, target_dir }
+  output: { path: string }
 ```
 
 `directory_name` 必须是单层目录名（禁止 `..`、路径分隔符、UNC）；目标不存在则创建，存在则必须为空，否则 `TARGET_NOT_EMPTY`。operation `succeeded` 的 `result = { workspace_id }`。创建完成后写入含 `templates:` 元数据的 `supertask.yaml`（组合模板的 yaml 由所选块的 services 片段生成，`{{port}}` 占位随端口分配替换）。与 builtin 同 id 的 local 模板在 list 中跳过、create 拒绝（`TEMPLATE_ID_CONFLICT`）。`templates.preview` 是纯计算，无任何落盘副作用；组合校验（依赖闭合 `TEMPLATE_BLOCK_DEP`、端口查重 `TEMPLATE_BLOCK_PORT`）与 create 共用同一实现。参数错误码：`TEMPLATE_PARAM_MISSING` / `TEMPLATE_PARAM_UNKNOWN`。
+
+**模板分享（方向九）**：`templates.import` 把模板 zip 包装入本地库，`templates.export` 把 local/builtin 模板打包为可分享 zip（包根 = `template.yaml` + 全部模板文件，往返兼容）。安全口径：包内条目路径禁 `..`/`.`/空段/反斜杠/冒号/隐藏段与构建产物目录段；条目数 ≤ 2000、总字节 ≤ 64 MiB；模板 id 只允许字母数字/连字符/下划线（≤ 64，id 即本地库目录名）；清单声明 ⇄ 包内容双向一致（多文件/缺文件均拒）。导入根形态两种：清单在包根，或恰有一个含清单的顶层目录（压缩模板目录的常见形态），含根外条目拒收。与 builtin 同 id（`TEMPLATE_ID_CONFLICT`，内置随应用分发防遮蔽）、与现有本地同 id（同码）拒收；先解包到隐藏 staging 目录再原子改名，失败清理不落半成品。`source` 语义与 create 相同；`target_dir` 必须是已存在目录（`NOT_FOUND`），目标 zip 已存在（`TARGET_NOT_EMPTY`）。损坏包 / 不安全路径 / 超限均为 `TEMPLATE_INVALID`，写失败为 `TEMPLATE_WRITE`。
 
 ### 10.2 Git
 

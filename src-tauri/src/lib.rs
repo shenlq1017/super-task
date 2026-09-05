@@ -384,6 +384,8 @@ pub fn run() {
             commands::templates_list,
             commands::templates_create,
             commands::templates_preview,
+            commands::templates_import,
+            commands::templates_export,
             commands::workspace_export_package,
             commands::workspace_import_package,
             // 方向六：数据快照（ipc.md §10.18）
