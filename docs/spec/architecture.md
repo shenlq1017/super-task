@@ -28,7 +28,7 @@ Engine （本 crate）
 以上为 1.0 起的核心子系统。除上述之外，`supertask-core` 还包含以下功能模块（`src/lib.rs` 声明），
 按版本逐步落地：`launcher`（各 kind 启动命令规划）、`spring`（Maven/Gradle 深度支持）、
 `scan`（扫描项目生成配置草稿）、`merge`（结构化写回合并）、`template`（工作区模板）、
-`taskfile`（Taskfile 导入）、`importer`（README 导入）、`toolchain` / `probe`（工具链探测、
+`taskfile`（Taskfile 导入）、`importer`（README 导入）、`adopt`（孤儿进程纳管：发现结果 → generic 服务草稿，ipc.md §10.16）、`toolchain` / `probe`（工具链探测、
 mise/winget 安装）、`docker`（compose）、`gateway`（nginx/caddy/apache 渲染与托管）、
 `git` / `ide`（git 状态与 IDE 打开）、`ports` / `network` / `host_metrics` / `metrics`
 （端口、代理、指标）、`profiles`（多环境覆盖）、`secrets`（密钥声明与存取）、`pkg`

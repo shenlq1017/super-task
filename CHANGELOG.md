@@ -6,6 +6,30 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 孤儿进程纳管（方向二·纳管任意来源）
+
+- 发现页新增「纳管进程」：把当前工作区目录下运行中的外部监听进程反推成
+  `kind: generic` 服务草稿（program/args 忠实复刻原命令行、`dir` 取 cwd 相对
+  工作区根、`port` 取首个监听端口），dry-run 预览确认后写入 `supertask.yaml`，
+  从此走统一的启停 / 健康 / 日志链路——README「AI 起的服务没人收场」的叙事
+  兑现为「收编进来，由我统一启停」。
+- dry-run 预览分四态：拟新增（默认勾选）/ 已被现有服务覆盖（matched，重开工作区
+  即被引擎识别为外部实例，无需纳管）/ ID 冲突（候选 id `<id>-2`，默认不勾）/
+  不可纳入（cwd 不可读或在工作区外等，附原因）。同预览内端口互撞、父进程同为
+  监听进程、多余监听端口均给出警告。
+- **apply 前重算 + 幂等**：预览到确认之间退出的进程按警告跳过；纳管后同进程再次
+  预览即 matched；写回走 `yaml.saveForm`（base_hash 冲突 → `YAML_CONFLICT`），
+  只新增勾选服务、不触碰其他字段；来源保留在 `labels`（`origin: adopted` /
+  `adopted-from: "pid N (name)"`）。
+- **脱敏**：命令行中形似密钥的参数值（password/token/secret/api_key=…、Bearer）
+  在预览与草稿中一律替换为 `<redacted>`，明文不进 IPC 返回值也不落盘；环境变量
+  不读取不回显。不杀任何进程，无确认不写盘。
+- 新 IPC `workspace.adoptPreview` / `workspace.adoptApply`（契约 ipc.md §10.16）；
+  `system.discover` 的 `ForeignService` 新增 additive 字段 `parent_pid`（三平台，
+  读不到为 null）。发现页行内对「cwd 在工作区内且未被认领」的进程提供一键纳管入口。
+- 测试：core `adopt::` 22 项离线单测（草稿推导、Windows 命令行切词、路径大小写
+  不敏感相对化、脱敏无明文、冲突/幂等/进程退出跳过、yaml 往返校验、确定性）。
+
 #### restart 策略与自动重启（方向一·服务监管）
 
 - `supertask.yaml` 服务级 `restart` 字段自 reserved 转正（2.2）：`never`（默认）/ `on-failure`

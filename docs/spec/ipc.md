@@ -130,8 +130,10 @@
 | `workspace.scanDraft` | `{ path }` | `{ workspace_id, spec, warnings[], warning_items?[] }` **不写盘**；`warning_items` 为 additive `{code,message}` |
 | `workspace.init` | `{ path, spec }` | `{ workspace_id, spec, warnings[], warning_items?[] }` 以给定 spec 初始化新工作区（写盘 supertask.yaml 并打开），记入 recents |
 | `workspace.openExplorer` | `{ workspace_id, rel?: string }` | `{ ok }` rel 必须在沙箱内 |
-| `system.discover` | — | `ForeignService[]`（pid/name/kind/ports/cwd/cmd_line/cpu_percent/memory_bytes） 本机监听端口的 java/node/python 进程，只读。`cpu_percent` 为整机口径差分采样，**首次调用为 null**；`memory_bytes` 为物理内存工作集（字节）；两者读取失败（受保护进程）均为 null |
+| `system.discover` | — | `ForeignService[]`（pid/name/kind/ports/cwd/cmd_line/parent_pid/cpu_percent/memory_bytes） 本机监听端口的 java/node/python 进程，只读。`cpu_percent` 为整机口径差分采样，**首次调用为 null**；`memory_bytes` 为物理内存工作集（字节）；两者读取失败（受保护进程）均为 null |
 | `system.killProcess` | `{ pid }` | `{ ok }` 终止该监听进程整棵树（`taskkill /T /F`）。护栏：pid ≤ 4 / SuperTask 自身 / 当前无 LISTEN 端口 → 拒绝（`JobKill`）；UI 侧二次确认 |
+| `workspace.adoptPreview` | `{ workspace_id }` | `AdoptPreviewOut`（§10.16）孤儿进程纳管 dry-run：与当前工作区相关的监听进程 → generic 服务草稿 + 冲突/警告报告。**纯内存计算，不落盘、不杀进程**；命令行与草稿参数已脱敏 |
+| `workspace.adoptApply` | `{ workspace_id, choices: [{pid, action}], base_hash }` | `{ spec, hash, warnings[] }` 只新增用户确认的服务草稿；**apply 前重新发现进程**（退出的 pid 按警告跳过），写回走 saveForm（base_hash 冲突 → `YAML_CONFLICT`） |
 
 `workspace_id` = 规范化绝对路径。之后所有运行时命令带这个 id，**禁止**再传任意路径去 spawn。
 
@@ -840,3 +842,52 @@ Engine 工作区状态机、不占工作区锁；应用退出时壳层 `close_al
   事件序列与真链路同形）。
 - 前端：运行页服务抽屉「终端」Tab（`components/terminal-view.tsx`，xterm.js + FitAddon），
   会话随 Tab 卸载关闭；退出/错误态提供「重新打开」。
+
+### 10.16 孤儿进程纳管（方向二·纳管任意来源，2026-09-05）
+
+把发现页看到的本机监听进程反推成服务草稿：先预览（dry-run）、人确认、再写回
+`supertask.yaml`。与 Taskfile / scan merge / README 导入同一机制：**preview 纯内存、
+apply 前重算、写盘走 `yaml.saveForm`（base_hash 乐观锁）**。核心实现
+`crates/supertask-core/src/adopt.rs`；发现页入口（表头「纳管进程」+ 行内 🧲）。
+
+**草稿规则（只写可安全推断的字段）**
+
+- `kind` 恒为 `generic`，`program`/`args` 从命令行反推（忠实复刻原启动方式）；
+  不伪造 spring-boot/node 等专用字段（module/entry 推断不可靠，错值会被 spec 校验硬拒）。
+  进程归类（java/node/…）仅作为提示字段 `process_kind` 展示。
+- `dir` = 进程 cwd 相对工作区根（cwd == 根则缺省；**cwd 不在工作区内则不可纳入**——
+  spec 无法表达工作区外目录）；`port` = 首个监听端口；`env` 恒为空（OS 层读不到，
+  继承工作区环境）；健康检查留空由 `apply_defaults` 按端口补 tcp。
+- `labels: { origin: adopted, adopted-from: "pid <pid> (<name>)" }` 保留来源。
+- 服务 id 从 cwd 目录名（或进程名）合法化推导；与现有服务冲突 → `id_conflict` +
+  候选 id（`<id>-2` 起），默认不勾。
+- **脱敏**：命令行中形似密钥的参数（`--password=x` / `-Dsecret=x` / `key=token` /
+  `=Bearer …`）值替换为 `<redacted>`——预览（IPC 返回值）与草稿（写盘内容）都脱敏，
+  `=` 独立传值形式不处理（无法可靠配对，宁可放过不误伤）。环境变量不读取不回显。
+
+**`workspace.adoptPreview` 出参 `AdoptPreviewOut { items[], warnings[] }`**
+（mirror `adopt.rs::AdoptItem`）
+
+| 字段 | 说明 |
+|------|------|
+| `status` | `adoptable`（cwd 在工作区内、草稿就绪）/ `matched`（端口已被现有服务声明，重开工作区即被引擎识别为该服务的外部实例，无需纳管）/ `id_conflict` / `unadoptable`（`reason` 说明：cwd 不可读、端口被声明但进程在工作区外等） |
+| `pid` / `process_name` / `process_kind` / `ports` / `cwd` | 发现事实（透传 + cwd 相对化解释） |
+| `parent_pid` / `parent_name` | 进程关系（`system.discover` additive 字段；`parent_name` 仅当父进程也在发现列表中）；父进程同为监听进程时给确认警告 |
+| `cmd_line` | **脱敏后**的完整命令行（展示用） |
+| `service_id` / `candidate_id` / `draft` / `warnings[]` / `selected` | 草稿与默认动作（干净项默认勾选，有警告/冲突/参数未知默认不勾） |
+
+包含规则：cwd 在工作区内、或命令行命中工作区根、或端口被现有服务声明；其余进程计入
+`warnings` 的「未列入」计数。同一预览内两个草稿撞端口 → 后者警告 + 默认不勾
+（`PORT_DUP` 语义前置）。
+
+**`workspace.adoptApply` 入参 `choices: [{ pid, action: "add"|"keep" }]`**
+`apply` 前用最新发现快照重算预览：预览到确认之间退出的 pid 按警告跳过（不报错）；
+matched / unadoptable 不动作；重复添加同一 pid 或目标 id 已存在 → 跳过 + 警告。
+**幂等**：纳管后同进程再次预览即 `matched`，apply 为 no-op。
+
+**错误码**：不新增。`NoWorkspace` / `Discover`（发现表读取失败）/ `YamlConflict`
+（base_hash）；草稿错误在保存链路由既有 spec 校验兜底（`SpecInvalid` 等）。
+
+**测试**：core `adopt::` 22 项单测（草稿推导、Windows 引号/反斜杠切词、大小写不敏感
+相对化、脱敏（预览 JSON 与 yaml 文本均无明文）、matched/id_conflict/unadoptable、
+同端口冲突、apply 幂等、进程退出跳过、to_yaml/parse_yaml 往返校验、确定性）。
