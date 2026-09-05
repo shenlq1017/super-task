@@ -200,8 +200,36 @@ pub fn validate(file: &SuperTaskFile) -> Result<Vec<ParseWarning>> {
 
     validate_v12(file)?;
     validate_v13(file)?;
+    validate_needs(file)?;
 
     Ok(warnings)
+}
+
+/// 方向三：needs 逐条静态校验（语法口径与 `needs::parse_need` 同源，
+/// 解析期的四态判定不在此处——非法项在加载期就 fail-fast）。
+fn validate_needs(file: &SuperTaskFile) -> Result<()> {
+    let Some(needs) = &file.needs else {
+        return Ok(());
+    };
+    if needs.len() > crate::needs::MAX_NEEDS {
+        return Err(Error::new(
+            ErrorCode::NeedsInvalid,
+            format!(
+                "needs 最多 {} 条，当前 {}",
+                crate::needs::MAX_NEEDS,
+                needs.len()
+            ),
+        ));
+    }
+    for raw in needs {
+        crate::needs::parse_need(raw).map_err(|e| {
+            Error::new(
+                ErrorCode::NeedsInvalid,
+                format!("needs 项 {:?} 非法: {}", raw, e.message()),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn validate_v12(file: &SuperTaskFile) -> Result<()> {
@@ -707,6 +735,42 @@ mod tests {
         let text = crate::spec::to_yaml(&f).unwrap();
         let (f2, _) = parse_yaml(&text).unwrap();
         assert!(f2.toolchain.unwrap().extra.contains_key("x-provider"));
+    }
+
+    #[test]
+    fn needs_round_trips_as_typed_section() {
+        let y = svc_yaml("needs:\n  - node@20\n  - postgres@16\n");
+        let (f, _) = parse_yaml(&y).unwrap();
+        assert_eq!(
+            f.needs,
+            Some(vec!["node@20".to_string(), "postgres@16".to_string()])
+        );
+        let text = crate::spec::to_yaml(&f).unwrap();
+        let (f2, _) = parse_yaml(&text).unwrap();
+        assert_eq!(f2.needs, f.needs);
+        // 不写 needs 的旧 YAML 不受影响
+        let (f3, _) = parse_yaml(&svc_yaml("")).unwrap();
+        assert!(f3.needs.is_none());
+    }
+
+    #[test]
+    fn needs_rejects_malformed_entries_with_stable_code() {
+        let e = parse_yaml(&svc_yaml("needs:\n  - Node@20\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::NeedsInvalid);
+        let e = parse_yaml(&svc_yaml("needs:\n  - node@\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::NeedsInvalid);
+        let e = parse_yaml(&svc_yaml("needs:\n  - node@lts\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::NeedsInvalid);
+    }
+
+    #[test]
+    fn needs_rejects_over_limit_entries() {
+        let mut y = String::from("needs:\n");
+        for i in 0..33 {
+            y.push_str(&format!("  - tool{i}@1\n"));
+        }
+        let e = parse_yaml(&svc_yaml(&y)).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::NeedsInvalid);
     }
 
     #[test]

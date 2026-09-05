@@ -22,6 +22,7 @@ pub mod lock;
 pub mod log;
 pub mod merge;
 pub mod metrics;
+pub mod needs;
 pub mod network;
 pub mod operation;
 pub mod pkg;

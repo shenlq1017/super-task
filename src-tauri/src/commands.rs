@@ -1449,6 +1449,25 @@ pub fn workspace_adopt_apply(
 }
 
 // ---------------------------------------------------------------------------
+// 声明式需求 needs（方向三·环境供给，ipc.md §10.17）：resolve-only dry-run
+// ---------------------------------------------------------------------------
+
+/// `workspace.needsResolve`：把工作区 `needs` 声明解析为四态计划（已存在 /
+/// 可安装 / 可从归档供给 / 不可满足+原因）。纯只读：不安装、不下载、不写盘；
+/// `refresh=true` 强制重探工具链（默认复用 ≤60s 会话缓存）。
+#[tauri::command(rename = "workspace.needsResolve")]
+pub fn workspace_needs_resolve(
+    state: EngineState<'_>,
+    workspace_id: String,
+    refresh: Option<bool>,
+) -> Result<supertask_core::needs::NeedsResolveOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state
+        .needs_resolve(refresh.unwrap_or(false))
+        .map_err(ipc_err)
+}
+
+// ---------------------------------------------------------------------------
 // 1.1 Desktop: 自动更新（v1.1 规格 §9，ipc.md §10.6）
 // ---------------------------------------------------------------------------
 

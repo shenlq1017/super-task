@@ -132,6 +132,8 @@ pub enum ErrorCode {
     TermSessionNotFound,
     TermSpawnFailed,
     TermLimit,
+    // ---- 2.2（方向三·环境供给：声明式 needs，ipc.md §10.17）----
+    NeedsInvalid,
 }
 
 #[derive(Debug, Error)]
@@ -278,6 +280,8 @@ mod tests {
             (ErrorCode::TermSessionNotFound, "TERM_SESSION_NOT_FOUND"),
             (ErrorCode::TermSpawnFailed, "TERM_SPAWN_FAILED"),
             (ErrorCode::TermLimit, "TERM_LIMIT"),
+            // 声明式 needs（§10.17）
+            (ErrorCode::NeedsInvalid, "NEEDS_INVALID"),
         ];
         for (code, expected) in pairs {
             let value = serde_yaml::to_value(code).expect("serialize ErrorCode");

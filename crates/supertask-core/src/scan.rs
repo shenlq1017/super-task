@@ -196,6 +196,7 @@ pub fn scan_draft_with_runner(
         secrets: None,
         profiles: None,
         toolchain: None,
+        needs: None,
         templates: None,
         git: None,
         docker: docker_spec,

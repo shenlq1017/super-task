@@ -83,6 +83,8 @@ pub mod cmd {
     // ---- 孤儿进程纳管（ipc.md §10.16）----
     pub const WORKSPACE_ADOPT_PREVIEW: &str = "workspace.adoptPreview";
     pub const WORKSPACE_ADOPT_APPLY: &str = "workspace.adoptApply";
+    // ---- 声明式需求 needs（方向三·环境供给，ipc.md §10.17）----
+    pub const WORKSPACE_NEEDS_RESOLVE: &str = "workspace.needsResolve";
     // ---- 1.6 ----
     pub const GATEWAY_STATUS: &str = "gateway.status";
     pub const GATEWAY_PREVIEW: &str = "gateway.preview";

@@ -7,6 +7,8 @@ use crate::ipc::{is_valid_id, MAX_CMDS, MAX_ENV_KEYS, MAX_SERVICES};
 
 /// 1.2: profile 数量上限（规格 §10.1）。
 pub const MAX_PROFILES: usize = 32;
+/// 方向三：声明式 needs 条目上限。
+pub const MAX_NEEDS: usize = 32;
 /// 1.2: services.*.group 显示名最长字符数。
 pub const MAX_GROUP_CHARS: usize = 64;
 
@@ -40,6 +42,10 @@ pub struct SuperTaskFile {
     pub profiles: Option<ProfilesSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain: Option<ToolchainSpec>,
+    /// 方向三·环境供给：声明式需求，项形如 `node@20` / `postgres@16`（yaml.md §7.2）。
+    /// 仅作为 `workspace.needsResolve` 的解析输入，不影响加载与启动行为。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

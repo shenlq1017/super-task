@@ -714,6 +714,7 @@ mod tests {
             secrets: None,
             profiles: None,
             toolchain: None,
+            needs: None,
             templates: None,
             git: None,
             docker: None,

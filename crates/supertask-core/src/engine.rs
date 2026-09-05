@@ -476,6 +476,18 @@ impl Engine {
         self.invalidate_toolchain_probe();
     }
 
+    /// 方向三：声明式 `needs` 解析（resolve-only dry-run，ipc.md §10.17）。
+    /// 纯只读：不安装、不下载、不写盘；结果由 (needs 声明, 探测缓存, 内置归档
+    /// 目录, 当前平台) 完全决定。`refresh=true` 强制重探工具链（同 probe 按钮）。
+    pub fn needs_resolve(&self, refresh: bool) -> Result<crate::needs::NeedsResolveOut> {
+        let spec = self.spec()?;
+        let bundle = self.toolchain_probe(refresh);
+        Ok(crate::needs::resolve(
+            spec.needs.as_deref().unwrap_or(&[]),
+            &bundle,
+        ))
+    }
+
     pub fn open(&self, path: &Path) -> Result<(Vec<ParseWarning>, RuntimeSnapshot)> {
         // 1.5 §3.1：fail-fast，避免对已打开工作区误释放重入拿到的锁
         {

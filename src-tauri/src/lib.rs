@@ -360,6 +360,7 @@ pub fn run() {
             commands::import_readme_apply,
             commands::workspace_adopt_preview,
             commands::workspace_adopt_apply,
+            commands::workspace_needs_resolve,
             commands::system_discover,
             commands::system_kill_process,
             commands::yaml_get,
