@@ -44,6 +44,7 @@ export const cmd = {
   LOGS_RETENTION_RUN: "logs.retention.run",
   METRICS_SNAPSHOT: "metrics.snapshot",
   SYSTEM_METRICS: "system.metrics",
+  SYSTEM_INFO: "system.info",
   METRICS_SUBSCRIBE: "metrics.subscribe",
   METRICS_UNSUBSCRIBE: "metrics.unsubscribe",
   PROFILES_LIST: "profiles.list",
@@ -1282,4 +1283,25 @@ export type HostMetrics = {
   /** 本机默认路由网卡的 IPv4。 */
   netLocalIp: string | null;
   sampledAtMs: number;
+};
+
+/** `system.info` 输出：静态系统信息（监控页「系统信息」卡片用）。纯静态只读，
+ *  与 `system.metrics` 动态采样分列；取不到的字段为 null，不伪造为 0。 */
+export type SystemInfo = {
+  /** windows / macos / linux。 */
+  platform: string;
+  /** x86_64 / aarch64…（std::env::consts::ARCH）。 */
+  arch: string;
+  /** 系统名（如 "Windows 11 Pro"）；取不到为 null。 */
+  osName: string | null;
+  /** 系统版本（Windows 形如 "24H2 (26200)"）；取不到为 null。 */
+  osVersion: string | null;
+  /** 物理核数；虚拟化或平台不暴露为 null。 */
+  cpuPhysicalCores: number | null;
+  /** 逻辑核数。 */
+  cpuLogicalCores: number | null;
+  /** 物理内存总量（字节）。 */
+  totalMemoryBytes: number | null;
+  /** 应用版本（workspace 统一升版，与安装包一致）。 */
+  appVersion: string;
 };

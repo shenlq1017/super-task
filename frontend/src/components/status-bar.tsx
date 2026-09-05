@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { ChevronUp, Cpu, HardDrive, MemoryStick, Thermometer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiSystemMetrics } from "../ipc/api";
+import { recordHostMetrics } from "@/lib/metrics-history";
 import { TEMP_MODES, type HostMetrics } from "../ipc/protocol";
 import { fmtBytes, loadColor, pct, tempColor } from "@/lib/metrics";
 import { pickTempMode, useTempMode } from "@/lib/temp-mode";
@@ -98,6 +99,7 @@ export function StatusBar(props: {
         const m = await apiSystemMetrics(tempMode);
         if (!alive.current) return;
         setHost(m);
+        recordHostMetrics(m);
         const c = m.cpuPercent;
         if (c != null) setCpuHistory((prev) => prev.concat([c]).slice(-HISTORY));
       } catch {

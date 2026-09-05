@@ -389,6 +389,28 @@ function pushLog(source: LogSource, stream: LogLine["stream"], text: string) {
 
 seedRuntime();
 
+/** 与 metrics.snapshot 命令同口径：仅运行中的非 compose 服务有宿主进程指标；
+ *  值由 id 哈希决定（确定性）。引擎的真实快照（runtime.snapshot）携带 metrics，
+ *  mock 保持一致，避免 1.5s 轮询把订阅期拉到的指标清空。 */
+function mockMetrics(): Record<string, ServiceMetrics | null> {
+  const services: Record<string, ServiceMetrics | null> = {};
+  for (const s of Object.values(state.services)) {
+    if (s.state !== "running" || s.kind === "compose") {
+      services[s.id] = null;
+      continue;
+    }
+    let h = 0;
+    for (let i = 0; i < s.id.length; i++) h = (h * 31 + s.id.charCodeAt(i)) >>> 0;
+    services[s.id] = {
+      cpu_percent: (h % 40) / 10,
+      memory_bytes: (180 + (h % 320)) * 1024 * 1024,
+      process_count: 1 + (h % 4),
+      sampled_at_ms: Date.now(),
+    };
+  }
+  return services;
+}
+
 function snapshot(): RuntimeSnapshot {
   const services: Record<string, ServiceRuntimeView> = {};
   for (const [id, s] of Object.entries(state.services)) {
@@ -399,6 +421,7 @@ function snapshot(): RuntimeSnapshot {
     workspace_id: state.spec.root,
     services,
     script: state.script ? { ...state.script } : null,
+    metrics: mockMetrics(),
     gateway: state.gateway
       ? {
           kind: state.gateway.conf.kind ?? "nginx",
@@ -415,9 +438,10 @@ function snapshot(): RuntimeSnapshot {
   };
 }
 
-/** 1.6：网关状态变化 → 广播 st.runtime（对齐引擎 emit_runtime 语义）。 */
+/** 1.6：网关状态变化 → 广播 st.runtime（对齐引擎 emit_runtime 语义，含 metrics 载荷）。 */
 function emitGatewayRuntime() {
-  mockEmit("st-runtime", { reason: "full", services: snapshot().services, script: null, gateway: snapshot().gateway });
+  const snap = snapshot();
+  mockEmit("st-runtime", { reason: "full", services: snap.services, script: null, gateway: snap.gateway, metrics: snap.metrics });
 }
 
 function toYaml(spec: SuperTaskFile): string {
@@ -1667,24 +1691,22 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     };
   }
 
+  if (command === "system.info") {
+    // Mock：静态信息不随时间变化，便于无 Tauri 环境预览「系统信息」卡片。
+    return {
+      platform: "windows",
+      arch: "x86_64",
+      osName: "Windows 11 Pro",
+      osVersion: "24H2 (26200)",
+      cpuPhysicalCores: 8,
+      cpuLogicalCores: 16,
+      totalMemoryBytes: 32 * 1024 ** 3,
+      appVersion: "0.1.3",
+    };
+  }
+
   if (command === "metrics.snapshot") {
-    // 与真机语义对齐：仅运行中的非 compose 服务有宿主进程指标；值由 id 哈希决定（确定性）
-    const services: Record<string, ServiceMetrics | null> = {};
-    for (const s of Object.values(state.services)) {
-      if (s.state !== "running" || s.kind === "compose") {
-        services[s.id] = null;
-        continue;
-      }
-      let h = 0;
-      for (let i = 0; i < s.id.length; i++) h = (h * 31 + s.id.charCodeAt(i)) >>> 0;
-      services[s.id] = {
-        cpu_percent: (h % 40) / 10,
-        memory_bytes: (180 + (h % 320)) * 1024 * 1024,
-        process_count: 1 + (h % 4),
-        sampled_at_ms: Date.now(),
-      };
-    }
-    return { services };
+    return { services: mockMetrics() };
   }
 
   if (command === "metrics.subscribe" || command === "metrics.unsubscribe") return { ok: true };

@@ -1403,6 +1403,15 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
             state={svc.state}
             extra={isRunning && svc.started_at_ms ? fmtDuration(svc.started_at_ms) : undefined}
           />
+          {isRunning && rt.state.metrics[id]?.cpu_percent != null ? (
+            <span
+              className="inline-flex h-5 items-center shrink-0 gap-1 rounded-full bg-[var(--surface-2)] px-2 text-[11px] font-medium leading-none text-[var(--t2)]"
+              title={t("pages.run.metaCpu")}
+            >
+              <Cpu className="size-3" aria-hidden />
+              {rt.state.metrics[id]?.cpu_percent?.toFixed(1)}%
+            </span>
+          ) : null}
           {isRunning && rt.state.metrics[id]?.memory_bytes != null ? (
             <span
               className="inline-flex h-5 items-center shrink-0 gap-1 rounded-full bg-[var(--surface-2)] px-2 text-[11px] font-medium leading-none text-[var(--t2)]"
