@@ -507,11 +507,30 @@ export type DockerSpec = {
 export type GatewayKind = "nginx" | "caddy" | "apache";
 export type GatewayTls = "off" | "internal";
 
+/** route 级 CORS（方向四）。origins："*" 或 http(s)://host[:port]。 */
+export type GatewayCorsSpec = {
+  origins: string[];
+  methods?: string[] | null;
+  headers?: string[] | null;
+  max_age_secs?: number | null;
+  credentials?: boolean | null;
+};
+
+/**
+ * 单条路由三形态（yaml.md §7.1）：代理（target/upstream 二选一，
+ * 可带 strip_prefix/cors）、重定向（redirect [+redirect_status]）、
+ * 静态站点（static_dir，path 必须为 /）。host 支持逗号分隔多域名。
+ */
 export type GatewayRouteSpec = {
   host?: string | null;
   path: string;
   target?: string | null;
   upstream?: string | null;
+  strip_prefix?: boolean | null;
+  cors?: GatewayCorsSpec | null;
+  redirect?: string | null;
+  redirect_status?: number | null;
+  static_dir?: string | null;
 };
 
 export type GatewayConf = {

@@ -60,6 +60,32 @@ import { opErrorLabel, GATEWAY_STATE_TINT, GATEWAY_STATE_DOT } from "@/lib/statu
 
 const KINDS: GatewayKind[] = ["nginx", "caddy", "apache"];
 
+function emptyRoute(): GatewayRouteSpec {
+  return {
+    host: null,
+    path: "/",
+    target: null,
+    upstream: null,
+    strip_prefix: null,
+    cors: null,
+    redirect: null,
+    redirect_status: null,
+    static_dir: null,
+  };
+}
+
+/** 路由形态：代理（target/upstream）/ 重定向（redirect）/ 静态站点（static_dir）。 */
+type RouteMode = "proxy" | "redirect" | "static";
+
+function routeMode(r: GatewayRouteSpec): RouteMode {
+  if (r.redirect != null) return "redirect";
+  if (r.static_dir != null) return "static";
+  return "proxy";
+}
+
+/** CORS 子表单缺省：通配 origin（合法且最常用）。 */
+const DEFAULT_CORS: NonNullable<GatewayRouteSpec["cors"]> = { origins: ["*"] };
+
 function emptyConf(): GatewayConf {
   return { kind: null, enabled: true, port: 8080, bin: null, tls: "off", routes: [] };
 }
@@ -287,7 +313,7 @@ export function GatewayPage() {
     if (!yaml) return;
     const routes: GatewayRouteSpec[] = services
       .filter(([, s]) => s.enabled && (s.port != null || s.ports.length > 0))
-      .map(([id]) => ({ host: null, path: `/${id}`, target: id, upstream: null }));
+      .map(([id]) => ({ ...emptyRoute(), path: `/${id}`, target: id }));
     setDraftConf({ routes });
   };
 
@@ -426,7 +452,7 @@ export function GatewayPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setDraftConf({ routes: [...(draft?.routes ?? []), { host: null, path: "/", target: null, upstream: null }] })}
+                onClick={() => setDraftConf({ routes: [...(draft?.routes ?? []), emptyRoute()] })}
               >
                 <Plus className="size-3.5" />
                 {t("pages.gateway.addRoute")}
@@ -438,94 +464,298 @@ export function GatewayPage() {
           ) : (
             <div className="flex flex-col gap-2">
               {draft!.routes.map((r, i) => {
-                const manual = r.upstream != null;
+                const mode = routeMode(r);
+                const manual = mode === "proxy" && r.upstream != null;
                 const alive =
-                  status?.routes.find((sr) => sr.path === r.path && (sr.host ?? null) === (r.host ?? null))
-                    ?.upstream_alive ?? null;
+                  mode === "proxy"
+                    ? (status?.routes
+                        .find((sr) => sr.path === r.path && (sr.host ?? null) === (r.host ?? null))
+                        ?.upstream_alive ?? null)
+                    : null;
+                const setMode = (m: RouteMode) => {
+                  if (m === mode) return;
+                  if (m === "proxy") {
+                    setRoute(i, {
+                      redirect: null,
+                      redirect_status: null,
+                      static_dir: null,
+                      target: r.target ?? services[0]?.[0] ?? null,
+                    });
+                  } else if (m === "redirect") {
+                    setRoute(i, {
+                      ...emptyRoute(),
+                      host: r.host,
+                      path: r.path,
+                      redirect: "/",
+                    });
+                  } else {
+                    setRoute(i, {
+                      ...emptyRoute(),
+                      host: r.host,
+                      path: "/",
+                      static_dir: "dist",
+                    });
+                  }
+                };
                 return (
                   <div
                     key={i}
-                    className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto_minmax(0,1.4fr)_auto_auto_auto] items-center gap-2 rounded-[var(--r-sm,8px)] border border-[#D0D6E0] p-2"
+                    className="flex flex-col gap-2 rounded-[var(--r-sm,8px)] border border-[#D0D6E0] p-2"
                   >
-                    <Input
-                      className="h-7 min-w-0 font-mono"
-                      placeholder={t("pages.gateway.hostPlaceholder")}
-                      value={r.host ?? ""}
-                      onChange={(e) => setRoute(i, { host: e.target.value || null })}
-                    />
-                    <Input
-                      className="h-7 min-w-0 font-mono"
-                      placeholder="/api"
-                      value={r.path}
-                      onChange={(e) => setRoute(i, { path: e.target.value })}
-                    />
-                    <span className="text-[var(--t3,#8a8f98)]">→</span>
-                    {manual ? (
+                    {/* 主行：host | path | 形态 | 删除 */}
+                    <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto_auto] items-center gap-2">
                       <Input
                         className="h-7 min-w-0 font-mono"
-                        value={r.upstream ?? ""}
-                        placeholder="127.0.0.1:9000"
-                        onChange={(e) => setRoute(i, { upstream: e.target.value })}
+                        placeholder={t("pages.gateway.hostPlaceholder")}
+                        value={r.host ?? ""}
+                        onChange={(e) => setRoute(i, { host: e.target.value || null })}
                       />
-                    ) : (
-                      <Select value={r.target ?? ""} onValueChange={(v) => setRoute(i, { target: v })}>
-                        <SelectTrigger size="sm" className="h-7 w-full min-w-0">
-                          <SelectValue placeholder={t("pages.gateway.pickTarget")} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {services.map(([id, s]) => (
-                            <SelectItem key={id} value={id}>
-                              {id}
-                              {s.port != null ? ` · ${s.port}` : ""}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                    <div className="inline-flex overflow-hidden rounded-[var(--r-sm,8px)] border border-[#D0D6E0] text-[11px]">
-                      <button
-                        type="button"
-                        className={cn(
-                          "cursor-pointer px-2 py-1 transition-colors duration-150",
-                          !manual
-                            ? "bg-[var(--primary,#5E6AD2)] text-white"
-                            : "text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]",
-                        )}
-                        title={t("pages.gateway.useTarget")}
-                        onClick={() => setRoute(i, { upstream: null, target: r.target ?? services[0]?.[0] ?? null })}
+                      <Input
+                        className="h-7 min-w-0 font-mono"
+                        placeholder="/api"
+                        value={r.path}
+                        disabled={mode === "static"}
+                        onChange={(e) => setRoute(i, { path: e.target.value })}
+                      />
+                      <div className="inline-flex overflow-hidden rounded-[var(--r-sm,8px)] border border-[#D0D6E0] text-[11px]">
+                        {(
+                          [
+                            ["proxy", t("pages.gateway.modeProxy")],
+                            ["redirect", t("pages.gateway.modeRedirect")],
+                            ["static", t("pages.gateway.modeStatic")],
+                          ] as [RouteMode, string][]
+                        ).map(([m, label], idx) => (
+                          <button
+                            key={m}
+                            type="button"
+                            className={cn(
+                              "cursor-pointer px-2 py-1 transition-colors duration-150",
+                              idx > 0 && "border-l border-[#D0D6E0]",
+                              mode === m
+                                ? "bg-[var(--primary,#5E6AD2)] text-white"
+                                : "text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                            )}
+                            onClick={() => setMode(m)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-[#dc2626] hover:bg-[#FDECEC]"
+                        aria-label={t("pages.gateway.removeRoute")}
+                        onClick={() => setDraftConf({ routes: draft!.routes.filter((_, idx) => idx !== i) })}
                       >
-                        {t("pages.gateway.targetToggle")}
-                      </button>
-                      <button
-                        type="button"
-                        className={cn(
-                          "cursor-pointer border-l border-[#D0D6E0] px-2 py-1 transition-colors duration-150",
-                          manual
-                            ? "bg-[var(--primary,#5E6AD2)] text-white"
-                            : "text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]",
-                        )}
-                        title={t("pages.gateway.useUpstream")}
-                        onClick={() => setRoute(i, { upstream: "127.0.0.1:9000", target: null })}
-                      >
-                        {t("pages.gateway.upstreamToggle")}
-                      </button>
+                        <Trash2 className="size-3.5" />
+                      </Button>
                     </div>
-                    <span
-                      className={cn(
-                        "size-2 rounded-full",
-                        alive == null ? "bg-transparent" : alive ? "bg-[#27a644]" : "bg-[#c3c6cc]",
-                      )}
-                      title={alive == null ? undefined : alive ? t("pages.gateway.upstreamAlive") : t("pages.gateway.upstreamDown")}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="text-[#dc2626] hover:bg-[#FDECEC]"
-                      aria-label={t("pages.gateway.removeRoute")}
-                      onClick={() => setDraftConf({ routes: draft!.routes.filter((_, idx) => idx !== i) })}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
+                    {/* 形态行 */}
+                    {mode === "proxy" ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                          {manual ? (
+                            <Input
+                              className="h-7 min-w-0 flex-1 font-mono"
+                              value={r.upstream ?? ""}
+                              placeholder="127.0.0.1:9000"
+                              onChange={(e) => setRoute(i, { upstream: e.target.value })}
+                            />
+                          ) : (
+                            <Select value={r.target ?? ""} onValueChange={(v) => setRoute(i, { target: v })}>
+                              <SelectTrigger size="sm" className="h-7 w-full min-w-0">
+                                <SelectValue placeholder={t("pages.gateway.pickTarget")} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {services.map(([id, s]) => (
+                                  <SelectItem key={id} value={id}>
+                                    {id}
+                                    {s.port != null ? ` · ${s.port}` : ""}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                          <div className="inline-flex shrink-0 overflow-hidden rounded-[var(--r-sm,8px)] border border-[#D0D6E0] text-[11px]">
+                            <button
+                              type="button"
+                              className={cn(
+                                "cursor-pointer px-2 py-1 transition-colors duration-150",
+                                !manual
+                                  ? "bg-[var(--primary,#5E6AD2)] text-white"
+                                  : "text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                              )}
+                              title={t("pages.gateway.useTarget")}
+                              onClick={() => setRoute(i, { upstream: null, target: r.target ?? services[0]?.[0] ?? null })}
+                            >
+                              {t("pages.gateway.targetToggle")}
+                            </button>
+                            <button
+                              type="button"
+                              className={cn(
+                                "cursor-pointer border-l border-[#D0D6E0] px-2 py-1 transition-colors duration-150",
+                                manual
+                                  ? "bg-[var(--primary,#5E6AD2)] text-white"
+                                  : "text-[var(--t2,#62666d)] hover:bg-[var(--surface-2,#f3f4f5)]",
+                              )}
+                              title={t("pages.gateway.useUpstream")}
+                              onClick={() => setRoute(i, { upstream: "127.0.0.1:9000", target: null })}
+                            >
+                              {t("pages.gateway.upstreamToggle")}
+                            </button>
+                          </div>
+                          <span
+                            className={cn(
+                              "size-2 shrink-0 rounded-full",
+                              alive == null ? "bg-transparent" : alive ? "bg-[#27a644]" : "bg-[#c3c6cc]",
+                            )}
+                            title={alive == null ? undefined : alive ? t("pages.gateway.upstreamAlive") : t("pages.gateway.upstreamDown")}
+                          />
+                        </div>
+                        <label className="inline-flex cursor-pointer items-center gap-1 text-[11px] text-[var(--t2,#62666d)]">
+                          <input
+                            type="checkbox"
+                            className="size-3 accent-[var(--primary,#5E6AD2)]"
+                            checked={r.strip_prefix === true}
+                            onChange={(e) => setRoute(i, { strip_prefix: e.target.checked || null })}
+                          />
+                          {t("pages.gateway.stripPrefix")}
+                        </label>
+                        <Button
+                          variant={r.cors ? "soft" : "outline"}
+                          size="sm"
+                          className="h-7 text-[11px]"
+                          onClick={() =>
+                            setRoute(i, {
+                              cors: r.cors ? null : { ...DEFAULT_CORS, origins: [...DEFAULT_CORS.origins] },
+                            })
+                          }
+                        >
+                          CORS
+                        </Button>
+                      </div>
+                    ) : mode === "redirect" ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          className="h-7 min-w-0 flex-1 font-mono"
+                          placeholder={t("pages.gateway.redirectPh")}
+                          value={r.redirect ?? ""}
+                          onChange={(e) => setRoute(i, { redirect: e.target.value || null })}
+                        />
+                        <Select
+                          value={String(r.redirect_status ?? 302)}
+                          onValueChange={(v) => setRoute(i, { redirect_status: Number(v) })}
+                        >
+                          <SelectTrigger size="sm" className="h-7 w-24">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {[301, 302, 307, 308].map((s) => (
+                              <SelectItem key={s} value={String(s)}>
+                                {s}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          className="h-7 min-w-0 flex-1 font-mono"
+                          placeholder="dist"
+                          value={r.static_dir ?? ""}
+                          onChange={(e) => setRoute(i, { static_dir: e.target.value || null })}
+                        />
+                        <span className="shrink-0 text-[11px] text-[var(--t3,#8a8f98)]">
+                          {t("pages.gateway.staticHint")}
+                        </span>
+                      </div>
+                    )}
+                    {/* CORS 子表单 */}
+                    {mode === "proxy" && r.cors ? (
+                      <div className="flex flex-col gap-1.5 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-2 text-[11px]">
+                        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5">
+                          <span className="text-[var(--t3,#8a8f98)]">{t("pages.gateway.corsOrigins")}</span>
+                          <Input
+                            className="h-6 font-mono"
+                            placeholder="http://localhost:3000, *"
+                            value={r.cors.origins.join(", ")}
+                            onChange={(e) =>
+                              setRoute(i, {
+                                cors: {
+                                  ...r.cors!,
+                                  origins: e.target.value
+                                    .split(",")
+                                    .map((s) => s.trim())
+                                    .filter(Boolean),
+                                },
+                              })
+                            }
+                          />
+                          <span className="text-[var(--t3,#8a8f98)]">{t("pages.gateway.corsMethods")}</span>
+                          <Input
+                            className="h-6 font-mono"
+                            placeholder={t("pages.gateway.corsMethodsPh")}
+                            value={(r.cors.methods ?? []).join(", ")}
+                            onChange={(e) =>
+                              setRoute(i, {
+                                cors: {
+                                  ...r.cors!,
+                                  methods: e.target.value
+                                    ? e.target.value.split(",").map((s) => s.trim()).filter(Boolean)
+                                    : null,
+                                },
+                              })
+                            }
+                          />
+                          <span className="text-[var(--t3,#8a8f98)]">{t("pages.gateway.corsHeaders")}</span>
+                          <Input
+                            className="h-6 font-mono"
+                            placeholder={t("pages.gateway.corsHeadersPh")}
+                            value={(r.cors.headers ?? []).join(", ")}
+                            onChange={(e) =>
+                              setRoute(i, {
+                                cors: {
+                                  ...r.cors!,
+                                  headers: e.target.value
+                                    ? e.target.value.split(",").map((s) => s.trim()).filter(Boolean)
+                                    : null,
+                                },
+                              })
+                            }
+                          />
+                          <span className="text-[var(--t3,#8a8f98)]">{t("pages.gateway.corsMaxAge")}</span>
+                          <Input
+                            className="h-6 w-28 font-mono"
+                            type="number"
+                            min={0}
+                            value={r.cors.max_age_secs ?? ""}
+                            onChange={(e) =>
+                              setRoute(i, {
+                                cors: {
+                                  ...r.cors!,
+                                  max_age_secs: e.target.value === "" ? null : Number(e.target.value) || 0,
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                        <label className="inline-flex w-fit cursor-pointer items-center gap-1 text-[var(--t2,#62666d)]">
+                          <input
+                            type="checkbox"
+                            className="size-3 accent-[var(--primary,#5E6AD2)]"
+                            checked={r.cors.credentials === true}
+                            onChange={(e) =>
+                              setRoute(i, {
+                                cors: { ...r.cors!, credentials: e.target.checked || null },
+                              })
+                            }
+                          />
+                          {t("pages.gateway.corsCredentials")}
+                        </label>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
