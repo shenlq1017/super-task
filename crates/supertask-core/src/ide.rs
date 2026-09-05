@@ -250,12 +250,15 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // Explorer 是 Windows 概念；Unix 上 resolve 返回 None 是正确行为（无等价物不伪造）
+    #[cfg(windows)]
     #[test]
     fn resolve_explorer_always_found() {
         // explorer 系统必有（PATH 或 %SystemRoot%）
         assert!(resolve(Ide::Explorer).is_some());
     }
 
+    #[cfg(windows)]
     #[test]
     fn open_explorer_uses_fake_launcher_without_gui_side_effect() {
         // 这个单测不能调用真实 Explorer：spawn 成功不代表 Explorer 已完成异步路径解析。
@@ -273,6 +276,7 @@ mod tests {
         assert_eq!(argv, vec![root.as_os_str().to_os_string()]);
     }
 
+    #[cfg(windows)]
     #[test]
     fn launcher_error_maps_to_spawn_without_starting_gui() {
         let err = open_with_launcher(Ide::Explorer, Path::new("."), |_exe, _argv| {

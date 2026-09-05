@@ -220,6 +220,11 @@ fn macos_listeners() -> Result<Vec<TcpListener>> {
             )
         })?;
     if !out.status.success() {
+        // lsof 约定：exit 1 = 无匹配。本机没有任何 TCP LISTEN（如 CI 虚拟机）是
+        // 合法空表，不是故障；其余退出码才是真正的读取失败。
+        if out.status.code() == Some(1) && out.stdout.is_empty() {
+            return Ok(Vec::new());
+        }
         return Err(Error::new(
             ErrorCode::PortScanFailed,
             "lsof 非零退出，端口表不可用",

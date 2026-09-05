@@ -938,6 +938,10 @@ mod tests {
         let _ = discover_services();
         std::thread::sleep(std::time::Duration::from_millis(60));
         let svcs = discover_services().expect("本机 LISTEN 端口表读取不应失败");
+        // 无任何 TCP LISTEN 的环境（如 CI 虚拟机）没有差分采样对象，无从验证
+        if svcs.is_empty() {
+            return;
+        }
         let with_cpu = svcs.iter().filter(|s| s.cpu_percent.is_some()).count();
         let with_mem = svcs.iter().filter(|s| s.memory_bytes.is_some()).count();
         assert!(
