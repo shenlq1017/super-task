@@ -77,7 +77,7 @@ typed 字段（`ServiceSpec.service` + `DockerSpec`）→ 校验（validate.rs c
 - **隧道模板**（方向四）：`template_assets/tunnel-cloudflared{,-token}/` 与 `tunnel-frpc/`——generic 服务纳管 cloudflared/frpc，token 走 `.env.*`（env_file 注入），`restart: on-failure`；模板机制不变（清单 + 文件双向一致性测试兜底），内置模板 10 套。
 - **声明式需求 needs**（方向三·环境供给）：`needs.rs`——resolve-only 四态解析（已存在/可安装/可归档供给/不可满足），内置归档目录 `ARCHIVE_CATALOG`，IPC `workspace.needsResolve`（ipc.md §10.17）。
 - **服务绑定数据快照**（方向六·数据与备份）：`snapshot.rs`——离线文件快照（zip = manifest + `data/<rel>`，逐条 sha256，条目 ≤20000 / 总量 ≤512 MiB）、stash 回滚式恢复（目录内容替换）、spec `data.volumes` 段（`spec/file.rs` + `validate_data`，`DATA_INVALID`）；绑定服务运行中禁止快照/恢复（`SNAPSHOT_BUSY`）；存储 `<root>/.supertask/snapshots/<卷>/<时间戳>.zip`；IPC `workspace.data*` 5 命令（ipc.md §10.18），UI 工作区页「数据快照」卡片。
-- **MCP**（1.5）：在 `crates/supertask-cli/src/mcp.rs`（不在 core）——rmcp stdio，7 工具（`:15-21`），断连清场。
+- **MCP**（1.5；方向七扩展）：在 `crates/supertask-cli/src/mcp.rs`（不在 core）——rmcp stdio，10 工具（`:15-24`），断连清场；方向七新增 `supertask_errors`（引擎 `diagnostics()` 聚合：state/ready/error{source: exit|health|generic}/最近 ≤5 行摘录）与 `supertask_wait_ready`（引擎 `wait_workspace_ready()`：200ms 轮询，outcome reached/failed/stopped/timeout，缺省目标 = start_order）；`dispatch` 出口全工具统一脱敏（`ai::sanitize::Redactor`，值集来自 `secrets::collect_redaction_values`），错误信封经 `Error::redact_with`（cli.md MCP 节）。
 - **错误码**：`error.rs` `ErrorCode` enum 约 101 个变体；soon 机制：`features.rs:51-62` `SOON_COMMANDS`（cloud.login/cloud.sync/ai.complete）+ `FEATURE_SOON` 拒绝，禁止假成功。
 - **taskfile.rs**：1.4 Taskfile 导入（映射成 scripts）。
 

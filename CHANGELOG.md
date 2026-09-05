@@ -6,6 +6,21 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### MCP 错误聚合与就绪等待 + 统一输出脱敏（方向七·AI 原生）
+
+- MCP 新增 `supertask_errors`：一次调用拿到「当前栈是否就绪 + 按服务聚合的错误摘要」——
+  `error.source` 区分 `exit`（进程退出）/ `health`（健康检查失败）/ `generic`（构建失败等），
+  附脱敏错误消息与最近 ≤5 行日志摘录；`error` 缺失即「无错误」，与有错误可区分。
+- MCP 新增 `supertask_wait_ready`：只等待不启动，`outcome` 区分 `reached` / `failed` /
+  `stopped` / `timeout`——超时是结果不是错误，`pending` 列出未就绪目标；`timeout_ms`
+  默认 30000、钳到 [500, 120000]；缺省目标与 start 一致（enabled 服务拓扑序）。
+- **所有 MCP 工具出口统一脱敏**（返回值与错误信封，幂等）：声明密钥值（主密钥文件 +
+  全部服务 env_file 的值 + env backend `required` key 的环境变量值）精确替换为
+  `<redacted>`，password/token/secret/api_key/Bearer 敏感行整行掩码；与 AI prompt
+  路径共用 core `ai::sanitize::Redactor` 实现。
+- 契约进 cli.md MCP 节；零新增错误码（复用 `NOT_FOUND` / `SPEC_INVALID` /
+  `WORKSPACE_LOCKED`）；MCP 工具数 8 → 10。
+
 #### 服务绑定数据快照/恢复（方向六·数据与备份）
 
 - 工作区页新增「数据快照」卡片（与导出包同区）：为 supertask.yaml 顶层

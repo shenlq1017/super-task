@@ -34,6 +34,9 @@ mise/winget 安装）、`docker`（compose）、`gateway`（nginx/caddy/apache �
 （端口、代理、指标）、`profiles`（多环境覆盖）、`secrets`（密钥声明与存取）、`pkg`
 （工作区打包导入导出）、`term`（终端会话）、`cloud`（云客户端）、`ai`（AI 辅助）、
 `lock`（工作区锁）、`appdata`、`operation`、`error` 等。另有 `snapshot`（方向六·数据与备份：服务绑定数据卷的离线快照——zip+manifest+sha256、stash 回滚式恢复与删除，spec `data.volumes` 的运行期操作面，ipc.md §10.18）。
+方向七·AI 原生：`ai::sanitize::Redactor` 统一输出脱敏（声明密钥值替换 + 敏感行掩码，
+供引擎诊断、MCP 出口与 AI prompt 路径共用），引擎 `diagnostics()` / `wait_workspace_ready()`
+支撑 MCP `supertask_errors` / `supertask_wait_ready` 错误聚合与等待就绪（契约见 cli.md MCP 节）。
 
 引擎 **不依赖 Tauri**，便于单测和以后做 CLI（1.5）。
 

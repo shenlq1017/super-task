@@ -250,4 +250,42 @@
 
 ---
 
+## 方向七：AI 原生运行时
+
+> 已交付：MCP 错误聚合与就绪等待（`supertask_errors` / `supertask_wait_ready`，outcome
+> 四态可区分 reached/failed/stopped/timeout，超时是结果不是错误）与全工具出口统一脱敏
+> （core `ai::sanitize::Redactor`：声明密钥值替换 + 敏感行整行掩码；cli.md MCP 节）。
+> 以下为剩余切片。
+
+### Q. MCP 环境供给能力（ensure_tool / ensure_service）
+
+- **目标**：Agent 说一句「跑起这个项目」即可补齐依赖：MCP 工具封装 needs resolve 的
+  「可安装 / 可归档供给」态，经确认语义安装工具链并启动服务（ROADMAP §9「MCP 环境供给能力」）。
+- **已有材料**：`needs.rs` 四态解析（ipc.md §10.17）、`toolchain` 的 mise/winget 安装、
+  `supertask_wait_ready` 的就绪闭环、出口统一脱敏。
+- **验收雏形**：缺工具的工作区经 MCP 一次补齐并就绪；安装动作有确认/取消语义，
+  失败不清场（与 needs resolve 口径一致）；输出全程脱敏。
+- **待细化**：确认交互（MCP 无 UI，确认语义怎么落）、归档供给下载器落地、
+  安装凭据与代理的口径。
+
+### R. 环境快照上下文（结构化输出给 AI）
+
+- **目标**：把工具版本、端口、健康、错误摘要聚合成一个「环境快照」结构化返回，
+  让 AI 不靠多次调用拼凑上下文（ROADMAP §9「环境快照上下文」）。
+- **已有材料**：`Engine::diagnostics()` 聚合、`probe` 工具链探测、`host_metrics` 采样、
+  `metrics` 服务指标。
+- **验收雏形**：一次调用返回可直接进 prompt 的结构化上下文（全脱敏、大小有界、
+  缺采样字段可区分）。
+- **待细化**：字段矩阵与大小上限、与 `supertask_status` / `supertask_errors` 的取舍或合并。
+
+### S. AI 操作审计与回放
+
+- **目标**：可查看「AI 这段时间动了什么」并回滚（ROADMAP §9「AI 操作审计与回放」）。
+- **已有材料**：`operation.rs` 长操作记录（无 list API，需补）、事件总线、
+  `snapshot.rs` 数据卷快照（可作回滚手段）。
+- **验收雏形**：MCP 会话的可变操作有按序审计记录（脱敏）；回放/回滚有确认与预览。
+- **待细化**：审计存储位置与保留策略、operation list API、可逆操作边界。
+
+---
+
 （后续方向切片交付后在此追加）

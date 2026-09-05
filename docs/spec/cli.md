@@ -68,8 +68,26 @@
     `platform` 与 `sampledAtMs`。差分字段（CPU 占比、网络速率）首次调用为 null；取不到的
     字段为 null 而非 0；百分比/速率/温度保留 1 位小数。脱敏：除 `platform` 枚举值外不含
     字符串字段——无 IP、路径、进程或环境信息；不持久化、不进日志、不上传。
+  - `supertask_errors`：无参数；按服务聚合的错误摘要与就绪判定（方向七·AI 原生）。每个服务
+    返回 `state`、`ready`（Running 且健康通过；`type: none` 视为无检查，Running 即就绪）、
+    `error`（`source`：`exit`=进程退出 / `health`=健康检查失败 / `generic`=构建失败等
+    last_error；可带 `exit_code`、`at_ms`）与最近 ≤5 行脱敏日志摘录，顶层给出 `ready` /
+    `ready_count` / `total_count`。会取得工作区锁（不改动服务状态）；`error` 缺失表示该服务
+    当前没有捕获到的错误——「无错误」与「有错误」可区分。
+  - `supertask_wait_ready`：`timeout_ms`（integer，默认 30000，钳到 [500, 120000]）、
+    `services`（string 数组，缺省全部 enabled 服务，与 start 缺省集合一致；id 不存在返回
+    `NOT_FOUND`）。只等待不启动；轮询 200ms，返回 `outcome`：`reached`（全部就绪）/
+    `failed`（有服务 Exited/Unhealthy，附脱敏错误）/ `stopped`（有服务未启动或被停止）/
+    `timeout`（超时，`pending` 列出未就绪目标）。超时是结果不是错误；等待期间持有工作区锁，
+    同进程其他工具调用排队（与 run_script 等待语义一致）。
 - 仅 `supertask_status` / `supertask_logs` / `supertask_host_metrics` 为只读（不取锁，其中
   host metrics 与工作区有效性无关）；其余可变工具在首次调用时惰性获取工作区锁（holder=mcp）。
+  `supertask_errors` / `supertask_wait_ready` 不改动服务状态，但需要引擎运行时视图，同属取锁类。
+- **出口统一脱敏（方向七·AI 原生）**：所有工具的返回值与错误信封统一过 core
+  `ai::sanitize::Redactor` 掩码——声明密钥值（主密钥文件 + 全部服务 env_file 的全部值 +
+  env backend `required` key 的用户环境变量值；≥4 字符）精确子串替换为 `<redacted>`，
+  命中 password/token/secret/api_key/Bearer 词边界的行整行掩码。口径安全优先：env_file 中的
+  非敏感值（如 `LOG_LEVEL=info`）同样会被替换；脱敏幂等，与 AI prompt 路径共用同一实现。
 - **断开即清场**：编辑器退出/重载会关闭 stdio，MCP 进程停止全部服务、释放锁并退出（防孤儿优先）。可变工具描述中已明示。
 - 桌面已打开同一工作区时，可变工具返回 `WORKSPACE_LOCKED`（details 带 holder/pid），只读工具仍可用。
 

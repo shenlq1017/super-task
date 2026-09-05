@@ -251,8 +251,8 @@
 | 候选点 | 来源 | 现状 | 价值 | 成本 | 契合 | 说明 |
 |---|---|---|---|---|---|---|
 | MCP 环境供给能力 | ServBay MCP 能装包、建站、查库 | MCP 只有运行控制类工具 | ★★★ | 中 | 高 | `ensure_tool` / `ensure_service`，让 Agent 说一句「跑起这个项目」就能补齐依赖 |
-| MCP 错误聚合与就绪等待 | orckit MCP `get_errors` / `wait_for_build` | 无 | ★★★ | 小 | 高 | AI 一次调用拿到「当前栈是否就绪 + 错误摘要」 |
-| MCP 输出脱敏 | orckit 明确警告可能泄露密钥 | 有密钥模块，未接入 MCP 输出 | ★★★ | 小 | 高 | **安全即卖点**，且是竞品的公开短板 |
+| MCP 错误聚合与就绪等待 | orckit MCP `get_errors` / `wait_for_build` | 已交付（MCP `supertask_errors` / `supertask_wait_ready`，cli.md；outcome 区分 reached/failed/stopped/timeout，超时是结果不是错误） | ★★★ | 小 | 高 | AI 一次调用拿到「当前栈是否就绪 + 按服务聚合的错误摘要」 |
+| MCP 输出脱敏 | orckit 明确警告可能泄露密钥 | 已交付（MCP 全工具出口统一过 `ai::sanitize::Redactor`：声明密钥值替换 + 敏感行整行掩码，幂等） | ★★★ | 小 | 高 | **安全即卖点**，且是竞品的公开短板 |
 | 环境快照上下文 | 自有 | 无 | ★★ | 中 | 高 | 把工具版本、端口、健康、错误摘要结构化输出给 AI |
 | AI 操作审计与回放 | 自有 | 无 | ★★ | 中 | 高 | 可查看「AI 这段时间动了什么」并回滚 |
 
