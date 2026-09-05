@@ -1,5 +1,5 @@
 //! 1.1/1.2 应用数据：`%APPDATA%/SuperTask/app.json` 的模型与原子读写。
-//! Spec: `docs/spec/ipc.md` §10.5、`docs/plans/2026-08-27-v1-2-feature-spec.md` §12.2。
+//! Spec: `docs/spec/ipc.md` §10.5、`docs/archive/plans/2026-08-27-v1-2-feature-spec.md` §12.2。
 //!
 //! core 不依赖 serde_json：app.json 用 serde_yaml 序列化（JSON 是 YAML 子集）。
 //! app data 只存偏好与路径记录，不存代码、密钥、凭据、日志、指标历史。

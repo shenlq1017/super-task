@@ -1,5 +1,5 @@
 //! 1.1 扫描结果 merge：`preview` 生成可重复的增量预览，`apply` 按用户选择合并。
-//! 契约：`docs/spec/ipc.md` §10.4、`docs/plans/2026-08-27-v1-1-feature-spec.md` §6。
+//! 契约：`docs/spec/ipc.md` §10.4、`docs/archive/plans/2026-08-27-v1-1-feature-spec.md` §6。
 
 use serde::{Deserialize, Serialize};
 

@@ -1,6 +1,6 @@
 # SuperTask CLI 与 MCP（1.5 用户文档）
 
-> 规格真源：[1.5 功能规格](../plans/2026-08-29-v1-5-feature-spec.md) §4–§5  
+> 规格真源：[1.5 功能规格](../archive/plans/2026-08-29-v1-5-feature-spec.md) §4–§5  
 > bin：`supertask`（crate `crates/supertask-cli`）。业务与桌面端同一 `supertask-core`，错误码同一张表。
 
 ## 工作区解析
@@ -15,15 +15,15 @@
 
 | 命令 | 取锁 | 说明 |
 |------|------|------|
-| `supertask up [ids…] [--wait healthy\|started\|none] [--wait-timeout S] [-- cmd…]` | ✅ | 拓扑启动 → 等待（默认 healthy，300s 超时）→ **启动网关（1.6）** → 交互聚合日志或 `--` 包装（退出码透传）。失败/超时/信号 → 停止全部；网关启动失败同样清场并以 `GATEWAY_*` 退出码 1 结束（未配置网关则静默跳过；`--wait` 不等待网关健康） |
+| `supertask up [ids…] [--wait healthy\|started\|none] [--wait-timeout S] [-- cmd…]` | ✅ | 拓扑启动 → 等待（默认 healthy，300s 超时）→ **启动网关（1.6）** → 交互聚合日志或尾部命令（退出码透传；clap 以 `last=true` 捕获尾部参数，`--` 分隔符可省略）。失败/超时/信号 → 停止全部；网关启动失败同样清场并以 `GATEWAY_*` 退出码 1 结束（未配置网关则静默跳过；`--wait` 不等待网关健康） |
 | `supertask down [ids…]` | ✅ | 停止全部/所选（含网关）；他人持锁 → `WORKSPACE_LOCKED` |
 | `supertask restart [ids…]` | ✅ | 停止再启动（网关运行中时一并重启） |
 | `supertask status [--json]` | ❌ | 服务端口监听状态 + 网关行（kind/port/state/routes 数，1.6）+ 锁持有者（owner/pid） |
-| `supertask logs [id] [--lines N] [--grep P]` | ❌ | 历史日志尾部/检索 |
+| `supertask logs [id] [--lines N] [--grep P]` | ❌ | 历史日志尾部/检索；`--lines` 默认 200 |
 | `supertask script run <id>` / `script cancel` | ✅ | 运行（等待结束，返回退出码）/取消；cmds 只来自 YAML |
 | `supertask export [-o FILE] [--with-secrets]` | ❌ | 导出 zip（manifest + supertask.yaml；`--with-secrets` 含声明密钥文件明文） |
-| `supertask import <pkg> [--dest DIR]` | ❌ | 只落盘不启动；目标已有 yaml 拒绝 |
-| `supertask doctor` | ❌ | 工具链（含 1.7 python/go）+ docker + 网关三引擎（nginx/caddy/apache）探测摘要 |
+| `supertask import <pkg> [--dest DIR]` | ❌ | 只落盘不启动；`--dest` 默认当前目录；目标已有 yaml 拒绝 |
+| `supertask doctor` | ❌ | 工具链 + docker + 网关三引擎（nginx/caddy/apache）探测摘要。注意：文本摘要列出 java/maven/gradle/node/npm/pnpm/yarn/bun 与三个网关引擎；python/go 虽会被探测并在 `--json` 输出中出现，但纯文本摘要不展示 |
 | `supertask mcp` | 惰性 | stdio MCP 服务器（见下） |
 | `supertask cloud status` | ❌ | 登录态/设备/冲突数/配额（共享 appdata 会话；未登录 → `CLOUD_NOT_LOGGED_IN` + 人话提示） |
 | `supertask cloud sync` | ❌ | 2.0 首版为只读预览（云端实体/本地跟踪/冲突计数）；落盘同步在桌面端执行 |
@@ -57,7 +57,13 @@
 ```
 
 - 仅 stdio 本地传输、tools only，无网络监听。
-- 工具：`supertask_status`、`supertask_start`、`supertask_stop`、`supertask_restart`、`supertask_logs`、`supertask_run_script`、`supertask_cancel_script`。
+- 工具及参数：
+  - `supertask_status`：无参数。
+  - `supertask_start` / `supertask_stop` / `supertask_restart`：`services`（string 数组，缺省为全部服务）。
+  - `supertask_logs`：`service`（string）、`lines`（integer，默认 200）、`grep`（string，可选）。
+  - `supertask_run_script`：`id`（string，必填，缺失返回 `SPEC_INVALID`）。
+  - `supertask_cancel_script`：无参数。
+- 仅 `supertask_status` / `supertask_logs` 为只读（不取锁）；其余可变工具在首次调用时惰性获取工作区锁（holder=mcp）。
 - **断开即清场**：编辑器退出/重载会关闭 stdio，MCP 进程停止全部服务、释放锁并退出（防孤儿优先）。可变工具描述中已明示。
 - 桌面已打开同一工作区时，可变工具返回 `WORKSPACE_LOCKED`（details 带 holder/pid），只读工具仍可用。
 

@@ -1,5 +1,5 @@
 //! 1.1 IDE 打开：固定候选探测 + 结构化 argv 启动。
-//! Spec: `docs/spec/ipc.md` §10.3、`docs/plans/2026-08-27-v1-1-feature-spec.md` §7。
+//! Spec: `docs/spec/ipc.md` §10.3、`docs/archive/plans/2026-08-27-v1-1-feature-spec.md` §7。
 //!
 //! 安全边界：只允许命中固定产品名 + 固定 executable 名（PATH 或常见安装位置），
 //! 绝不接受调用方传任意路径；启动参数只含工作区根，不拼 shell 字符串。

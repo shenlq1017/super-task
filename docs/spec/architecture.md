@@ -8,7 +8,7 @@
 ## 1. 分层
 
 ```
-React UI
+React UI（frontend/，React 19 + Vite 8 + Tailwind 4）
     │ invoke / listen   （契约：docs/spec/ipc.md）
 Tauri commands（薄适配，校验 workspace_id 属于当前会话）
     │
@@ -24,6 +24,16 @@ Engine （本 crate）
     ├─ sandbox  路径约束
     └─ ipc      类型与错误码（无 Tauri 依赖）
 ```
+
+以上为 1.0 起的核心子系统。除上述之外，`supertask-core` 还包含以下功能模块（`src/lib.rs` 声明），
+按版本逐步落地：`launcher`（各 kind 启动命令规划）、`spring`（Maven/Gradle 深度支持）、
+`scan`（扫描项目生成配置草稿）、`merge`（结构化写回合并）、`template`（工作区模板）、
+`taskfile`（Taskfile 导入）、`importer`（README 导入）、`toolchain` / `probe`（工具链探测、
+mise/winget 安装）、`docker`（compose）、`gateway`（nginx/caddy/apache 渲染与托管）、
+`git` / `ide`（git 状态与 IDE 打开）、`ports` / `network` / `host_metrics` / `metrics`
+（端口、代理、指标）、`profiles`（多环境覆盖）、`secrets`（密钥声明与存取）、`pkg`
+（工作区打包导入导出）、`term`（终端会话）、`cloud`（云客户端）、`ai`（AI 辅助）、
+`lock`（工作区锁）、`appdata`、`operation`、`error` 等。
 
 引擎 **不依赖 Tauri**，便于单测和以后做 CLI（1.5）。
 
@@ -94,13 +104,15 @@ Windows Job Object：`KILL_ON_JOB_CLOSE` + `TerminateJobObject`。创建失败�
 ## 6. 模块与以后 CLI
 
 ```
-crates/supertask-core     # 引擎
-src-tauri                 # IPC 薄适配（已脚手架）
-src/                      # React UI（已脚手架，业务页占位）
-crates/supertask-cli      # 1.5，复用 core
+crates/supertask-core           # 引擎
+src-tauri                       # Tauri 2 IPC 薄适配
+frontend/                       # React UI（React 19 + Vite 8 + TypeScript + Tailwind 4）
+crates/supertask-cli            # CLI 与 MCP，复用 core
+crates/supertask-cloud-server   # 云参考服务端（自托管：账号/配额/管理面/控制台托管）
+cloud-console/                  # 云管理控制台前端（独立 npm 子项目，构建产物由服务端托管）
 ```
 
-壳已脚手架：AppShell + 功能注册表路由 + `session.hello` / `app.load`。其余 command 与运行页按 `docs/plans/2026-08-26-frontend-work-plan.md` 再接 Engine。
+壳已脚手架：AppShell + 功能注册表路由 + `session.hello` / `app.load`。其余 command 与运行页按 `docs/archive/plans/2026-08-26-frontend-work-plan.md` 再接 Engine。
 
 ---
 
@@ -156,7 +168,7 @@ crates/supertask-core/src/ai/
 - 传输参考 dbx 快照（`references/dbx/2026-08-29-8f54385/`，Apache-2.0，只读）：
   per-request timeout、代理判定（裸 host:port 补 http、loopback 绕过）、错误脱敏
   （`categorized_http_error`）、provider 预设表与模板限额均取自该调研
-  （`docs/research/2026-08-29-v2-1-dbx-ai-reference.md`）。
+  （`docs/archive/research/2026-08-29-v2-1-dbx-ai-reference.md`）。
 - 命名多配置 + 默认配置（dbx `ai_configs` 语义的文件存储版）；旧单配置字段只读迁移。
 - 重试偏差备案：仅临时错误（429/5xx/超时/网络）线性退避重试 ≤`max_retries`（默认 2），
   spec §4.3 原「无自动重试」据此放宽；一次业务调用只计 1 次用量。

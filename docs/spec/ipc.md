@@ -60,7 +60,7 @@
 
 > **事件名约定（2026-08-30）**：Tauri v2 的事件名只允许字母数字与 `-` `/` `:` `_`，
 > **不允许点号**（`st.logs` 这类名字会让前端 `listen()` 直接被拒、Rust `emit` 静默失败）。
-> 因此全部事件用连字符：`st-runtime` / `st-logs` / `st-metrics` / `st-operation` / `st-term`。
+> 因此全部事件用连字符：`st-runtime` / `st-logs` / `st-metrics` / `st-operation` / `st-term` / `st-ai`。
 > 常量真源：core `ipc::event` + 前端 `protocol.ts event`，不要在调用点手写字符串。
 
 ```json
@@ -128,6 +128,7 @@
 | `workspace.detach` | — | `{ ok }` **切换工作区专用**：不停进程，活服务移交后台注册表；重开同根工作区时按 service_id 接管（job 仍存活则直接 Running）。同一应用会话内有效；应用退出时清场 |
 | `workspace.forget` | `{ path }`（兼容别名 `id`） | 只改最近列表 / `lastWorkspace`，**不删盘**（若仍打开则先 close） |
 | `workspace.scanDraft` | `{ path }` | `{ workspace_id, spec, warnings[], warning_items?[] }` **不写盘**；`warning_items` 为 additive `{code,message}` |
+| `workspace.init` | `{ path, spec }` | `{ workspace_id, spec, warnings[], warning_items?[] }` 以给定 spec 初始化新工作区（写盘 supertask.yaml 并打开），记入 recents |
 | `workspace.openExplorer` | `{ workspace_id, rel?: string }` | `{ ok }` rel 必须在沙箱内 |
 | `system.discover` | — | `ForeignService[]`（pid/name/kind/ports/cwd/cmd_line/cpu_percent/memory_bytes） 本机监听端口的 java/node/python 进程，只读。`cpu_percent` 为整机口径差分采样，**首次调用为 null**；`memory_bytes` 为物理内存工作集（字节）；两者读取失败（受保护进程）均为 null |
 | `system.killProcess` | `{ pid }` | `{ ok }` 终止该监听进程整棵树（`taskkill /T /F`）。护栏：pid ≤ 4 / SuperTask 自身 / 当前无 LISTEN 端口 → 拒绝（`JobKill`）；UI 侧二次确认 |
@@ -207,11 +208,60 @@
 
 ### 4.8 占位命令（必须注册）
 
-下列调用一律 `FEATURE_SOON`，不要未注册导致前端 catch 不到 code：
+当前**没有**处于 soon 状态的命令——下列占位均已转 live，注册表 `SOON_COMMANDS` 为空：
 
-`ai.complete`
+（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6；1.3 起已转 live：`docker.probe` / `docker.ps` / `docker.images` / `docker.build` / `docker.buildCancel`，见 §4.6.1；1.6 起已转 live：`gateway.apply` 及全部 `gateway.*`，见 §10.10；2.0 起已转 live：全部 `cloud.*`，见 §10.12；2.1 起已转 live：全部 `ai.*`（含 `ai.complete`）与 `import.readme` / `import.readmeApply`，见 §10.13 / §10.14。）
 
-（1.1 起已转 live：`templates.list` / `templates.create` / `git.clone` / `git.status` / `git.pull` / `workspace.openIde`，见第 10 节；1.2 起已转 live：`toolchain.install` / `toolchain.upgrade`，见 §4.6；1.3 起已转 live：`docker.probe` / `docker.ps` / `docker.images` / `docker.build` / `docker.buildCancel`，见 §4.6.1；1.6 起已转 live：`gateway.apply` 及全部 `gateway.*`，见 §10.10；2.0 起已转 live：全部 `cloud.*`，见 §10.12。）
+新增 soon 功能时遵守原约定：命令必须注册，调用一律返回 `FEATURE_SOON`（不是 404），`details.since` 告诉版本，禁止静默 no-op。
+
+### 4.9 环境深化与运维命令（1.2 phase 3–7 与后续增量回填）
+
+以下命令均已注册并被前端调用，补录进契约：
+
+**端口与配置（1.2 §5–§6）**
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `ports.inspect` | `{ workspace_id, id, port? }` | `{ items }`：端口占用 + 引擎托管判定；传 `port` 只查该候选，缺省查全部已配置端口 |
+| `ports.suggest` | `{ workspace_id, id }` | `{ candidates }`：建议端口候选 |
+| `ports.assign` | `{ workspace_id, id, port, base_hash, restart? }` | `{ operation_id?, spec, hash, restart_required, notes }`：一键改端口并结构化写回；运行中且未确认 `restart` 时只预览不落盘 |
+| `env.effective` | `{ workspace_id, id }` | 服务最近一次启动实际注入的生效环境快照（`key/value/source`，source ∈ workspace/env_file/service/port/network/toolchain/other）；引擎自报 |
+| `spring.inspect` | `{ workspace_id, id }` | spring-boot 服务项目自身配置静态解析（application.yml/properties，只读不写回） |
+
+**密钥（1.2 §6.4；值只在本次 IPC 中传输，core 不落日志/事件）**
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `secrets.status` | `{ workspace_id }` | 只返回 key 名与状态，**绝不返回值** |
+| `secrets.set` | `{ workspace_id, key, value }` | `{ ok, key }` |
+| `secrets.delete` | `{ workspace_id, key }` | `{ ok, key }` |
+| `secrets.validate` | `{ workspace_id, id? }` | required 缺失只列 key 名 |
+
+**日志运维（1.2 §8；search/export/retention 均为 hub 长操作，进度走 `st-operation`）**
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `logs.search` | `{ workspace_id, source?, query, case_sensitive?, limit? }` | `{ operation_id }`；literal 搜索历史文件，结果 `{ items, truncated, files_scanned }` |
+| `logs.export` | `{ workspace_id, source?, query?, case_sensitive?, format, destination_path }` | `{ operation_id }`；`format` 为 text/jsonl；**不覆盖已有文件**；destination 应来自 native save 对话框 |
+| `logs.retention.run` | `{ workspace_id }` | `{ operation_id }`；按顶层 `log_retention` 清理轮转文件，结果 `{ deleted_files, deleted_bytes }` |
+
+**指标 / Profile / 构建（1.2 §9–§11）**
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `metrics.snapshot` | `{ workspace_id }` | 最近一次服务进程树指标采样 |
+| `metrics.subscribe` / `metrics.unsubscribe` | `{ workspace_id }` | `{ ok }`；控制 `st-metrics` 推送开关 |
+| `profiles.list` | `{ workspace_id }` | `{ active }` + 各 profile 的 enabled 服务计数 |
+| `profiles.activate` | `{ workspace_id, id, base_hash }` | `{ spec, hash, active }`：结构化保存激活 profile；忙 → `PROFILE_SWITCH_BUSY`；hash 冲突 → `YAML_CONFLICT` |
+| `runtime.build` | `{ workspace_id, id }` | `{ operation_id }`（长操作，可取消）：本地服务 package + artifact 解析，**不启动**；compose 服务路由到 `compose build <service>` |
+
+**应用与 AI 扩展**
+
+| 命令 | 入参 | 出参 / 要点 |
+|------|------|-------------|
+| `system.metrics` | `{ temp?: "off"\|"auto"\|"fast" }` | 主机级 CPU / 内存 / 磁盘 / CPU 温度采样（状态栏用）；整机视角，与 `metrics.snapshot` 口径不同；不持久化、不进日志、不上传；Windows `fast` 档常驻采样进程 |
+| `ai.cli.probe` | `{ provider, cli_path?, cli_env? }` | 本机 AI CLI 可执行文件探测（跑 `--version`，**不保存配置**）；2.1「本地 CLI 供应商」支持 |
+| `app.writeTextFile` | `{ path, contents }` | `{ ok }`：文本写入用户选定路径（日志视图「下载」等）；路径由前端 save 对话框提供；失败 `LOG_EXPORT_FAILED` |
 
 ---
 
@@ -714,7 +764,7 @@ yaml 与日志进 prompt 前掩码（secret 值精确替换 + 形似 token/passw
 | 命令 | 入参 | 出参 / 要点 |
 |------|------|-------------|
 | `ai.status` | — | `{configs:[{id,name,is_default,provider,model,base_url}], default_id, templates:[{id,name,content,enabled}], global_instructions, key_set, usage_today:{date,count}}`；`key_set` 只回布尔 |
-| `ai.complete` | `{task, payload, config_id?}` | `{text, usage, model, tokens?}`；task ∈ `explain_logs` / `config_suggest` / `enrich_draft`；`config_id` 缺省用默认配置；重试后成功只计 1 次用量 |
+| `ai.complete` | `{task, payload, config_id?, request_id?}` | `{text, usage, model, tokens?}`；task ∈ `explain_logs` / `config_suggest` / `enrich_draft` / `test_connection`；`config_id` 缺省用默认配置；传入非空 `request_id` 时经 `st-ai` 事件流式推送文本增量（见 §5），完整结果仍走本命令返回值；重试后成功只计 1 次用量 |
 | `ai.config.save` | `{input:{id?, name, base_url, model, provider, auth_method?, timeout_secs?, max_tokens?, context_window?, proxy_enabled?, proxy_url?, max_retries?, api_key?}}` | 保存后完整配置回显（不含 key）；`api_key`：缺省不动 / `""` 清除 / 非空覆盖（写入 secrets 固定 id `supertask.ai`）；name 唯一（大小写不敏感）；首个配置自动成为默认 |
 | `ai.config.delete` | `{id}` | 删除命名配置；默认被删后回退首个；旧单配置视图删除 `default` = 清空遗留字段 |
 | `ai.config.default` | `{id}` | 设为默认配置 |

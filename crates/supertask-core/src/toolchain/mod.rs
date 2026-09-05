@@ -1,4 +1,4 @@
-//! 1.2 工具链安装与解析。Spec: `docs/plans/2026-08-27-v1-2-feature-spec.md` §4。
+//! 1.2 工具链安装与解析。Spec: `docs/archive/plans/2026-08-27-v1-2-feature-spec.md` §4。
 //!
 //! 硬性边界：
 //! - 安装 provider 只用固定程序名 + 结构化 argv（见 [`runner`]），禁止拼接 shell 字符串；

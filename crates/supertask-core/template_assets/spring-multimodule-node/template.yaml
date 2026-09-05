@@ -1,4 +1,4 @@
-# 内置模板清单：字段与创建行为见 docs/plans/2026-08-28-templates-upgrade-plan.md §3.1
+# 内置模板清单：字段与创建行为见 docs/archive/plans/2026-08-28-templates-upgrade-plan.md §3.1
 # 本文件是模板元数据真源；files 与目录内实际文件的双向一致性由单元测试兜底。
 id: spring-multimodule-node
 version: "1"

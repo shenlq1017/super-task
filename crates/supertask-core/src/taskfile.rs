@@ -1,5 +1,5 @@
 //! 1.4 §7 Taskfile v3 一次性导入。文本级 YAML 子集解析，不引第三方 Taskfile 解析器。
-//! 契约：`docs/spec/ipc.md` §10.8、`docs/plans/2026-08-28-v1-4-feature-spec.md` §7。
+//! 契约：`docs/spec/ipc.md` §10.8、`docs/archive/plans/2026-08-28-v1-4-feature-spec.md` §7。
 //!
 //! 映射规则（§7.1）：task 名 → script id（合法化，导入内冲突加 `-task` 后缀）、
 //! `desc` → `desc`、`cmds` → `cmds`（映射形式取 `cmd`，`silent` 丢弃）、`env` → `env`、

@@ -56,8 +56,8 @@
 
 ### 2.3 控制台前端边界
 
-- 前端是仓库根下的独立子项目 `cloud-console/`（Vite 7 + React 19 + Tailwind 4 + shadcn
-  radix-nova），**不参与 Cargo 编译、不嵌进二进制**，构建产物 `cloud-console/dist` 由服务端
+- 前端是仓库根下的独立子项目 `cloud-console/`（Vite 8 + React 19 + Tailwind 4 + shadcn /
+  radix-ui），**不参与 Cargo 编译、不嵌进二进制**，构建产物 `cloud-console/dist` 由服务端
   按文件系统读取；换前端包不需要重编 Rust。
 - 独立 `package.json`，刻意不引入 npm workspaces，`frontend/` 与 CI 的
   `cache-dependency-path` 互不影响。
@@ -272,12 +272,12 @@ token、完整邮箱或 Authorization。
 - `type` 非空且不超过参考实现的 64 字节护栏，只允许安全 ASCII 字符；未知但格式合法的 type
   会被保存并在列表中返回，客户端负责逐项 skip 无法应用的未来类型。
 - 写入应在单事务中完成实体、rev、`updated_at`、`updated_by` 和 `byte_size` 更新；超配额时
-  整体回滚并返回 HTTP 413 或 429。
+  整体回滚并返回 HTTP 429（`CLOUD_QUOTA_EXCEEDED`；当前实现不返回 413）。
 - `data` 必须是合法 JSON；vault 数据不在服务端解密，只按 `{blob,salt}` 密文载荷保存。
 
 ### `DELETE /entities/:id`
 
-按账号删除实体，幂等返回 204 或 200；不得删除其他账号同 id 的实体。
+按账号删除实体，恒返回 204（幂等：重复删除同样 204）；不得删除其他账号同 id 的实体。
 
 ## 7. 配额与遥测
 
@@ -294,6 +294,7 @@ token、完整邮箱或 Authorization。
 
 ### `POST /telemetry/batch`
 
+需要 `Authorization: Bearer <access_token>` 认证（服务端从 bearer 解出账号后按账号记账）。
 请求只允许客户端白名单事件：
 
 - `app_start`
@@ -362,7 +363,8 @@ YAML 内容、命令行、环境变量值、密码、token 或 Authorization。�
 ## 9. 错误、日志和安全边界
 
 客户端错误映射保持 [cloud.md](cloud.md)：401/403 → `CLOUD_AUTH_FAILED`，409 →
-`CLOUD_SYNC_CONFLICT`，413/429 → `CLOUD_QUOTA_EXCEEDED`，其他非 2xx/解析失败 →
+`CLOUD_SYNC_CONFLICT`，413/429 → `CLOUD_QUOTA_EXCEEDED`（当前服务端实现只返回 429，客户端
+映射保留 413 兼容），其他非 2xx/解析失败 →
 `CLOUD_PROTOCOL_ERROR`，传输失败/超时 → `CLOUD_OFFLINE`。
 
 服务端当前 `AppError` 的响应形状是最小的 `{ "error": "...", "code": "...", "message": "..." }`；
@@ -396,8 +398,8 @@ YAML 内容、命令行、环境变量值、密码、token 或 Authorization。�
 `GET /healthz` 不要求登录，仅用于本地启动等待和测试，返回 `{ "status": "ok" }`，不泄露账号、
 配置或 seed 密码。当前已由 router 注册。
 
-当前服务端自动化验收清单（`cargo test -p supertask-cloud-server`，14 项全绿：3 单测 +
-8 管理面集成 + 3 客户端 API 集成）：
+当前服务端自动化验收清单（`cargo test -p supertask-cloud-server`，16 项全绿：3 单测 +
+8 管理面集成 + 5 客户端 API 集成）：
 
 - [x] axum router 与 REST handler；
 - [x] `/healthz`、优雅关闭和 migration 启动链；
@@ -420,7 +422,7 @@ YAML 内容、命令行、环境变量值、密码、token 或 Authorization。�
 - [ ] 桌面端 GUI 真机确认「被控制台停用的账号在 `#/cloud` 登录报认证失败」（协议层已用
   curl 验证：登录 200 → 停用 → 401 `CLOUD_AUTH_FAILED`）。
 
-相关实现进度见 [v2.0 implementation plan](../plans/2026-08-29-v2-0-implementation-plan.md)。
+相关实现进度见 [v2.0 implementation plan](../archive/plans/2026-08-29-v2-0-implementation-plan.md)。
 管理控制台的规格与分期实施记录见
-[v2.0.1 cloud admin console spec](../plans/2026-08-30-v2-0-1-cloud-admin-console-spec.md) 与
-[v2.0.1 implementation plan](../plans/2026-08-30-v2-0-1-cloud-admin-console-plan.md)。
+[v2.0.1 cloud admin console spec](../archive/plans/2026-08-30-v2-0-1-cloud-admin-console-spec.md) 与
+[v2.0.1 implementation plan](../archive/plans/2026-08-30-v2-0-1-cloud-admin-console-plan.md)。

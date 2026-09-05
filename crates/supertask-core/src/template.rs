@@ -1,7 +1,7 @@
 //! 模板模块：内置官方模板 + 本地用户模板，统一「目录 + template.yaml 清单」模型。
 //!
-//! 规格来源：`docs/plans/2026-08-27-v1-1-feature-spec.md` §4 与
-//! `docs/plans/2026-08-28-templates-upgrade-plan.md`（模板来源升级）：
+//! 规格来源：`docs/archive/plans/2026-08-27-v1-1-feature-spec.md` §4 与
+//! `docs/archive/plans/2026-08-28-templates-upgrade-plan.md`（模板来源升级）：
 //! - builtin 资源用 `include_dir` 编译期嵌入（`crates/supertask-core/template_assets/`），
 //!   离线分发，不依赖网络；
 //! - local 模板来自用户目录（`%APPDATA%/SuperTask/templates/<id>/`），与 builtin

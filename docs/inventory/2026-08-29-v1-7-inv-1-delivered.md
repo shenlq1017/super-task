@@ -5,7 +5,7 @@
 
 ## 1.0 — 能跑（Windows）
 
-来源：[v1-0-feature-spec](../plans/2026-08-25-v1-0-feature-spec.md)、roadmap §1.0。
+来源：[v1-0-feature-spec](../archive/plans/2026-08-25-v1-0-feature-spec.md)、roadmap §1.0。
 
 - 工作区模型 + `supertask.yaml`（version: 1，services 一等公民、scripts 一次性任务、depends_on 启动链、成环启动硬失败）。
 - 无 yaml 时扫描生成草稿（pom.xml 多模块 + package.json）。
@@ -17,7 +17,7 @@
 
 ## 1.1 — 能开始
 
-来源：[v1-1-feature-spec](../plans/2026-08-27-v1-1-feature-spec.md)、repository conventions。
+来源：[v1-1-feature-spec](../archive/plans/2026-08-27-v1-1-feature-spec.md)、repository conventions。
 
 - 模板系统（初始两套以上；后经 2026-08-28 升级扩到 5 套，见下）。
 - git clone / pull / 分支状态显示；打开 Cursor / IDEA / VS Code / 资源管理器。
@@ -25,7 +25,7 @@
 - workspaces / discover（发现）独立页面 live（`features.rs:27-28`，since 1.1）。
 - 扫描向导升级：可 merge，不是一次性生成。
 
-**模板升级（2026-08-28，Phase 0–4 已落地）**，来源：[templates-upgrade-plan](../plans/2026-08-28-templates-upgrade-plan.md)、repository conventions：
+**模板升级（2026-08-28，Phase 0–4 已落地）**，来源：[templates-upgrade-plan](../archive/plans/2026-08-28-templates-upgrade-plan.md)、repository conventions：
 - 清单数据化（`template_assets/*/template.yaml`）、来源抽象（builtin/local，local 目录 `%APPDATA%/SuperTask/templates/`）。
 - `params` 参数化（`{{key}}` + `apply_to`）、`blocks` 组合引擎、`templates.preview` 纯计算预览 + 前端组合向导。
 - 新增错误码 `TEMPLATE_ID_CONFLICT` / `TEMPLATE_PARAM_MISSING` / `TEMPLATE_PARAM_UNKNOWN` / `TEMPLATE_BLOCK_DEP` / `TEMPLATE_BLOCK_PORT`。
@@ -33,7 +33,7 @@
 
 ## 1.2 — 能养活
 
-来源：[v1-2-feature-spec](../plans/2026-08-27-v1-2-feature-spec.md)、[v1-2-progress](../plans/2026-08-28-v1-2-progress.md)。
+来源：[v1-2-feature-spec](../archive/plans/2026-08-27-v1-2-feature-spec.md)、[v1-2-progress](../archive/plans/2026-08-28-v1-2-progress.md)。
 
 - 工具链安装/升级（mise 优先、winget 兜底；`toolchain/` 模块：provider/resolver/install/runner，安装后立即重新解析）。
 - 端口占用检测 + 一键改端口并写回 YAML（改 `port` 与对应 env 键，yaml.md §4.1）。
@@ -47,7 +47,7 @@
 
 ## 1.3 — 能装箱
 
-来源：[v1-3-feature-spec](../plans/2026-08-28-v1-3-feature-spec.md)、[v1-3-progress](../plans/2026-08-28-v1-3-progress.md)。
+来源：[v1-3-feature-spec](../archive/plans/2026-08-28-v1-3-feature-spec.md)、[v1-3-progress](../archive/plans/2026-08-28-v1-3-progress.md)。
 
 - `kind: compose`（`docker compose up -d --no-deps <service>`；`service` 必填；grace 默认 60s、health 默认 tcp(port)）。
 - `DockerSpec` typed（compose_file/project_name/builds）；`ServiceSpec.service` 字段。
@@ -58,7 +58,7 @@
 
 ## 1.4 — 能出门
 
-来源：[v1-4-feature-spec](../plans/2026-08-28-v1-4-feature-spec.md)、[v1-4-progress](../plans/2026-08-28-v1-4-progress.md)。
+来源：[v1-4-feature-spec](../archive/plans/2026-08-28-v1-4-feature-spec.md)、[v1-4-progress](../archive/plans/2026-08-28-v1-4-progress.md)。
 
 - macOS / Linux 支持（含 `proc/unix.rs`、probe 平台已知目录：homebrew、sdkman、nvm——`probe.rs:92-120`）。
 - Gradle 多模块：wrapper 优先（`gradlew[.bat]`），否则 PATH gradle，都无 `GRADLE_WRAPPER_MISSING`；`launch: jar` → bootJar，artifact 在 `module/build/libs`，零候选 `ARTIFACT_MISSING`、多候选 `JAR_AMBIGUOUS`（yaml.md §4.3）。
@@ -69,7 +69,7 @@
 
 ## 1.5 — 能搬家（离线）
 
-来源：[v1-5-feature-spec](../plans/2026-08-29-v1-feature-spec.md)、[v1-5-progress](../plans/2026-08-29-v1-progress.md)、[docs/spec/cli.md](../spec/cli.md)。
+来源：[v1-5-feature-spec](../archive/plans/2026-08-29-v1-feature-spec.md)、[v1-5-progress](../archive/plans/2026-08-29-v1-progress.md)、[docs/spec/cli.md](../spec/cli.md)。
 
 - 工作区所有权锁（`lock.rs`，321 行）：`WORKSPACE_LOCKED`；状态/日志类命令不取锁。
 - CLI 全命令集（`supertask-cli` crate；bin 与桌面 dev 产物撞名 `supertask.exe`，dev 用 `CARGO_TARGET_DIR=target-cli`）。命令表（cli.md §命令，11 条）：
@@ -81,7 +81,7 @@
 
 ## 1.6 — 能对外（网关）
 
-来源：[v1-6-feature-spec](../plans/2026-08-29-v1-feature-spec.md)、[v1-6-progress](../plans/2026-08-29-v1-progress.md)、repository conventions 当前阶段。
+来源：[v1-6-feature-spec](../archive/plans/2026-08-29-v1-feature-spec.md)、[v1-6-progress](../archive/plans/2026-08-29-v1-progress.md)、repository conventions 当前阶段。
 
 - 顶层 `gateway:` 段转 typed：kind（nginx 一等 / caddy 本机 HTTPS internal CA / apache 简化反代）、enabled、port（1024–65535 且不撞服务端口）、bin、tls、routes（host+path 前缀 → target 服务 id 或 upstream，互斥）。
 - 路由模型 → 三家配置 render 纯函数（零新依赖，6 份 golden 测试）。
@@ -94,7 +94,7 @@
 
 ## 2.0 — 云客户端自动化范围（服务端未闭环）
 
-来源：[v2.0 implementation plan](../plans/2026-08-29-v2-0-implementation-plan.md)、[cloud.md](../spec/cloud.md)、[cloud-server.md](../spec/cloud-server.md)。
+来源：[v2.0 implementation plan](../archive/plans/2026-08-29-v2-0-implementation-plan.md)、[cloud.md](../spec/cloud.md)、[cloud-server.md](../spec/cloud-server.md)。
 
 - `supertask-core/src/cloud/`：provider trait、`HttpCloudProvider`（ureq/rustls）、Fake provider、DPAPI 会话、rev 两阶段同步/冲突解决、vault 加密、迁移差量和默认关闭遥测的客户端模块已落地自动化范围。
 - 壳层已接线九条 cloud IPC（含 `cloud.endpoint.set`）；CLI 已有 `cloud status/sync/logout`，其中 CLI sync 明确为只读预览，不做落盘同步。
@@ -114,7 +114,7 @@
 
 ## 2.1 — AI 块先行落地（2026-08-29；README 导入器暂缓）
 
-来源：[v2.1 implementation plan 执行记录](../plans/2026-08-29-v2-1-implementation-plan.md)、[ipc.md §10.13](../spec/ipc.md)、[architecture.md §8](../spec/architecture.md)。
+来源：[v2.1 implementation plan 执行记录](../archive/plans/2026-08-29-v2-1-implementation-plan.md)、[ipc.md §10.13](../spec/ipc.md)、[architecture.md §8](../spec/architecture.md)。
 
 - `supertask-core/src/ai/`：命名多配置（appdata `aiConfigs` + 默认配置；旧单配置 `ai` 只读迁移）、8 种 API provider 预设（无 CLI provider）、api_style 双风格（OpenAI 兼容 / Anthropic Messages）、auth api-key/bearer、代理（裸 host:port 补 http、loopback 绕过）、key 存应用级 secrets（`supertask.ai`，appdata `secrets.env`，永不入云/不回显）、三场景 prompt + sanitize（尾部 200 行/32KiB、secret 值与敏感行 `<redacted>`）、预算 `AI_CONTEXT_TOO_LARGE`、临时错误线性重试 ≤max_retries（偏差备案）、全局指令 ≤8000 + Prompt 模板（50/8000/启用总量 16000）、按日用量、模型发现。
 - 壳层 `src-tauri/src/ai.rs` 九命令：`ai.status/complete/config.save/config.delete/config.default/instructions.save/template.save/template.delete/models`；features ai → Live(2.1)，SOON_COMMANDS 清空。
@@ -124,7 +124,7 @@
 
 ## 2.1 第二轮 — README 导入器 + discover 入口 + 命令面板（2026-08-29）
 
-来源：[v2.1 implementation plan 执行记录（第二轮）](../plans/2026-08-29-v2-1-implementation-plan.md)、[ipc.md §10.14](../spec/ipc.md)、[architecture.md §9](../spec/architecture.md)。
+来源：[v2.1 implementation plan 执行记录（第二轮）](../archive/plans/2026-08-29-v2-1-implementation-plan.md)、[ipc.md §10.14](../spec/ipc.md)、[architecture.md §9](../spec/architecture.md)。
 
 - `supertask-core/src/importer/`：README 导入器（确定性规则引擎，零网络零 LLM）——发现（大小写不敏感 `.md`/`.markdown`）、UTF-8→GBK 解码、fenced（含 text/plain）+ 行内命令抽取、`&&`/`;`/`|` 链拆、`VAR=`/`export` 前缀剥离（PORT → 端口提示，其余 env 提示只记变量名）、规则表分类 service/script/忽略、中英章节加权、行内 code 上限 medium、归一化 argv 去重、噪声计数；与 scan 融合 **scan 事实优先**（冲突 scan 保留、README 值进建议列 `merge::FieldMeta` provenance）。
 - `merge.rs`：`FieldMeta`/`ScriptMergeItem` + `preview_with_sources()`（脚本合并项）+ `MergeChoice.target: service|script`（缺省 service 兼容 1.1）。
@@ -135,7 +135,7 @@
 
 ## 运行页终端（PTY）— 2026-08-30 用户点名实现
 
-来源：[运行页终端计划与执行记录](../plans/2026-08-30-run-terminal-plan.md)、[ipc.md §10.15](../spec/ipc.md)。
+来源：[运行页终端计划与执行记录](../archive/plans/2026-08-30-run-terminal-plan.md)、[ipc.md §10.15](../spec/ipc.md)。
 
 - core `src/term.rs`：PTY 会话管理器（portable-pty 0.9，wezterm 系 ConPTY/openpty；会话 UI 作用域，上限 8，输出 lossy UTF-8 经 mpsc → 壳层 `st-term` 桥）+ `default_shell()`（PowerShell 优先回落 cmd / `$SHELL` 回落 bash/sh）+ `#[ignore]` 真机 ConPTY 冒烟（交互路径：DSR 握手 → echo → exit → 清场）。
 - `Engine::term_target`：服务终端 cwd（复用 plan `cwd_rel` + `resolve_cwd`）与环境链（复用 `build_service_env`，含 1.7 镜像/代理注入）。
@@ -145,7 +145,7 @@
 
 ## v2.0.1 — 云管理控制台（2026-08-30）
 
-来源：[v2.0.1 规格](../plans/2026-08-30-v2-0-1-cloud-admin-console-spec.md)、[实施计划与执行记录](../plans/2026-08-30-v2-0-1-cloud-admin-console-plan.md)、[cloud-server.md §8](../spec/cloud-server.md)。
+来源：[v2.0.1 规格](../archive/plans/2026-08-30-v2-0-1-cloud-admin-console-spec.md)、[实施计划与执行记录](../archive/plans/2026-08-30-v2-0-1-cloud-admin-console-plan.md)、[cloud-server.md §8](../spec/cloud-server.md)。
 
 - **范围变更**：网页控制台原列 v2.0 非目标，本次拉进并交付；v2.0 规格 §3 已就地标注。
 - 服务端 `crates/supertask-cloud-server`：`admin.rs`（`require_admin` 角色闸门、账号列表带用量聚合、建号/改角色/停用/改密/删除、自我保护、`bootstrap_admin`）+ `admin_http.rs`（十条 `/admin/api/*`）+ `migrations/0002_admin.sql`（`accounts.role`，只接受 `user`/`admin`）+ `tests/admin.rs`（8 条）。

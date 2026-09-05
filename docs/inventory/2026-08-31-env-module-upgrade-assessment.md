@@ -40,7 +40,7 @@
 
 ## 3. 角度 B：页面设计性
 
-### 3.1 与设计真源（`docs/plans/2026-08-26-ui-design-1.0-2.1.md`）对照
+### 3.1 与设计真源（`docs/archive/plans/2026-08-26-ui-design-1.0-2.1.md`）对照
 
 | 真源要求 | 现状 |
 |---|---|
@@ -110,4 +110,4 @@
 
 - 接缝：`toolchain/` 的 ToolRunner + FakeRunner（S1 版本查询可注入）；`probe.rs` 内联单测（D1）；`network.rs` ×11 单测（S4）；`engine.rs` 有 `env_effective_snapshot_sources_and_lifecycle` 先例（S7）；前端 mock 模式四态开关先例（`docker-page` 的 `st:mockDockerMode`）。
 - 基线：`cargo test -p supertask-core`（455）、locale 1067 keys、CLI 20、server 14。
-- 流程：立项写 dated feature-spec 入 `docs/plans/`；交付/欠账变化回改 `docs/inventory/` 对应 inv 文档；设计真源偏离项（ProbeBar/设置页网络分组）在立项时回改真源或明确废止。
+- 流程：立项写 dated feature-spec 入 `docs/archive/plans/`；交付/欠账变化回改 `docs/inventory/` 对应 inv 文档；设计真源偏离项（ProbeBar/设置页网络分组）在立项时回改真源或明确废止。

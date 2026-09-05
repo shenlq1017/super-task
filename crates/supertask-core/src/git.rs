@@ -1,5 +1,5 @@
 //! 1.1 Git 集成：只做 clone / status / pull，spawn `git.exe` CLI，不链任何 Git SDK。
-//! Spec: `docs/spec/ipc.md` §10.2、`docs/plans/2026-08-27-v1-1-feature-spec.md` §5。
+//! Spec: `docs/spec/ipc.md` §10.2、`docs/archive/plans/2026-08-27-v1-1-feature-spec.md` §5。
 
 use std::fs;
 use std::io;

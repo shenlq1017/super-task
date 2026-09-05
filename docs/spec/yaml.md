@@ -39,7 +39,7 @@
 | 字段 | 1.0 | 类型 | 说明 |
 |------|-----|------|------|
 | `version` | 必填 | uint | 必须为 `1`。`2+` 若可部分解读则警告 `SPEC_NEWER`，缺关键字段则拒绝 |
-| `kind` | 可选 | string | 默认 `workspace`。reserved：`fragment`（多文件拼接，1.x） |
+| `kind` | 可选 | string | 缺省为空（引擎不注入默认值；仅「扫描项目生成配置」会写 `workspace`）。reserved：`fragment`（多文件拼接，1.x） |
 | `name` | 可选 | string | 显示名，默认取目录名。最长 80 |
 | `description` | reserved | string | 工作区说明 |
 | `root` | 可选 | string | 仅 `"."` |
@@ -186,7 +186,7 @@ health:
 | `tcp` | TCP connect 成功 | 非法 |
 | `http` | GET 且 **2xx**（503 失败） | 非法 |
 
-探测目标只打 `127.0.0.1` / `localhost`，**禁止**对非本机做健康检查（1.0 安全）。`http` URL 若 host 不是 loopback → `HEALTH_HOST_FORBIDDEN`。
+探测目标只打 `127.0.0.1` / `localhost`，**禁止**对非本机做健康检查（1.0 安全）。`http` URL 若 host 不是 loopback → `HEALTH_HOST_FORBIDDEN`。`interval_secs` / `timeout_secs` 缺省均为 **2** 秒；`health.type` 缺省等价 `none`（进程存活即视为 running，除非 kind 自带 tcp 默认，见 §4.3–§4.6）。
 
 不走系统 HTTP 代理。
 

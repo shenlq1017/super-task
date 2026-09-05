@@ -1,4 +1,4 @@
-# 内置组合模板清单：blocks 语义见 docs/plans/2026-08-28-templates-upgrade-plan.md Phase 4
+# 内置组合模板清单：blocks 语义见 docs/archive/plans/2026-08-28-templates-upgrade-plan.md Phase 4
 # 组合模板不携带 supertask.yaml——生成物由选中块的 services 片段拼装；
 # 片段中 {{port}} 占位在端口分配时一并替换（如 health URL）。
 id: spring-node-combo
