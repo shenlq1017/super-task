@@ -31,5 +31,8 @@ design_outputs/
 # Local one-off Rust debugging examples
 crates/supertask-core/examples/*dbg.rs
 
+# 本机站点草稿（未纳入仓库）
+/website
+
 # 云参考服务默认库（SUPERTASK_DATABASE_URL=sqlite://supertask-cloud.db）：本机跑服务端即产生，含口令 hash
 supertask-cloud.db*
