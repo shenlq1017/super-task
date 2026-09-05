@@ -29,6 +29,7 @@ pub mod pkg;
 pub mod ports;
 pub mod probe;
 pub mod proc;
+pub mod procfile;
 pub mod profiles;
 pub mod runtime;
 pub mod sandbox;

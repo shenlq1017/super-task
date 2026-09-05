@@ -140,6 +140,9 @@ pub enum ErrorCode {
     SnapshotInvalid,
     SnapshotVersion,
     SnapshotBusy,
+    // ---- 方向二（纳管任意来源：Procfile 导入，ipc.md §10.19）----
+    ProcfileNotFound,
+    ProcfileInvalid,
 }
 
 #[derive(Debug, Error)]
