@@ -97,6 +97,9 @@ pub struct ServiceSpec {
     pub health: Option<HealthSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<String>,
+    /// 2.2：自动重启次数上限（1..=100），仅 `restart: on-failure|always` 时有意义；缺省 5。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

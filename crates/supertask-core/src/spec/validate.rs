@@ -39,6 +39,33 @@ pub fn validate(file: &SuperTaskFile) -> Result<Vec<ParseWarning>> {
     let mut ports: Vec<(String, u16)> = Vec::new();
 
     for (id, svc) in &file.services {
+        // 2.2 restart 策略：值与 max_retries 组合校验（compose 对该字段的禁用
+        // 在 validate_compose_service 里，消息同样含字段名，测试可断言）。
+        if let Some(r) = &svc.restart {
+            if super::RestartPolicy::parse(r).is_none() {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("{id}: restart '{r}' 非法（只允许 never | on-failure | always）"),
+                ));
+            }
+        }
+        if let Some(m) = svc.max_retries {
+            if !svc.restart.as_deref().is_some_and(|r| r != "never") {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("{id}: max_retries 仅在 restart 为 on-failure | always 时有意义"),
+                ));
+            }
+            if !(1..=super::RESTART_MAX_RETRIES_MAX).contains(&m) {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!(
+                        "{id}: max_retries 需在 1..={}，得到 {m}",
+                        super::RESTART_MAX_RETRIES_MAX
+                    ),
+                ));
+            }
+        }
         match svc.kind.as_str() {
             "spring-boot" => {
                 if svc.module.as_deref().unwrap_or("").is_empty() {
@@ -627,6 +654,47 @@ mod tests {
         format!(
             "version: 1\nservices:\n  api:\n    kind: spring-boot\n    module: api\n    port: 8080\n{extra}\n"
         )
+    }
+
+    // 2.2 restart 策略校验
+    #[test]
+    fn restart_policy_accepts_known_values() {
+        for r in ["never", "on-failure", "always"] {
+            let y = svc_yaml(&format!("    restart: {r}\n"));
+            let (f, _) = parse_yaml(&y).unwrap();
+            assert_eq!(f.services["api"].restart.as_deref(), Some(r));
+        }
+        // max_retries 与 on-failure 组合合法，round-trip 保留
+        let y = svc_yaml("    restart: on-failure\n    max_retries: 3\n");
+        let (f, _) = parse_yaml(&y).unwrap();
+        assert_eq!(f.services["api"].max_retries, Some(3));
+        let text = crate::spec::to_yaml(&f).unwrap();
+        let (f2, _) = parse_yaml(&text).unwrap();
+        assert_eq!(f2.services["api"].max_retries, Some(3));
+    }
+
+    #[test]
+    fn restart_policy_rejects_unknown_value() {
+        let e = parse_yaml(&svc_yaml("    restart: unless-stopped\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
+        assert!(e.to_string().contains("restart"));
+    }
+
+    #[test]
+    fn restart_policy_rejects_max_retries_without_active_policy() {
+        let e = parse_yaml(&svc_yaml("    max_retries: 3\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
+        assert!(e.to_string().contains("max_retries"));
+        let e = parse_yaml(&svc_yaml("    restart: never\n    max_retries: 3\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
+    }
+
+    #[test]
+    fn restart_policy_rejects_max_retries_out_of_range() {
+        let e = parse_yaml(&svc_yaml("    restart: always\n    max_retries: 0\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
+        let e = parse_yaml(&svc_yaml("    restart: always\n    max_retries: 101\n")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SpecInvalid);
     }
 
     #[test]

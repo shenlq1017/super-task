@@ -83,7 +83,8 @@
 | `depends_on_ex` | reserved | object[] | | `{service, condition}`，1.2。1.0 忽略执行 |
 | `grace_secs` | 1.0 | uint | kind 默认 | starting 内健康失败不升为 unhealthy |
 | `health` | 1.0 | object | 见下 | |
-| `restart` | reserved | string | `never` | `never` \| `on-failure` \| `always`，1.2 |
+| `restart` | 2.2 | string | `never` | `never` \| `on-failure` \| `always`。进程**意外退出**（非手动停止）后自动重启：`on-failure` 仅退出码 ≠ 0，`always` 含 0 正常退出。compose 不允许（重启由 compose 文件自管）；不设 `unless-stopped`（引擎生命周期即应用会话，会话内与 `always` 行为一致） |
+| `max_retries` | 2.2 | uint | 5 | 自动重启次数上限（1..=100），仅 `restart` ≠ `never` 时可设，否则 `SPEC_INVALID`。1s 起指数退避（16s 封顶）；耗尽后停在 Exited 并写 `last_error`（自动重启 N 次后放弃）。手动停止取消待执行的重启；手动启动重置计数。自动重启按上次启动计划原样重放（不重建、不复检工具）；构建期退出不自动重建；应用重启后需手动启动 |
 | `extra_args` | 1.0 | string[] | [] | 追加到启动 argv，**不当 shell 字符串** |
 | `cwd` | reserved | string | kind 决定 | 覆盖工作目录，必须在工作区内 |
 | `launch` | 1.0 | string | 见 kind | spring：`run` / `jar`（1.2）；其它 `LAUNCH_UNSUPPORTED` |

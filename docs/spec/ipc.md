@@ -339,12 +339,18 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
   "health": { "ok": true, "at_ms": 0, "detail": "http 200" },
   "started_at_ms": 0,
   "last_exit": { "code": 1, "at_ms": 0 },
+  "exit_reason": "crash",
+  "restart_attempt": 2,
   "last_error": null,
   "log_seq": 1844
 }
 ```
 
 `state` 枚举与 YAML 无关，是运行时。UI 翻译中文。
+
+`exit_reason`：`"crash"`（意外退出）/ `"stop"`（手动停止）；缺省 = 无退出记录（崩溃通知用）。
+`restart_attempt`（2.2，additive，缺省不序列化）：`restart` 策略自动重启的当前/最近尝试序号（1 起）；
+退避等待与重启进行中出现，手动启动后消失。
 
 ---
 

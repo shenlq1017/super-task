@@ -75,6 +75,10 @@ pub struct ServiceRuntimeView {
     /// 1.2 §8.5：进程退出原因（"crash"/"stop"），崩溃通知与 toast 用
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_reason: Option<String>,
+    /// 2.2 restart：当前/最近一次自动重启的尝试序号（1 起）。手动启动清零；
+    /// 仅策略 != never 且发生过自动重启的服务出现。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_attempt: Option<u32>,
     pub log_seq: u64,
     /// false = 外部进程（端口探测识别，无 Job 无法优雅树管理）
     #[serde(default = "default_true")]
@@ -169,6 +173,25 @@ enum SpawnerKind {
     Fail,
 }
 
+/// 2.2：自动重启用的最小启动计划。spawn_core 成功后捕获当次参数，
+/// 崩溃后由监管线程原样重放——不重规划命令、不复检工具（会话内环境未变），
+/// 手动 start 仍走 spawn_service 完整链路。
+#[derive(Clone)]
+struct RestartPlan {
+    planned: CommandSpec,
+    cwd: PathBuf,
+    health_spec: Option<crate::spec::HealthSpec>,
+    health_none: bool,
+    port: Option<u16>,
+    kind: String,
+    pkg: Option<String>,
+    svc_grace: u64,
+    build_tool: Option<String>,
+    spawner: SpawnerKind,
+    env_snapshot: Vec<crate::ipc::EnvEffectiveEntry>,
+    restart: crate::spec::RestartSpec,
+}
+
 struct Slot {
     state: RtState,
     pid: Option<u32>,
@@ -190,6 +213,17 @@ struct Slot {
     artifact: Option<PathBuf>,
     /// 1.2 §8.5：进程退出原因（crash / stop）
     exit_reason: Option<&'static str>,
+    // ---- 2.2 restart 策略（方向一·服务监管）----
+    /// spawn 时随 spec 解析的策略；手动启动重置，spec 改动需手动重启生效
+    restart: crate::spec::RestartSpec,
+    /// 剩余自动重启次数（手动启动 = max_retries；每次自动重启尝试 -1）
+    restart_left: u32,
+    /// 当前/最近一次自动重启尝试序号（1 起；手动 spawn 清 None）
+    restart_attempt: Option<u32>,
+    /// 待执行自动重启的撤销标志：手动 stop 置位；手动 start 换新
+    restart_cancel: Arc<AtomicBool>,
+    /// 自动重启用的最小启动计划（spawn_core 成功后捕获；不做全量重规划/工具复检）
+    restart_plan: Option<RestartPlan>,
     /// 1.3：compose 服务的容器运行时上下文（kind != compose 时为 None）
     compose: Option<ComposeInfo>,
     /// 最近一次启动实际注入的生效环境快照（`env.effective`；未启动/ compose 为 None）。
@@ -556,6 +590,11 @@ impl Engine {
                     managed,
                     artifact: None,
                     exit_reason: None,
+                    restart: crate::spec::RestartSpec::default(),
+                    restart_left: 0,
+                    restart_attempt: None,
+                    restart_cancel: Arc::new(AtomicBool::new(false)),
+                    restart_plan: None,
                     compose: None,
                     env_snapshot: None,
                 },
@@ -1112,6 +1151,8 @@ impl Engine {
             }
             slot.stop_requested = true;
             slot.cancel.store(true, Ordering::SeqCst);
+            // 2.2：手动停止同时撤销待执行的自动重启
+            slot.restart_cancel.store(true, Ordering::SeqCst);
             if let Ok(next) = apply(slot.state, RtEvent::StopRequested) {
                 slot.state = next;
             }
@@ -1318,8 +1359,9 @@ impl Engine {
             module,
             cwd,
             env_snapshot,
+            restart,
         ) = {
-            let g = self.inner.lock().expect("engine lock");
+            let mut g = self.inner.lock().expect("engine lock");
             let slot = g
                 .slots
                 .get(id)
@@ -1337,6 +1379,17 @@ impl Engine {
             // 1.2 §10：base + active profile overlay（不写回 base 字段）
             let eff_spec = crate::profiles::overlay_spec(&g.spec, id)?;
             let eff_svc = eff_spec.services.get(id).unwrap().clone();
+            // 2.2 restart：手动启动重置预算/序号/撤销标志（spec 改动随重启生效）
+            let restart = crate::spec::resolve_restart(&eff_svc);
+            if let Some(slot) = g.slots.get_mut(id) {
+                slot.restart = restart;
+                slot.restart_left = match restart.policy {
+                    crate::spec::RestartPolicy::Never => 0,
+                    _ => restart.max_retries,
+                };
+                slot.restart_attempt = None;
+                slot.restart_cancel = Arc::new(AtomicBool::new(false));
+            }
             if eff_svc.kind == "compose" {
                 // 1.3 §5.2：compose 服务走容器运行时分支（up/stop），不经本地命令规划
                 drop(g);
@@ -1509,6 +1562,7 @@ impl Engine {
                 module,
                 cwd,
                 env_snapshot,
+                restart,
             )
         };
 
@@ -1541,6 +1595,7 @@ impl Engine {
                         bt,
                         spawner,
                         env_snapshot,
+                        restart,
                     );
                     if let Err(e) = r {
                         jar_flow_fail(&inner, &id2, e);
@@ -1571,6 +1626,7 @@ impl Engine {
                         bt,
                         spawner,
                         env_snapshot,
+                        restart,
                     );
                     if let Err(e) = r {
                         jar_flow_fail(&inner, &id2, e);
@@ -1628,6 +1684,7 @@ impl Engine {
             Some(bt.as_str()),
             self.spawner,
             env_snapshot,
+            restart,
         )
     }
 
@@ -3138,6 +3195,11 @@ fn apply_spec_slots(g: &mut Inner, file: &SuperTaskFile) -> Result<()> {
                 managed: true,
                 artifact: None,
                 exit_reason: None,
+                restart: crate::spec::RestartSpec::default(),
+                restart_left: 0,
+                restart_attempt: None,
+                restart_cancel: Arc::new(AtomicBool::new(false)),
+                restart_plan: None,
                 compose: None,
                 env_snapshot: None,
             },
@@ -3207,6 +3269,7 @@ fn build_snapshot(g: &Inner) -> RuntimeSnapshot {
                 last_exit: slot.last_exit.clone(),
                 last_error: slot.last_error.clone(),
                 exit_reason: slot.exit_reason.map(str::to_string),
+                restart_attempt: slot.restart_attempt,
                 log_seq: g.logs.next_seq().saturating_sub(1),
                 // 有 Job 即本引擎托管（防止历史 slot.managed=false 误标「外部」）
                 managed: slot.managed || slot.job.is_some(),
@@ -3679,6 +3742,7 @@ fn spawn_core(
     build_tool: Option<&str>,
     spawner: SpawnerKind,
     env_snapshot: Vec<crate::ipc::EnvEffectiveEntry>,
+    restart: crate::spec::RestartSpec,
 ) -> Result<()> {
     if matches!(spawner, SpawnerKind::Real) {
         probe::require_tools_for_kind_with_path(
@@ -3715,6 +3779,22 @@ fn spawn_core(
         slot.grace = Duration::from_secs(svc_grace);
         slot.cancel = Arc::new(AtomicBool::new(false));
         slot.stop_requested = false;
+        // 2.2：捕获 restart 启动计划——崩溃后的自动重启按原样重放，
+        // 不重规划命令、不复检工具；手动 start 仍走 spawn_service 完整链路。
+        slot.restart_plan = Some(RestartPlan {
+            planned: planned.clone(),
+            cwd: cwd.clone(),
+            health_spec: health_spec.clone(),
+            health_none,
+            port,
+            kind: kind.clone(),
+            pkg: pkg.map(str::to_string),
+            svc_grace,
+            build_tool: build_tool.map(str::to_string),
+            spawner,
+            env_snapshot: env_snapshot.clone(),
+            restart,
+        });
         slot.job = Some(job);
         // SuperTask 已挂上 Job → 本会话托管；修复「load 时端口占用标成外部，stop 后再 start 仍 managed=false」
         slot.managed = true;
@@ -3792,6 +3872,7 @@ fn maven_reactor_run_flow(
     bt: crate::launcher::BuildTool,
     spawner: SpawnerKind,
     env_snapshot: Vec<crate::ipc::EnvEffectiveEntry>,
+    restart: crate::spec::RestartSpec,
 ) -> Result<()> {
     reactor_prep_phase(inner.clone(), id, prep_spec, &root, bt)?;
     let cwd = resolve_cwd(&root, &run_spec.cwd_rel)?;
@@ -3809,6 +3890,7 @@ fn maven_reactor_run_flow(
         Some(bt.as_str()),
         spawner,
         env_snapshot,
+        restart,
     )
 }
 
@@ -3848,6 +3930,7 @@ fn jar_flow(
     bt: crate::launcher::BuildTool,
     spawner: SpawnerKind,
     env_snapshot: Vec<crate::ipc::EnvEffectiveEntry>,
+    restart: crate::spec::RestartSpec,
 ) -> Result<()> {
     let artifact = {
         let have = inner
@@ -3887,6 +3970,7 @@ fn jar_flow(
         Some(bt.as_str()),
         spawner,
         env_snapshot,
+        restart,
     )
 }
 
@@ -4361,9 +4445,128 @@ fn spawn_waiter(inner: Arc<Mutex<Inner>>, id: String, mut child: Child) {
             if let Ok(next) = apply(slot.state, ev) {
                 slot.state = next;
             }
+            slot.restart_attempt = None;
+            // 2.2 restart 监管：仅服务进程本身的意外退出（构建期退出由 build 流程
+            // 收场，不走这里；compose 由 compose 文件自管，策略恒 never）。
+            let crash_condition = !slot.stop_requested
+                && slot.state == RtState::Exited
+                && slot.restart.policy != crate::spec::RestartPolicy::Never
+                && (slot.restart.policy == crate::spec::RestartPolicy::Always || code != 0);
+            let supervise = if crash_condition && slot.restart_left > 0 {
+                // 即将进行第 n 次自动重启（预算在监管线程占用额度时扣减）
+                slot.restart_attempt = Some(slot.restart.max_retries - slot.restart_left + 1);
+                true
+            } else {
+                if crash_condition {
+                    // 预算耗尽后的最后一次崩溃：就地给出放弃原因
+                    restart_give_up(slot);
+                }
+                false
+            };
             emit_runtime(&g);
+            drop(g);
+            if supervise {
+                spawn_supervisor(inner, id);
+            }
         })
         .ok();
+}
+
+/// 2.2：预算耗尽后写放弃原因并清尝试序号。
+fn restart_give_up(slot: &mut Slot) {
+    slot.restart_attempt = None;
+    slot.last_error = Some(format!(
+        "自动重启 {} 次后放弃（restart 策略）",
+        slot.restart.max_retries
+    ));
+}
+
+/// 2.2：自动重启退避——1s 起指数递增，16s 封顶（默认 5 次最坏约 31s）。
+fn restart_backoff(attempt: u32) -> Duration {
+    Duration::from_secs(1u64 << (attempt.saturating_sub(1)).min(4))
+}
+
+/// 2.2：按 restart 策略的自动重启执行器。每轮占用一次额度：复核
+/// （服务仍处 Exited、未被手动停止/关闭）→ 退避等待 → 复核 → 按启动计划重放。
+/// spawn 失败（工具缺失、端口被占等可重试错误）消耗额度继续；
+/// NotFound / AlreadyInProgress（工作区已关、与手动操作竞态）直接放弃。
+fn spawn_supervisor(inner: Arc<Mutex<Inner>>, id: String) {
+    thread::Builder::new()
+        .name(format!("st-restart-{id}"))
+        .spawn(move || loop {
+            let (plan, attempt) = {
+                let mut g = inner.lock().expect("engine lock");
+                let Some(slot) = g.slots.get_mut(&id) else {
+                    return; // 工作区已关闭/移交
+                };
+                if slot.state != RtState::Exited
+                    || slot.stop_requested
+                    || slot.restart_cancel.load(Ordering::SeqCst)
+                {
+                    return; // 手动停止或重新启动接管
+                }
+                if slot.restart_left == 0 {
+                    restart_give_up(slot);
+                    emit_runtime(&g);
+                    return;
+                }
+                slot.restart_left -= 1;
+                let attempt = slot.restart.max_retries - slot.restart_left;
+                slot.restart_attempt = Some(attempt);
+                (slot.restart_plan.clone(), attempt)
+            };
+            let Some(plan) = plan else {
+                return; // 无启动计划（理论上策略 != never 必有），防御性退出
+            };
+            thread::sleep(restart_backoff(attempt));
+            // 睡醒复核：退避期间用户可能已手动停止/关闭
+            {
+                let g = inner.lock().expect("engine lock");
+                let keep = g.slots.get(&id).is_some_and(|slot| {
+                    slot.state == RtState::Exited
+                        && !slot.stop_requested
+                        && !slot.restart_cancel.load(Ordering::SeqCst)
+                });
+                if !keep {
+                    return;
+                }
+            }
+            match respawn_from_plan(Arc::clone(&inner), &id, plan) {
+                Ok(()) => return,
+                Err(e) => {
+                    if matches!(e.code(), ErrorCode::NotFound | ErrorCode::AlreadyInProgress) {
+                        return;
+                    }
+                    // 可重试失败：写明原因，下一轮再试（额度在循环顶扣减）
+                    let mut g = inner.lock().expect("engine lock");
+                    if let Some(slot) = g.slots.get_mut(&id) {
+                        slot.last_error = Some(format!("自动重启第 {attempt} 次失败: {e}"));
+                        emit_runtime(&g);
+                    }
+                }
+            }
+        })
+        .ok();
+}
+
+/// 2.2：按捕获的启动计划重新拉起服务进程。
+fn respawn_from_plan(inner: Arc<Mutex<Inner>>, id: &str, plan: RestartPlan) -> Result<()> {
+    spawn_core(
+        inner,
+        id.to_string(),
+        plan.planned,
+        plan.cwd,
+        plan.health_spec,
+        plan.health_none,
+        plan.port,
+        plan.kind,
+        plan.pkg.as_deref(),
+        plan.svc_grace,
+        plan.build_tool.as_deref(),
+        plan.spawner,
+        plan.env_snapshot,
+        plan.restart,
+    )
 }
 
 fn exit_error_from_logs(g: &Inner, src: &LogSource, code: i32) -> String {
@@ -5253,6 +5456,104 @@ services:
             thread::sleep(Duration::from_millis(40));
         }
         false
+    }
+
+    // ---- 2.2 restart 策略：自动重启监管（Fail spawner = 立即 exit 1 的进程） ----
+
+    fn ping_yaml_with_restart(policy: &str, max_retries: u32) -> String {
+        format!(
+            r#"
+version: 1
+services:
+  ping:
+    kind: spring-boot
+    module: x
+    port: 1
+    health:
+      type: none
+    grace_secs: 1
+    restart: {policy}
+    max_retries: {max_retries}
+"#
+        )
+    }
+
+    /// on-failure：崩溃 → 自动重启（1s/2s 退避）→ 预算耗尽 → 放弃并写原因。
+    #[test]
+    fn restart_on_failure_exhausts_budget_and_gives_up() {
+        let root = write_ws_yaml(&ping_yaml_with_restart("on-failure", 2));
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+        eng.start_one("ping").unwrap();
+        assert!(
+            wait_eq(&eng, "ping", RtState::Exited),
+            "首次崩溃应置 Exited"
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen_attempts = std::collections::HashSet::new();
+        let mut gave_up = false;
+        while Instant::now() < deadline {
+            let view = eng
+                .snapshot()
+                .unwrap()
+                .services
+                .get("ping")
+                .unwrap()
+                .clone();
+            if let Some(n) = view.restart_attempt {
+                seen_attempts.insert(n);
+            }
+            if view
+                .last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("自动重启 2 次后放弃"))
+            {
+                gave_up = true;
+                assert_eq!(view.restart_attempt, None, "放弃后序号应清空");
+                break;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+        assert!(gave_up, "应在预算耗尽后写放弃原因");
+        assert!(
+            seen_attempts.contains(&1),
+            "应观察到第 1 次自动重启序号: {seen_attempts:?}"
+        );
+        assert_eq!(eng.state_of("ping"), Some(RtState::Exited));
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 崩溃后的退避窗口内手动停止：监管线程必须让位，不再拉起。
+    #[test]
+    fn restart_manual_stop_cancels_pending_restart() {
+        let root = write_ws_yaml(&ping_yaml_with_restart("on-failure", 3));
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+        eng.start_one("ping").unwrap();
+        assert!(wait_eq(&eng, "ping", RtState::Exited));
+        eng.stop_one("ping").unwrap();
+        assert_eq!(eng.state_of("ping"), Some(RtState::Stopped));
+        // 覆盖 1s 退避窗口：若监管线程未被取消，这里会看到重新 Starting
+        thread::sleep(Duration::from_millis(2500));
+        assert_eq!(eng.state_of("ping"), Some(RtState::Stopped));
+        let view = eng
+            .snapshot()
+            .unwrap()
+            .services
+            .get("ping")
+            .unwrap()
+            .clone();
+        assert!(
+            !view
+                .last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("放弃")),
+            "手动停止不应触发放弃原因: {:?}",
+            view.last_error
+        );
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
     }
 
     // ---- 1.3 phase 3/4：compose 运行时与镜像构建（全 fake，不真调 docker） ----

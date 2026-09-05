@@ -228,6 +228,7 @@ impl ServiceSpec {
             grace_secs: None,
             health: None,
             restart: None,
+            max_retries: None,
             extra_args: vec![],
             cwd: None,
             launch: None,
