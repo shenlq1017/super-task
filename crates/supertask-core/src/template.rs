@@ -1152,6 +1152,355 @@ pub struct TemplatePreviewOut {
     pub warnings: Vec<String>,
 }
 
+// ---------------------------------------------------------------------------
+// 方向九：模板分享——导入（zip 包 → 本地库）与导出（本地/内置 → 可分享 zip）。
+// 分享单元是 zip 文件（用户手动传递），不做远端分发；安全蓝本对齐数据快照
+// （snapshot.rs 的条目上限与路径规则），失败不落盘半成品。
+// ---------------------------------------------------------------------------
+
+/// 导入包条目上限（模板规模远小于数据快照的 2 万条 / 512 MiB）。
+pub const MAX_TEMPLATE_PACKAGE_ENTRIES: usize = 2_000;
+/// 导入包总字节上限。
+pub const MAX_TEMPLATE_PACKAGE_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// `templates.import` 输出。
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateImportOut {
+    pub id: String,
+    /// 落盘的模板文件数（不含 template.yaml）。
+    pub files: usize,
+}
+
+/// 校验模板 id 可安全作为本地库目录名：单段、仅 ASCII 字母数字/连字符/下划线、
+/// 最长 64。`parse_manifest` 只校验 id == 目录名，不约束字符集；导入的 id 来自
+/// 不受信 zip 且直接成为目录名，必须先过这道关。
+fn validate_import_id(id: &str) -> Result<()> {
+    let ok = !id.is_empty()
+        && id.len() <= 64
+        && !id.starts_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ErrorCode::TemplateInvalid,
+            format!("模板 id {id:?} 非法：仅允许字母数字/连字符/下划线，最长 64"),
+        ))
+    }
+}
+
+/// 导入包内条目的相对路径安全规则：禁 `..`/`.`/空段/反斜杠/冒号/隐藏段，且
+/// 拒绝构建产物目录段（与读取侧 collect_local_files 的跳过口径一致，避免导入后
+/// 清单⇄目录双向一致性被破坏）。
+fn safe_package_rel(p: &str) -> Option<String> {
+    if p.is_empty() || p.contains('\\') || p.contains(':') || p.starts_with('/') {
+        return None;
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." || seg.starts_with('.') {
+            return None;
+        }
+        if SKIP_DIRS.contains(&seg) {
+            return None;
+        }
+        out.push(seg);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.join("/"))
+    }
+}
+
+/// 读取 zip 包内全部文件条目为 (路径, 字节)。目录条目跳过；条目数/总字节超
+/// 上限、路径不安全 → `TEMPLATE_INVALID`。
+fn read_package(zip_path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+    use std::io::Read as _;
+    if !zip_path.is_file() {
+        return Err(Error::new(
+            ErrorCode::TemplateInvalid,
+            format!("模板包不存在: {}", zip_path.display()),
+        ));
+    }
+    let file = fs::File::open(zip_path)
+        .map_err(|e| Error::new(ErrorCode::TemplateInvalid, format!("模板包不可读: {e}")))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| Error::new(ErrorCode::TemplateInvalid, format!("模板包打开失败: {e}")))?;
+    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total = 0u64;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| Error::new(ErrorCode::TemplateInvalid, format!("模板包条目损坏: {e}")))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let raw = entry.name().to_string();
+        let Some(rel) = safe_package_rel(&raw) else {
+            return Err(Error::new(
+                ErrorCode::TemplateInvalid,
+                format!("模板包含不安全条目路径: {raw:?}"),
+            ));
+        };
+        if out.len() >= MAX_TEMPLATE_PACKAGE_ENTRIES {
+            return Err(Error::new(
+                ErrorCode::TemplateInvalid,
+                format!("模板包条目数超上限 {MAX_TEMPLATE_PACKAGE_ENTRIES}"),
+            ));
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry
+            .read_to_end(&mut bytes)
+            .map_err(|e| Error::new(ErrorCode::TemplateInvalid, format!("模板包读取失败: {e}")))?;
+        total += bytes.len() as u64;
+        if total > MAX_TEMPLATE_PACKAGE_TOTAL_BYTES {
+            return Err(Error::new(
+                ErrorCode::TemplateInvalid,
+                format!("模板包总字节超上限 {MAX_TEMPLATE_PACKAGE_TOTAL_BYTES}"),
+            ));
+        }
+        out.push((rel, bytes));
+    }
+    if out.is_empty() {
+        return Err(Error::new(ErrorCode::TemplateInvalid, "模板包为空"));
+    }
+    Ok(out)
+}
+
+/// 归一化包内模板根：清单在包根，或恰有一个含清单的顶层目录（直接压缩模板
+/// 目录的常见形态）。返回 (根前缀, 清单字节)；其余布局一律拒绝。
+fn package_root(files: &[(String, Vec<u8>)]) -> Result<(String, Vec<u8>)> {
+    let manifest_at = |prefix: String| {
+        files
+            .iter()
+            .find(|(p, _)| *p == format!("{prefix}{MANIFEST_FILE}"))
+            .map(|(_, b)| b.clone())
+    };
+    if let Some(bytes) = manifest_at(String::new()) {
+        return Ok((String::new(), bytes));
+    }
+    let tops: HashSet<&str> = files
+        .iter()
+        .map(|(p, _)| p.split('/').next().unwrap_or(""))
+        .collect();
+    let with_manifest: Vec<&&str> = tops
+        .iter()
+        .filter(|t| manifest_at(format!("{t}/")).is_some())
+        .collect();
+    match with_manifest.as_slice() {
+        [top] => {
+            let prefix = format!("{top}/");
+            let bytes = manifest_at(prefix.clone()).unwrap_or_default();
+            Ok((prefix, bytes))
+        }
+        [] => Err(Error::new(
+            ErrorCode::TemplateInvalid,
+            format!("模板包缺少 {MANIFEST_FILE}"),
+        )),
+        _ => Err(Error::new(
+            ErrorCode::TemplateInvalid,
+            "模板包存在多个含清单的顶层目录，无法定位模板根",
+        )),
+    }
+}
+
+/// 导入模板包到本地库（方向九模板分享的最小写入路径）。
+///
+/// 全量校验通过后才落盘：先解包到 local_dir 下的隐藏 staging 目录，再原子改名
+/// 为 `<id>/`；任一步失败清理 staging，不产生半成品。
+pub fn import_template(zip_path: &Path, local_dir: &Path) -> Result<TemplateImportOut> {
+    let packaged = read_package(zip_path)?;
+    let (prefix, manifest_bytes) = package_root(&packaged)?;
+    if !prefix.is_empty() {
+        let outside = packaged.iter().find(|(p, _)| !p.starts_with(&prefix));
+        if let Some((p, _)) = outside {
+            return Err(Error::new(
+                ErrorCode::TemplateInvalid,
+                format!("模板包含模板根之外的条目: {p:?}"),
+            ));
+        }
+    }
+    let strip = |p: &str| p.strip_prefix(&prefix).unwrap_or(p).to_string();
+    let manifest_text = std::str::from_utf8(&manifest_bytes)
+        .map_err(|_| Error::new(ErrorCode::TemplateInvalid, "template.yaml 不是 UTF-8"))?;
+    // 清单 id 先于 parse_manifest 取出：它决定目标目录名，且 parse_manifest 的
+    // id==目录名校验以它为参数
+    let raw: Value = serde_yaml::from_str(manifest_text).map_err(|e| {
+        Error::new(
+            ErrorCode::TemplateInvalid,
+            format!("template.yaml 解析失败: {e}"),
+        )
+    })?;
+    let id = raw
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::new(ErrorCode::TemplateInvalid, "template.yaml 缺少 id"))?;
+    validate_import_id(id)?;
+
+    let staged = local_dir.join(id);
+    if builtin_ids().contains(id) {
+        return Err(Error::new(
+            ErrorCode::TemplateIdConflict,
+            format!("模板 id {id:?} 与内置模板冲突"),
+        ));
+    }
+    if staged.exists() {
+        return Err(Error::new(
+            ErrorCode::TemplateIdConflict,
+            format!("本地模板 {id:?} 已存在"),
+        ));
+    }
+
+    let manifest = parse_manifest(id, &manifest_bytes)?;
+    // 清单⇄包内容双向一致（口径对齐 verify_entry_files，但在内存中先验，不落盘）
+    let mut actual: Vec<String> = packaged
+        .iter()
+        .map(|(p, _)| strip(p))
+        .filter(|p| *p != MANIFEST_FILE)
+        .collect();
+    actual.sort();
+    let mut expected_owned = if manifest.blocks.is_empty() {
+        manifest.files.clone()
+    } else {
+        block_files_union(&manifest.blocks)
+    };
+    expected_owned.sort();
+    if actual != expected_owned {
+        let missing: Vec<&String> = expected_owned
+            .iter()
+            .filter(|e| !actual.contains(e))
+            .collect();
+        let extra: Vec<&String> = actual
+            .iter()
+            .filter(|a| !expected_owned.contains(a))
+            .collect();
+        return Err(Error::new(
+            ErrorCode::TemplateInvalid,
+            format!("模板包文件与清单不一致：缺少 {missing:?}，多余 {extra:?}"),
+        ));
+    }
+
+    fs::create_dir_all(local_dir)
+        .map_err(|e| Error::new(ErrorCode::TemplateWrite, format!("本地模板目录不可用: {e}")))?;
+    let staging = local_dir.join(format!(
+        ".import-staging-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    ));
+    let install = (|| -> Result<()> {
+        fs::create_dir_all(staging.join(id)).map_err(|e| {
+            Error::new(
+                ErrorCode::TemplateWrite,
+                format!("无法创建 staging 目录: {e}"),
+            )
+        })?;
+        write_file(&staging.join(id), MANIFEST_FILE, &manifest_bytes)?;
+        for (path, bytes) in &packaged {
+            let rel = strip(path);
+            if rel == MANIFEST_FILE {
+                continue;
+            }
+            write_file(&staging.join(id), &rel, bytes)?;
+        }
+        fs::rename(staging.join(id), &staged).map_err(|e| {
+            Error::new(
+                ErrorCode::TemplateWrite,
+                format!("无法安装模板 {id:?}: {e}"),
+            )
+        })?;
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&staging);
+    install?;
+    Ok(TemplateImportOut {
+        id: id.to_string(),
+        files: packaged.len() - 1,
+    })
+}
+
+/// 导出模板为可分享 zip 包（方向九）：包根含 template.yaml 与全部模板文件，
+/// 可直接被 `import_template` 导回。返回生成的包路径。
+pub fn export_template(
+    template_id: &str,
+    source: TemplateSourceKind,
+    target_dir: &Path,
+    local_dir: Option<&Path>,
+) -> Result<PathBuf> {
+    let entry = resolve_entry(template_id, source, local_dir)?;
+    if !target_dir.is_dir() {
+        return Err(Error::new(
+            ErrorCode::NotFound,
+            format!("目标目录不存在: {}", target_dir.display()),
+        ));
+    }
+    let verified = verify_entry_files(&entry)?;
+    // 清单字节：local 直接读；builtin 从嵌入资源按后缀定位（路径可能带 id 前缀）
+    let manifest_bytes: Vec<u8> = match &entry.kind {
+        TemplateKind::Local(root) => fs::read(root.join(MANIFEST_FILE))
+            .map_err(|e| Error::new(ErrorCode::TemplateWrite, format!("无法读取清单: {e}")))?,
+        TemplateKind::Builtin(dir) => {
+            let mut embedded: Vec<(String, &'static [u8])> = Vec::new();
+            collect_embedded_files(dir, &mut embedded);
+            let suffix = format!("/{MANIFEST_FILE}");
+            embedded
+                .iter()
+                .find(|(p, _)| p == MANIFEST_FILE || p.ends_with(&suffix))
+                .map(|(_, b)| b.to_vec())
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::TemplateInvalid, "内置模板缺少清单".to_string())
+                })?
+        }
+    };
+
+    let out_path = target_dir.join(format!("{}-template.zip", entry.summary.id));
+    if out_path.exists() {
+        return Err(Error::new(
+            ErrorCode::TargetNotEmpty,
+            format!("目标已存在: {}", out_path.display()),
+        ));
+    }
+    let tmp_path = out_path.with_extension("zip.part");
+    let write = (|| -> Result<()> {
+        use std::io::Write as _;
+        let file = fs::File::create(&tmp_path)
+            .map_err(|e| Error::new(ErrorCode::TemplateWrite, format!("无法创建包文件: {e}")))?;
+        let mut w = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let mut put = |name: &str, bytes: &[u8]| -> Result<()> {
+            w.start_file(name, opts).map_err(|e| {
+                Error::new(ErrorCode::TemplateWrite, format!("写入 {name} 失败: {e}"))
+            })?;
+            w.write_all(bytes).map_err(|e| {
+                Error::new(ErrorCode::TemplateWrite, format!("写入 {name} 失败: {e}"))
+            })?;
+            Ok(())
+        };
+        put(MANIFEST_FILE, &manifest_bytes)?;
+        for (rel, bytes) in &verified {
+            put(rel, bytes)?;
+        }
+        w.finish()
+            .map_err(|e| Error::new(ErrorCode::TemplateWrite, format!("包收尾失败: {e}")))?;
+        Ok(())
+    })();
+    if let Err(e) = write {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    fs::rename(&tmp_path, &out_path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        Error::new(ErrorCode::TemplateWrite, format!("无法落盘: {e}"))
+    })?;
+    Ok(out_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1181,6 +1530,199 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    // ---- 方向九：模板导入 / 导出 ----
+
+    /// 在内存里组一个模板 zip 包。
+    fn build_zip(tag: &str, entries: &[(&str, Vec<u8>)]) -> PathBuf {
+        use std::io::Write as _;
+        let path = temp_dir(tag).join("pkg.zip");
+        let file = fs::File::create(&path).unwrap();
+        let mut w = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        for (name, bytes) in entries {
+            w.start_file(*name, opts).unwrap();
+            w.write_all(bytes).unwrap();
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    fn manifest_yaml(id: &str) -> Vec<u8> {
+        format!(
+            "id: {id}\nversion: \"1\"\nname: 模板 {id}\ndescription: 测试导入\nstacks:\n  - node\nfiles:\n  - supertask.yaml\n  - README.md\n"
+        )
+        .into_bytes()
+    }
+
+    fn stub_yaml(name: &str) -> Vec<u8> {
+        format!("version: 1\nname: {name}\nservices:\n  web:\n    kind: node\n    dir: .\n    port: 3222\n")
+            .into_bytes()
+    }
+
+    #[test]
+    fn import_export_roundtrip() {
+        let lib_a = temp_dir("lib-a");
+        let lib_b = temp_dir("lib-b");
+        let target = temp_dir("export-target");
+        write_local_template(&lib_a, "share-me", "");
+        let zip_path =
+            export_template("share-me", TemplateSourceKind::Local, &target, Some(&lib_a)).unwrap();
+        assert_eq!(
+            zip_path.file_name().unwrap().to_str().unwrap(),
+            "share-me-template.zip"
+        );
+
+        let out = import_template(&zip_path, &lib_b).unwrap();
+        assert_eq!(out.id, "share-me");
+        assert_eq!(out.files, 2); // supertask.yaml + README.md（不含清单）
+
+        let list = list_templates(Some(&lib_b));
+        let t = list
+            .iter()
+            .find(|t| t.id == "share-me")
+            .expect("导入后可见");
+        assert!(!t.invalid);
+        assert_eq!(t.source, TemplateSourceKind::Local);
+        // 清单声明顺序（非排序）
+        assert_eq!(t.files, vec!["supertask.yaml", "README.md"]);
+    }
+
+    #[test]
+    fn export_builtin_reimport_conflicts() {
+        // 内置随应用分发：同 id 本地库条目被禁止（防遮蔽），因此内置包导回必然冲突。
+        // 导出内置的价值是「以此为起点改造后以新 id 分享」。
+        let mut builtins = list_templates(None);
+        let some = builtins.remove(0);
+        let target = temp_dir("exp-builtin");
+        let zip_path =
+            export_template(&some.id, TemplateSourceKind::Builtin, &target, None).unwrap();
+        let lib = temp_dir("lib-builtin");
+        let e = import_template(&zip_path, &lib).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::TemplateIdConflict);
+    }
+
+    #[test]
+    fn import_accepts_wrapped_root_form() {
+        let lib = temp_dir("lib-wrapped");
+        let zip_path = build_zip(
+            "w1",
+            &[
+                ("wrapped/template.yaml", manifest_yaml("wrapped")),
+                ("wrapped/supertask.yaml", stub_yaml("wrapped")),
+                ("wrapped/README.md", b"# wrapped\n".to_vec()),
+            ],
+        );
+        let out = import_template(&zip_path, &lib).unwrap();
+        assert_eq!(out.id, "wrapped");
+        assert_eq!(out.files, 2);
+        assert!(lib.join("wrapped").join("supertask.yaml").is_file());
+        // staging 已清理，根下只有模板目录
+        let leftovers: Vec<_> = fs::read_dir(&lib).unwrap().flatten().collect();
+        assert_eq!(leftovers.len(), 1);
+    }
+
+    #[test]
+    fn import_rejects_conflicts() {
+        let lib = temp_dir("lib-conflict");
+        // 与内置 id 冲突（冲突检查先于文件一致性）
+        let builtin_id = list_templates(None).remove(0).id;
+        let m = manifest_yaml(&builtin_id);
+        let zip1 = build_zip("c1", &[("template.yaml", m)]);
+        assert_eq!(
+            import_template(&zip1, &lib).unwrap_err().code(),
+            ErrorCode::TemplateIdConflict
+        );
+        // 与现有本地模板冲突
+        write_local_template(&lib, "dup", "");
+        let target = temp_dir("exp-dup");
+        let zip2 = export_template("dup", TemplateSourceKind::Local, &target, Some(&lib)).unwrap();
+        assert_eq!(
+            import_template(&zip2, &lib).unwrap_err().code(),
+            ErrorCode::TemplateIdConflict
+        );
+    }
+
+    #[test]
+    fn import_rejects_unsafe_content() {
+        let lib = temp_dir("lib-unsafe");
+        // id 字符集非法（路径逃逸形态）
+        let m = manifest_yaml("../evil");
+        let bad_id = build_zip("u1", &[("template.yaml", m)]);
+        assert_eq!(
+            import_template(&bad_id, &lib).unwrap_err().code(),
+            ErrorCode::TemplateInvalid
+        );
+        // 缺清单
+        let no_manifest = build_zip("u2", &[("a.txt", b"x".to_vec())]);
+        assert_eq!(
+            import_template(&no_manifest, &lib).unwrap_err().code(),
+            ErrorCode::TemplateInvalid
+        );
+        // 包内不安全条目路径
+        let m = manifest_yaml("ok-id");
+        let unsafe_entry = build_zip(
+            "u3",
+            &[("template.yaml", m), ("../escape.txt", b"x".to_vec())],
+        );
+        assert_eq!(
+            import_template(&unsafe_entry, &lib).unwrap_err().code(),
+            ErrorCode::TemplateInvalid
+        );
+        // 清单与内容不一致（README.md 缺失）
+        let m = manifest_yaml("ok-id");
+        let mismatch = build_zip(
+            "u4",
+            &[("template.yaml", m), ("supertask.yaml", stub_yaml("ok"))],
+        );
+        assert_eq!(
+            import_template(&mismatch, &lib).unwrap_err().code(),
+            ErrorCode::TemplateInvalid
+        );
+        // 多余的清单外文件
+        let m = manifest_yaml("ok-id");
+        let extra = build_zip(
+            "u5",
+            &[
+                ("template.yaml", m),
+                ("supertask.yaml", stub_yaml("ok")),
+                ("README.md", b"x".to_vec()),
+                ("stowaway.txt", b"x".to_vec()),
+            ],
+        );
+        assert_eq!(
+            import_template(&extra, &lib).unwrap_err().code(),
+            ErrorCode::TemplateInvalid
+        );
+        // 源不存在
+        assert_eq!(
+            import_template(&lib.join("absent.zip"), &lib)
+                .unwrap_err()
+                .code(),
+            ErrorCode::TemplateInvalid
+        );
+    }
+
+    #[test]
+    fn export_target_rules() {
+        let lib = temp_dir("lib-export");
+        write_local_template(&lib, "exp-me", "");
+        // 目标目录不存在
+        let e = export_template(
+            "exp-me",
+            TemplateSourceKind::Local,
+            &temp_dir("exp-missing").join("nope"),
+            Some(&lib),
+        )
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::NotFound);
+        // 目标 zip 已存在
+        let target = temp_dir("exp-target");
+        export_template("exp-me", TemplateSourceKind::Local, &target, Some(&lib)).unwrap();
+        let e2 =
+            export_template("exp-me", TemplateSourceKind::Local, &target, Some(&lib)).unwrap_err();
+        assert_eq!(e2.code(), ErrorCode::TargetNotEmpty);
     }
 
     #[test]
