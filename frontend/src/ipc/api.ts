@@ -21,6 +21,11 @@ import {
   type TemplatesListOut,
   type WorkspaceExportPackageOut,
   type WorkspaceImportPackageOut,
+  type WorkspaceDataListOut,
+  type WorkspaceDataSnapshotCreatedOut,
+  type WorkspaceDataRestorePreviewOut,
+  type WorkspaceDataRestoreOut,
+  type WorkspaceDataSnapshotDeletedOut,
   type TemplatesPreviewOut,
   type TemplateSource,
   type ToolchainInstallOpts,
@@ -413,6 +418,64 @@ export const apiWorkspaceImportPackage = (args: { pkgPath: string; destDir: stri
   invoke<WorkspaceImportPackageOut>(cmd.WORKSPACE_IMPORT_PACKAGE, {
     pkgPath: args.pkgPath,
     destDir: args.destDir,
+  });
+
+// ---------------------------------------------------------------------------
+// 数据快照（方向六，ipc.md §10.18）
+// ---------------------------------------------------------------------------
+
+/** 数据卷与快照列表（只读）。 */
+export const apiWorkspaceDataList = (args: { workspaceId: string }) =>
+  invoke<WorkspaceDataListOut>(cmd.WORKSPACE_DATA_LIST, {
+    workspaceId: args.workspaceId,
+  });
+
+/** 为数据卷创建离线快照（绑定服务未停止 → SNAPSHOT_BUSY）。 */
+export const apiWorkspaceDataSnapshotCreate = (args: {
+  workspaceId: string;
+  volumeId: string;
+  note?: string;
+}) =>
+  invoke<WorkspaceDataSnapshotCreatedOut>(cmd.WORKSPACE_DATA_SNAPSHOT_CREATE, {
+    workspaceId: args.workspaceId,
+    volumeId: args.volumeId,
+    note: args.note ?? "",
+  });
+
+/** 恢复预览（纯只读：覆盖面 + remove_count + blockers）。 */
+export const apiWorkspaceDataRestorePreview = (args: {
+  workspaceId: string;
+  volumeId: string;
+  snapshotId: string;
+}) =>
+  invoke<WorkspaceDataRestorePreviewOut>(cmd.WORKSPACE_DATA_RESTORE_PREVIEW, {
+    workspaceId: args.workspaceId,
+    volumeId: args.volumeId,
+    snapshotId: args.snapshotId,
+  });
+
+/** 恢复（整包校验 → stash → 解压 → 失败回滚）。 */
+export const apiWorkspaceDataRestore = (args: {
+  workspaceId: string;
+  volumeId: string;
+  snapshotId: string;
+}) =>
+  invoke<WorkspaceDataRestoreOut>(cmd.WORKSPACE_DATA_RESTORE, {
+    workspaceId: args.workspaceId,
+    volumeId: args.volumeId,
+    snapshotId: args.snapshotId,
+  });
+
+/** 删除单个快照文件。 */
+export const apiWorkspaceDataSnapshotDelete = (args: {
+  workspaceId: string;
+  volumeId: string;
+  snapshotId: string;
+}) =>
+  invoke<WorkspaceDataSnapshotDeletedOut>(cmd.WORKSPACE_DATA_SNAPSHOT_DELETE, {
+    workspaceId: args.workspaceId,
+    volumeId: args.volumeId,
+    snapshotId: args.snapshotId,
   });
 
 // ---------------------------------------------------------------------------

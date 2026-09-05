@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { useWorkspace } from "../providers/workspace-provider";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
 import { WorkspacePkgCard } from "../components/workspace-pkg-card";
+import { WorkspaceDataCard } from "../components/workspace-data-card";
 import { isTauri } from "../ipc/invoke";
 import { apiOpenExplorer } from "../ipc/api";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -227,6 +228,13 @@ export function WorkspacesPage() {
               {t("pages.workspaces.pkgLabel")}
             </div>
             <WorkspacePkgCard />
+          </div>
+
+          <div>
+            <div className="mb-2 text-[0.68rem] font-bold uppercase tracking-[0.1em] text-[var(--t3,#8a8f98)]">
+              {t("pages.workspaces.dataTitle")}
+            </div>
+            <WorkspaceDataCard />
           </div>
 
           {current ? (

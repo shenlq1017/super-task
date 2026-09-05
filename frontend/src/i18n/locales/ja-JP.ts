@@ -826,6 +826,34 @@ const jaJP = {
       confirmClose: "ワークスペース「{{name}}」を閉じますか？実行中のサービスは停止されます。",
       confirmRemoveTitle: "最近から削除",
       confirmRemoveRecent: "「{{name}}」を最近の一覧から削除しますか？（ディスク上のファイルには影響しません）",
+      dataTitle: "データスナップショット",
+      dataHint:
+        "data.volumes で宣言されたデータディレクトリのオフラインスナップショットを作成します。実験前にスナップショットを取り、失敗したら復元。復元するとディレクトリの内容はスナップショットの内容に置き換えられます。",
+      dataNoWs: "ワークスペースを開くとデータボリュームが表示されます",
+      dataEmpty:
+        "データボリュームがありません：supertask.yaml の data.volumes に宣言すると表示されます",
+      dataBoundService: "バインド: {{service}}",
+      dataSnapshotBtn: "スナップショット作成",
+      dataNoSnapshots: "スナップショットはまだありません",
+      dataSnapshotMeta: "{{files}} ファイル · {{size}}",
+      dataSnapshotConfirmTitle: "オフラインスナップショットを作成",
+      dataSnapshotConfirmDesc:
+        "「{{dir}}」の現在の内容でスナップショットを作成します。バインドされたサービス {{service}} を停止しておく必要があります。",
+      dataSnapshotConfirmNoService: "「{{dir}}」の現在の内容でスナップショットを作成します。",
+      dataRestoreBtn: "復元",
+      dataPreviewTitle: "復元プレビュー",
+      dataPreviewWrite: "{{files}} 個のファイル（合計 {{size}}）を書き込みます",
+      dataPreviewRemoves:
+        "対象ディレクトリが存在します：既存内容は一旦退避され、スナップショットに含まれない {{count}} 個のファイルは復元後に削除されます",
+      dataPreviewNoRemove:
+        "対象ディレクトリは空または存在しないため、削除されるファイルはありません",
+      dataBlockersTitle: "現在復元できません",
+      dataRestoreConfirmBtn: "復元する",
+      dataRestoredToast: "{{restored}} 個のファイルを復元しました（{{removed}} 個を削除）",
+      dataCreatedToast: "スナップショットを作成しました",
+      dataDeleteTitle: "スナップショットを削除",
+      dataDeleteDesc: "スナップショット {{id}} を削除しますか？この操作は取り消せません。",
+      dataDeletedToast: "スナップショットを削除しました",
     },
     settings: {
       general: "一般",

@@ -65,6 +65,12 @@ export const cmd = {
   // 1.5（ipc.md §10.9）：导出包
   WORKSPACE_EXPORT_PACKAGE: "workspace.exportPackage",
   WORKSPACE_IMPORT_PACKAGE: "workspace.importPackage",
+  // 方向六（ipc.md §10.18）：数据快照
+  WORKSPACE_DATA_LIST: "workspace.dataList",
+  WORKSPACE_DATA_SNAPSHOT_CREATE: "workspace.dataSnapshotCreate",
+  WORKSPACE_DATA_RESTORE_PREVIEW: "workspace.dataRestorePreview",
+  WORKSPACE_DATA_RESTORE: "workspace.dataRestore",
+  WORKSPACE_DATA_SNAPSHOT_DELETE: "workspace.dataSnapshotDelete",
   GIT_CLONE: "git.clone",
   GIT_STATUS: "git.status",
   GIT_PULL: "git.pull",
@@ -774,6 +780,69 @@ export type WorkspaceExportPackageOut = {
 export type WorkspaceImportPackageOut = {
   root: string;
   warnings: string[];
+};
+
+// 方向六（ipc.md §10.18）：数据快照
+// ---------------------------------------------------------------------------
+
+/** 单个快照的元信息（serde 默认 snake_case，mirror `core ipc::v17::DataSnapshotView`）。 */
+export type DataSnapshotView = {
+  id: string;
+  created_at: number;
+  bytes: number;
+  file_count: number;
+  total_bytes: number;
+  note: string;
+};
+
+export type DataVolumeView = {
+  id: string;
+  service: string | null;
+  dir: string;
+  snapshots: DataSnapshotView[];
+};
+
+/** `workspace.dataList` 输出：数据卷与各自快照（created_at 降序）。 */
+export type WorkspaceDataListOut = {
+  volumes: DataVolumeView[];
+  warnings: string[];
+};
+
+/** `workspace.dataSnapshotCreate` 输出。 */
+export type WorkspaceDataSnapshotCreatedOut = {
+  volume_id: string;
+  snapshot: DataSnapshotView;
+  warnings: string[];
+};
+
+/** `workspace.dataRestorePreview` 输出（纯只读；覆盖面陈述）。 */
+export type WorkspaceDataRestorePreviewOut = {
+  volume_id: string;
+  snapshot_id: string;
+  ready: boolean;
+  blockers: string[];
+  target_exists: boolean;
+  current_files: number;
+  snapshot_files: number;
+  total_bytes: number;
+  remove_count: number;
+  remove_sample: string[];
+  warnings: string[];
+};
+
+/** `workspace.dataRestore` 输出。 */
+export type WorkspaceDataRestoreOut = {
+  volume_id: string;
+  snapshot_id: string;
+  restored_files: number;
+  removed_files: number;
+  warnings: string[];
+};
+
+/** `workspace.dataSnapshotDelete` 输出。 */
+export type WorkspaceDataSnapshotDeletedOut = {
+  volume_id: string;
+  snapshot_id: string;
 };
 
 /** 全 snake_case（serde 默认），mirror `crates/supertask-core/src/git.rs`。 */

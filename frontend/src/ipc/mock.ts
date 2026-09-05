@@ -495,6 +495,32 @@ const emptyProbe = { found: false, version: null, path: null };
 /** mock secrets：浏览器 dev 用内存 map，模拟 .env.local（绝不出现在日志）。 */
 const mockSecrets = new Map<string, string>();
 
+/** mock 数据快照（方向六 §10.18）：按工作区缓存的内存快照列表，浏览器 dev 可交互演示。 */
+type MockDataSnapshot = {
+  id: string;
+  created_at: number;
+  bytes: number;
+  file_count: number;
+  total_bytes: number;
+  note: string;
+};
+const mockDataSnapshots = new Map<string, Map<string, MockDataSnapshot[]>>();
+function mockDataSnapshotsOf(workspaceId: string): Map<string, MockDataSnapshot[]> {
+  let vols = mockDataSnapshots.get(workspaceId);
+  if (!vols) {
+    vols = new Map();
+    vols.set("app-db", []);
+    mockDataSnapshots.set(workspaceId, vols);
+  }
+  return vols;
+}
+/** mock 卷元数据（dir/service 不随快照变化）。 */
+const mockDataVolumeMeta: Record<string, { service: string | null; dir: string }> = {
+  "app-db": { service: "api", dir: "data/db" },
+};
+/** mock 目标目录状态：restore 后置 true（下次预览出现 remove 语义）。 */
+const mockDataTargetExists = new Set<string>();
+
 // ---------------------------------------------------------------------------
 // Mock 事件桥：浏览器模式下 provider 通过 mockListen 订阅、mock 命令经 mockEmit
 // 推送，信封形状与 Tauri 事件 payload 一致（{ protocol, event, workspace_id, ts_ms, payload }）。
@@ -2371,6 +2397,120 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
       throw { protocol: PROTOCOL, code: "PKG_TARGET_EXISTS", message: "目标目录已有 supertask.yaml，不覆盖", retryable: false };
     }
     return { root: destDir, warnings: [] };
+  }
+
+  // -------------------------------------------------------------------------
+  // 方向六：数据快照（ipc.md §10.18）——浏览器 mock 语义对齐，内存演示
+  // -------------------------------------------------------------------------
+
+  if (command === "workspace.dataList") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId) {
+      throw { protocol: PROTOCOL, code: "NO_WORKSPACE", message: "未打开工作区", retryable: false };
+    }
+    const vols = mockDataSnapshotsOf(workspaceId);
+    return {
+      volumes: [...vols.entries()].map(([id, snaps]) => ({
+        id,
+        service: mockDataVolumeMeta[id]?.service ?? null,
+        dir: mockDataVolumeMeta[id]?.dir ?? `data/${id}`,
+        snapshots: [...snaps].sort((a, b) => b.created_at - a.created_at),
+      })),
+      warnings: [],
+    };
+  }
+
+  if (command === "workspace.dataSnapshotCreate") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    const volumeId = (args?.volumeId as string) ?? "";
+    const note = (args?.note as string) ?? "";
+    if (!workspaceId) {
+      throw { protocol: PROTOCOL, code: "NO_WORKSPACE", message: "未打开工作区", retryable: false };
+    }
+    const vols = mockDataSnapshotsOf(workspaceId);
+    if (!vols.has(volumeId)) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `data 卷不存在: ${volumeId}`, retryable: false };
+    }
+    const created = Math.max(Date.now(), (vols.get(volumeId)![0]?.created_at ?? 0) + 1);
+    const snap: MockDataSnapshot = {
+      id: String(created),
+      created_at: created,
+      bytes: 2048 + (created % 512),
+      file_count: 3,
+      total_bytes: 96,
+      note,
+    };
+    vols.get(volumeId)!.unshift(snap);
+    return { volume_id: volumeId, snapshot: snap, warnings: [] };
+  }
+
+  if (command === "workspace.dataRestorePreview") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    const volumeId = (args?.volumeId as string) ?? "";
+    const snapshotId = (args?.snapshotId as string) ?? "";
+    if (!workspaceId) {
+      throw { protocol: PROTOCOL, code: "NO_WORKSPACE", message: "未打开工作区", retryable: false };
+    }
+    const vols = mockDataSnapshotsOf(workspaceId);
+    const snap = vols.get(volumeId)?.find((s) => s.id === snapshotId);
+    if (!snap) {
+      throw { protocol: PROTOCOL, code: "SNAPSHOT_NOT_FOUND", message: "快照不存在", retryable: false };
+    }
+    const targetExists = mockDataTargetExists.has(`${workspaceId}/${volumeId}`);
+    return {
+      volume_id: volumeId,
+      snapshot_id: snapshotId,
+      ready: true,
+      blockers: [],
+      target_exists: targetExists,
+      current_files: targetExists ? 4 : 0,
+      snapshot_files: snap.file_count,
+      total_bytes: snap.total_bytes,
+      remove_count: targetExists ? 1 : 0,
+      remove_sample: targetExists ? ["stray.log"] : [],
+      warnings: [],
+    };
+  }
+
+  if (command === "workspace.dataRestore") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    const volumeId = (args?.volumeId as string) ?? "";
+    const snapshotId = (args?.snapshotId as string) ?? "";
+    if (!workspaceId) {
+      throw { protocol: PROTOCOL, code: "NO_WORKSPACE", message: "未打开工作区", retryable: false };
+    }
+    const vols = mockDataSnapshotsOf(workspaceId);
+    const snap = vols.get(volumeId)?.find((s) => s.id === snapshotId);
+    if (!snap) {
+      throw { protocol: PROTOCOL, code: "SNAPSHOT_NOT_FOUND", message: "快照不存在", retryable: false };
+    }
+    const key = `${workspaceId}/${volumeId}`;
+    const removed = mockDataTargetExists.has(key) ? 1 : 0;
+    mockDataTargetExists.add(key);
+    return {
+      volume_id: volumeId,
+      snapshot_id: snapshotId,
+      restored_files: snap.file_count,
+      removed_files: removed,
+      warnings: [],
+    };
+  }
+
+  if (command === "workspace.dataSnapshotDelete") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    const volumeId = (args?.volumeId as string) ?? "";
+    const snapshotId = (args?.snapshotId as string) ?? "";
+    if (!workspaceId) {
+      throw { protocol: PROTOCOL, code: "NO_WORKSPACE", message: "未打开工作区", retryable: false };
+    }
+    const vols = mockDataSnapshotsOf(workspaceId);
+    const snaps = vols.get(volumeId);
+    const idx = snaps?.findIndex((s) => s.id === snapshotId) ?? -1;
+    if (!snaps || idx < 0) {
+      throw { protocol: PROTOCOL, code: "SNAPSHOT_NOT_FOUND", message: "快照不存在", retryable: false };
+    }
+    snaps.splice(idx, 1);
+    return { volume_id: volumeId, snapshot_id: snapshotId };
   }
 
   // -------------------------------------------------------------------------
