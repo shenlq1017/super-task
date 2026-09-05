@@ -79,6 +79,35 @@
 - **待细化**：传输 trait 与 fake 注入点、sha256 清单托管方式（内置 vs 远端化）、
   解压后如何进入服务 PATH/launcher 解析、错误码（沿用 vs 新增 `ARCHIVE_*`）。
 
+### F. needs 安装与钉扎写回一体化（persist）
+
+- **目标**：installable 项安装成功后，可把钉扎版本写回 `toolchain.*`，让
+  「声明式需求」收敛为显式钉扎（与 /env 版本选择器同一落点）；本切片 resolve
+  侧已按 `persist: false` 只读，写回是纯增量。
+- **已有材料**：env 页 needs 安装流（`needsOps` / pending 状态机）、
+  `toolchain.install` 的 persist 参数与 base_hash 乐观锁、
+  `persist_toolchain_version`（commands.rs，含 npm→package_manager 映射）。
+- **验收雏形**：安装成功且用户确认钉扎 → `toolchain.*` 写回、needs 重新解析为
+  satisfied；`YAML_CONFLICT` 时安装结果保留、仅写回失败（§4.3 既有语义）；
+  不确认钉扎时行为与本切片完全一致。
+- **待细化**：UI 确认点（默认钉 vs 显式勾选）、已满足条目在 needs 段的表述
+  （保留原样 vs 标注来源）、是否新增独立 `needs.apply` IPC 还是继续复用
+  `toolchain.install`。
+
+### G. compose / 运行中容器作为 needs 的「已存在」来源
+
+- **目标**：needs 解析除本机 PATH/安装枚举外，识别 compose 栈或运行中容器
+  提供的中间件（如栈内已有 postgres:16 容器 → satisfied，来源标注 compose），
+  兑现 ROADMAP「needs: postgres:16 → 自动发现本机 / compose / 可安装」的完整链路。
+- **已有材料**：`docker/` 模块（probe_docker / ps / images）、方向二发现与纳管
+  的进程/来源识别、graph 拓扑。
+- **验收雏形**：compose 工作区声明 `needs: [postgres@16]` 且栈内存在匹配镜像的
+  service → satisfied（来源=compose）；容器存在但未启动与不存在可区分；
+  判定逻辑离线 fake 覆盖，docker 不可用时不阻塞其余条目解析。
+- **待细化**：镜像 tag ↔ 版本前缀的匹配口径、compose service 与 needs id 的
+  映射规则、容器来源 satisfied 是否要求服务已在拓扑中纳管、与方向二纳管
+  数据的复用边界。
+
 ---
 
 （后续方向切片交付后在此追加）
