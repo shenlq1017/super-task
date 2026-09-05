@@ -56,6 +56,8 @@ netstat2 = "0.9"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_NetworkManagement_IpHelper",
+  # 主机指标网络采样（GetIfTable2/GetAdaptersAddresses 引用 Ndis 类型）
+  "Win32_NetworkManagement_Ndis",
   "Win32_Networking_WinSock",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_Diagnostics_ToolHelp",

@@ -80,6 +80,12 @@ pub fn features() -> &'static [Feature] {
             since: "1.6",
         },
         Feature {
+            id: "monitor",
+            path: "/monitor",
+            status: FeatureStatus::Live,
+            since: "2.2",
+        },
+        Feature {
             id: "cloud",
             path: "/cloud",
             status: FeatureStatus::Live,
