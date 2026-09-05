@@ -34,6 +34,7 @@ import {
   type ToolchainProbeOut,
   type ToolchainVersionsOut,
   type TaskfilePreviewOut,
+  type ProcfilePreview,
   type AdoptPreviewOut,
   type AdoptChoice,
   type NeedsResolveOut,
@@ -557,6 +558,18 @@ export const apiTaskfilePreview = (workspaceId: string) =>
 /** 应用所选任务；只增改所选 scripts.*，base_hash 冲突 → YAML_CONFLICT。 */
 export const apiTaskfileApply = (workspaceId: string, selected: string[], baseHash: string) =>
   invoke<YamlSaveOut>(cmd.IMPORT_TASKFILE_APPLY, { workspaceId, selected, baseHash });
+
+// ---------------------------------------------------------------------------
+// Procfile 导入（方向二，ipc.md §10.19）
+// ---------------------------------------------------------------------------
+
+/** Procfile 导入预览（纯内存计算；缺失 PROCFILE_NOT_FOUND / 读取失败 PROCFILE_INVALID）。 */
+export const apiProcfilePreview = (workspaceId: string) =>
+  invoke<ProcfilePreview>(cmd.IMPORT_PROCFILE_PREVIEW, { workspaceId });
+
+/** 应用所选服务草稿；只增改所选 services.*，base_hash 冲突 → YAML_CONFLICT。 */
+export const apiProcfileApply = (workspaceId: string, selected: string[], baseHash: string) =>
+  invoke<YamlSaveOut>(cmd.IMPORT_PROCFILE_APPLY, { workspaceId, selected, baseHash });
 
 // ---------------------------------------------------------------------------
 // 孤儿进程纳管（ipc.md §10.16）

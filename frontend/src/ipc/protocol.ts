@@ -81,6 +81,9 @@ export const cmd = {
   WORKSPACE_SCAN_APPLY: "workspace.scanApply",
   IMPORT_TASKFILE_PREVIEW: "import.taskfilePreview",
   IMPORT_TASKFILE_APPLY: "import.taskfileApply",
+  // Procfile 导入（ipc.md §10.19）
+  IMPORT_PROCFILE_PREVIEW: "import.procfilePreview",
+  IMPORT_PROCFILE_APPLY: "import.procfileApply",
   // 孤儿进程纳管（ipc.md §10.16）
   WORKSPACE_ADOPT_PREVIEW: "workspace.adoptPreview",
   WORKSPACE_ADOPT_APPLY: "workspace.adoptApply",
@@ -1010,6 +1013,30 @@ export type TaskfileImportItem = {
 };
 
 export type TaskfilePreviewOut = { tasks: TaskfileImportItem[]; warnings: string[] };
+
+// ---------------------------------------------------------------------------
+// DTOs — Procfile 导入（ipc.md §10.19，mirror `crates/supertask-core/src/procfile.rs`）
+// ---------------------------------------------------------------------------
+
+/** `import.procfilePreview` 条目。 */
+export type ProcfileImportItem = {
+  /** Procfile 原名 */
+  name: string;
+  /** 目标服务 id（已合法化） */
+  service_id: string;
+  /** 原命令行 */
+  command: string;
+  /** 默认动作（冲突默认 false；skipped 恒 false） */
+  selected: boolean;
+  /** 该项的忽略/风险说明（后端中文，与 message 口径一致） */
+  warnings: string[];
+  /** UI 展示扩展：含 shell 语法无法忠实导入，预览标灰 */
+  skipped: boolean;
+  /** UI 展示扩展：目标已存在同名服务 id，默认 keep */
+  id_conflict: boolean;
+};
+
+export type ProcfilePreview = { items: ProcfileImportItem[]; warnings: string[] };
 
 // ---------------------------------------------------------------------------
 // DTOs — 孤儿进程纳管（ipc.md §10.16，mirror `crates/supertask-core/src/adopt.rs`）

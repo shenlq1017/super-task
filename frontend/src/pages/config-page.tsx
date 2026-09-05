@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { EnvVariablesEditor } from "@/components/env-variables-editor";
 import { TaskfileImportPanel } from "@/components/taskfile-import-panel";
+import { ProcfileImportPanel } from "@/components/procfile-import-panel";
 import { ScanPreviewPanel, type FieldChoice } from "@/components/scan-merge";
 import { cn } from "@/lib/utils";
 import { useYaml } from "@/providers/yaml-provider";
@@ -36,6 +37,8 @@ import {
   apiScanPreview,
   apiTaskfileApply,
   apiTaskfilePreview,
+  apiProcfileApply,
+  apiProcfilePreview,
   apiYamlGet,
   apiAiComplete,
   apiProfilesList,
@@ -51,6 +54,7 @@ import type {
   ScanPreviewOut,
   SuperTaskFile,
   TaskfilePreviewOut,
+  ProcfilePreview,
 } from "@/ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
 import { formatIpcFailure } from "@/lib/error-messages";
@@ -758,6 +762,12 @@ export function ConfigPage() {
   const [taskApplying, setTaskApplying] = useState(false);
   const [taskChecked, setTaskChecked] = useState<Record<string, boolean>>({});
 
+  // 方向二 Procfile 导入向导状态（ipc.md §10.19）
+  const [procPreview, setProcPreview] = useState<ProcfilePreview | null>(null);
+  const [procLoading, setProcLoading] = useState(false);
+  const [procApplying, setProcApplying] = useState(false);
+  const [procChecked, setProcChecked] = useState<Record<string, boolean>>({});
+
   const resetChoices = () => {
     setAddChecked({});
     setFieldChoices({});
@@ -773,10 +783,16 @@ export function ConfigPage() {
     setTaskChecked({});
   };
 
+  const closeProcPreview = () => {
+    setProcPreview(null);
+    setProcChecked({});
+  };
+
   // 切换工作区后旧预览失效
   useEffect(() => {
     closePreview();
     closeTaskPreview();
+    closeProcPreview();
   }, [ws.state.workspaceId]);
 
   const rescan = async () => {
@@ -787,6 +803,7 @@ export function ConfigPage() {
       const out = await apiScanPreview(wid);
       setPreview(out);
       closeTaskPreview(); // 与 Taskfile 导入向导互斥
+      closeProcPreview(); // 与 Procfile 导入向导互斥
       resetChoices(); // 二次扫描重置选择
     } catch (e) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
@@ -803,6 +820,7 @@ export function ConfigPage() {
     try {
       const out = await apiTaskfilePreview(wid);
       closePreview(); // 与扫描预览互斥
+      closeProcPreview(); // 与 Procfile 导入向导互斥
       setTaskPreview(out);
       const checked: Record<string, boolean> = {};
       for (const it of out.tasks) checked[it.script_id] = it.selected;
@@ -842,6 +860,57 @@ export function ConfigPage() {
       }
     } finally {
       setTaskApplying(false);
+    }
+  };
+
+  // 方向二：Procfile 导入（ipc.md §10.19）。预览为纯内存计算；应用走 yaml.saveForm 机制。
+  const openProcfileImport = async () => {
+    const wid = ws.state.workspaceId;
+    if (!wid || procLoading) return;
+    setProcLoading(true);
+    try {
+      const out = await apiProcfilePreview(wid);
+      closePreview(); // 与扫描预览互斥
+      closeTaskPreview(); // 与 Taskfile 导入向导互斥
+      setProcPreview(out);
+      const checked: Record<string, boolean> = {};
+      for (const it of out.items) checked[it.service_id] = it.selected;
+      setProcChecked(checked);
+    } catch (e) {
+      toast(formatIpcFailure(e), "err");
+    } finally {
+      setProcLoading(false);
+    }
+  };
+
+  const applyProcfile = async () => {
+    const wid = ws.state.workspaceId;
+    if (!wid || !procPreview || procApplying) return;
+    const selected = procPreview.items
+      .filter((it) => !it.skipped && procChecked[it.service_id])
+      .map((it) => it.service_id);
+    if (selected.length === 0) {
+      toast(t("pages.config.procfile.selectFirst"), "warn");
+      return;
+    }
+    setProcApplying(true);
+    try {
+      // base_hash 优先取 yaml-provider 当前值；无 hash 时先 yaml.get
+      let baseHash = yaml.state.hash;
+      if (!baseHash) baseHash = (await apiYamlGet()).hash;
+      await apiProcfileApply(wid, selected, baseHash);
+      toast(t("pages.config.procfile.applied", { n: selected.length }), "ok");
+      closeProcPreview();
+      await yaml.actions.reload();
+      await ws.actions.refreshSpec();
+    } catch (e) {
+      if (e instanceof IpcFailure && e.code === "YAML_CONFLICT") {
+        setConflictOpen(true);
+      } else {
+        toast(formatIpcFailure(e), "err");
+      }
+    } finally {
+      setProcApplying(false);
     }
   };
 
@@ -941,8 +1010,20 @@ export function ConfigPage() {
           <FileInput className={cn("size-3.5", taskLoading && "animate-pulse")} />
           {t("pages.config.taskfile.entry")}
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1"
+          onClick={() => void openProcfileImport()}
+          disabled={!ws.state.workspaceId || procLoading}
+          title={ws.state.workspaceId ? t("pages.config.procfile.entryHint") : t("pages.config.openWsFirst")}
+        >
+          <FileInput className={cn("size-3.5", procLoading && "animate-pulse")} />
+          {t("pages.config.procfile.entry")}
+        </Button>
         {preview ? <Badge variant="outline" className="border-[rgb(94_106_210_/_0.35)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)]">{t("pages.config.previewing")}</Badge> : null}
         {taskPreview ? <Badge variant="outline" className="border-[rgb(94_106_210_/_0.35)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)]">{t("pages.config.taskfile.previewing")}</Badge> : null}
+        {procPreview ? <Badge variant="outline" className="border-[rgb(94_106_210_/_0.35)] bg-[var(--st-accent-tint,#eef0fb)] text-[var(--st-accent,#5e6ad2)]">{t("pages.config.procfile.previewing")}</Badge> : null}
       </div>
 
       <V12ConfigPanel />
@@ -988,6 +1069,25 @@ export function ConfigPage() {
               applyCount={taskPreview.tasks.filter((it) => !it.internal && taskChecked[it.script_id]).length}
               onApply={() => void applyTaskfile()}
               onClose={closeTaskPreview}
+            />
+          </div>
+        ) : procPreview ? (
+          <div className="flex min-h-0 flex-1 flex-col p-4">
+            <ProcfileImportPanel
+              preview={procPreview}
+              checked={procChecked}
+              onToggle={(serviceId, v) => setProcChecked((m) => ({ ...m, [serviceId]: v }))}
+              onSelectAll={(v) => {
+                const next: Record<string, boolean> = {};
+                for (const it of procPreview.items) {
+                  if (!it.skipped) next[it.service_id] = v;
+                }
+                setProcChecked((m) => ({ ...m, ...next }));
+              }}
+              applying={procApplying}
+              applyCount={procPreview.items.filter((it) => !it.skipped && procChecked[it.service_id]).length}
+              onApply={() => void applyProcfile()}
+              onClose={closeProcPreview}
             />
           </div>
         ) : tab === "form" ? (

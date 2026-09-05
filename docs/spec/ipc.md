@@ -140,6 +140,8 @@
 | `workspace.dataRestorePreview` | `{ workspace_id, volume_id, snapshot_id }` | `DataRestorePreviewOut`（§10.18）恢复预览：覆盖面与 `remove_count`，纯只读 |
 | `workspace.dataRestore` | `{ workspace_id, volume_id, snapshot_id }` | `DataRestoreOut`（§10.18）恢复：整包校验 → stash → 解压 → 失败回滚 |
 | `workspace.dataSnapshotDelete` | `{ workspace_id, volume_id, snapshot_id }` | `DataSnapshotDeletedOut`（§10.18）删除单个快照文件 |
+| `import.procfilePreview` | `{ workspace_id }` | `ProcfilePreview`（§10.19）Procfile 导入 dry-run：每行 `name: command` → generic 服务草稿 + 冲突/警告报告。**纯内存计算，不落盘** |
+| `import.procfileApply` | `{ workspace_id, selected, base_hash }` | `{ spec, hash, warnings[] }` 只增改所选 `services.*`，写回走 saveForm（base_hash 冲突 → `YAML_CONFLICT`） |
 
 `workspace_id` = 规范化绝对路径。之后所有运行时命令带这个 id，**禁止**再传任意路径去 spawn。
 
@@ -430,6 +432,8 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
 | `SNAPSHOT_INVALID` | 快照 zip/manifest 损坏、条目哈希不符、zip-slip、超上限（条目数/总字节）、落盘失败 |
 | `SNAPSHOT_VERSION` | 快照 format 高于支持版本 |
 | `SNAPSHOT_BUSY` | 绑定服务未停止，禁止快照/恢复 |
+| `PROCFILE_NOT_FOUND`（方向二） | 工作区无 Procfile |
+| `PROCFILE_INVALID`（方向二） | Procfile 读取失败 |
 
 ---
 
@@ -1050,3 +1054,58 @@ current_files, snapshot_files, total_bytes, remove_count, remove_sample[], warni
 未来 format、zip-slip、损坏跳过、stash 回滚、上限、删除）+ `spec::validate` data 段
 3 项（round-trip / id·dir·service 非法 / `.supertask` 与嵌套拒绝）+ `engine::tests`
 数据快照 3 项（离线闭环、Running 槽注入 `SNAPSHOT_BUSY` 守护、诊断面）。
+
+### 10.19 Procfile 导入（方向二·纳管任意来源，2026-09-06）
+
+只读工作区根的 `Procfile`（Foreman / Overmind / Heroku 生态，每行 `name: command`），
+一次性迁移，之后不监听变化、不双向同步。与 Taskfile / 孤儿纳管 / scan merge 同一
+机制：**preview 纯内存、apply 只增改所选、写盘走 `yaml.saveForm`（base_hash 乐观锁）**。
+核心实现 `crates/supertask-core/src/procfile.rs`。
+
+```text
+import.procfilePreview
+  input:  { workspace_id }
+  output: { items: ProcfileImportItem[], warnings: string[] }
+
+import.procfileApply
+  input:  { workspace_id, selected: string[], base_hash }
+  output: { spec, hash, warnings: string[] }
+
+ProcfileImportItem = {
+  name: string,           # Procfile 原名
+  service_id: string,     # 目标 id（已合法化）
+  command: string,        # 原命令行
+  selected: boolean,      # 默认动作
+  warnings: string[],     # 该项的忽略/风险说明
+  skipped: boolean,       # UI 扩展：含 shell 语法无法忠实导入，预览标灰
+  id_conflict: boolean,   # UI 扩展：目标已存在同名 services.*，默认 keep
+}
+```
+
+**草稿规则（只写可忠实表达的字段）**
+
+- 每行转一个 `kind: generic` 服务：command 按 sh 风格引号感知拆词，首 token →
+  `program`，其余 → `args`；`port`/`health` 留空（由 `apply_defaults`/用户补）。
+- **含 shell 语法的命令跳过不导入**（`skipped: true`）：`$`、`` ` ``、`|`、`;`、
+  `>`、`<`、`&`、括号、通配符等——generic 不经 shell 执行，插值与操作符无法忠实
+  表达；与 Taskfile 导入「插值按原文导入」不同（scripts 走 `bash -c`，服务没有
+  等价落点），宁可少导不错导，提示手工配置。引号不配对同理跳过。
+- 服务 id 从 name 按 id 规则合法化（非法字符替换 `-`、首字符非字母补 `proc-`、
+  ≤64）；导入内冲突加 `-proc` 后缀；与现有 `services.*` 冲突 → `id_conflict` 默认
+  不勾（保留现有服务）。
+- `.env`（Foreman 约定自动加载）存在时草稿挂 `env_file: [.env]` **引用**，值不内联、
+  不回显、不读取内容；全局 warnings 提示。
+- `labels: { origin: imported, imported-from: "Procfile:<name>" }` 保留来源。
+- 格式校验：非 `name: command` 行 / 空命令行跳过并警告；name 重复仅保留首个；
+  全文无可识别条目 → 空 items + 警告（非错误）。
+
+**幂等与脱敏**：重复 apply 同名 id 按覆盖语义（显式勾选才覆盖）；`.env` 值不进
+IPC 返回值与 yaml 文本。**错误码**：`PROCFILE_NOT_FOUND`（工作区无 Procfile）/
+`PROCFILE_INVALID`（读取失败，§7）；`selected` 不在预览内 → 既有 `NOT_FOUND`；
+`base_hash` 冲突 → `YAML_CONFLICT`。解析是纯文本读取 + 切词，不执行任何命令。
+
+**测试**：core `procfile::` 13 项离线单测（program/args 拆词与引号、注释空行、
+shell 语法跳过、id 合法化与 `-proc` 后缀、id_conflict 默认 keep 与显式覆盖、
+`.env` 挂 env_file 且敏感值不进 yaml、重复条目、坏行、未知 selected、空文件、
+引号不配对、确定性）。
+

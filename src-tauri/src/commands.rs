@@ -1457,6 +1457,45 @@ pub fn import_taskfile_apply(
 }
 
 // ---------------------------------------------------------------------------
+// 方向二 Procfile 导入（ipc.md §10.19）
+// ---------------------------------------------------------------------------
+
+/// `import.procfilePreview`：Procfile 导入预览（纯内存计算，无落盘；
+/// 文件缺失 `PROCFILE_NOT_FOUND`，读取失败 `PROCFILE_INVALID`）。
+#[tauri::command(rename = "import.procfilePreview")]
+pub fn import_procfile_preview(
+    state: EngineState<'_>,
+    workspace_id: String,
+) -> Result<supertask_core::procfile::ProcfilePreview, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    supertask_core::procfile::preview(Path::new(&workspace_id), Some(&current.services))
+        .map_err(ipc_err)
+}
+
+/// `import.procfileApply`：按选择合并 Procfile 草稿；写回走 saveForm 机制
+/// （base_hash 冲突 → `YAML_CONFLICT`），只增改所选 `services.*`，其余字段不动。
+#[tauri::command(rename = "import.procfileApply")]
+pub fn import_procfile_apply(
+    state: EngineState<'_>,
+    workspace_id: String,
+    selected: Vec<String>,
+    base_hash: String,
+) -> Result<YamlSaveOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let current = state.spec().map_err(ipc_err)?;
+    let (merged, _) =
+        supertask_core::procfile::apply(&current, Path::new(&workspace_id), &selected)
+            .map_err(ipc_err)?;
+    let (spec, hash, warnings) = state.save_form(&merged, &base_hash).map_err(ipc_err)?;
+    Ok(YamlSaveOut {
+        spec,
+        hash,
+        warnings: warnings_to_strings(&warnings),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // 孤儿进程纳管（ipc.md §10.16）：发现结果 → generic 服务草稿 → 人确认写回
 // ---------------------------------------------------------------------------
 

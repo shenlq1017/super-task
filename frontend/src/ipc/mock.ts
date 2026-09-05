@@ -17,6 +17,8 @@ import type {
   SuperTaskFile,
   TaskfileImportItem,
   TaskfilePreviewOut,
+  ProcfileImportItem,
+  ProcfilePreview,
   AdoptItem,
   AdoptPreviewOut,
   NeedItem,
@@ -1032,6 +1034,54 @@ function mockTaskfilePreview(): TaskfilePreviewOut {
   return {
     tasks: items,
     warnings: ["includes 不支持且未跟随：1 个子 Taskfile 已跳过，需要的任务请手工补录"],
+  };
+}
+
+/** Procfile 导入预览（ipc.md §10.19）：mock 口径——覆盖导入/冲突/shell 跳过三类。 */
+function mockProcfilePreview(): ProcfilePreview {
+  const items: ProcfileImportItem[] = [
+    {
+      name: "web",
+      service_id: "web",
+      command: "python -m app --port 8080",
+      selected: true,
+      warnings: [],
+      skipped: false,
+      id_conflict: false,
+    },
+    {
+      name: "worker",
+      service_id: "worker",
+      command: "python worker.py",
+      selected: true,
+      warnings: [],
+      skipped: false,
+      id_conflict: false,
+    },
+    {
+      name: "deploy",
+      service_id: "deploy",
+      command: "npm start",
+      selected: false,
+      warnings: ["目标已存在同名服务 id，默认保留现有服务；勾选将覆盖"],
+      skipped: false,
+      id_conflict: true,
+    },
+    {
+      name: "migrate",
+      service_id: "migrate",
+      command: "python manage.py migrate --settings $DJANGO_SETTINGS",
+      selected: false,
+      warnings: [
+        "命令含 shell 语法（$），不经 shell 无法忠实表达；请在 supertask.yaml 手工配置（scripts 走 bash -c 可承接此类命令）",
+      ],
+      skipped: true,
+      id_conflict: false,
+    },
+  ];
+  return {
+    items,
+    warnings: ["检测到 .env：导入的服务通过 env_file 引用它（值不写入 yaml）；重命名或移动 .env 需同步调整"],
   };
 }
 
@@ -2680,6 +2730,46 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     }
     const text = toYaml(state.spec);
     return { spec: state.spec, hash: hashOf(text), warnings: ["已导入一次性迁移脚本（mock）"] };
+  }
+
+  // -------------------------------------------------------------------------
+  // Procfile 导入（ipc.md §10.19）
+  // -------------------------------------------------------------------------
+
+  if (command === "import.procfilePreview") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    return mockProcfilePreview();
+  }
+
+  if (command === "import.procfileApply") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    const selected = (args?.selected as string[]) ?? [];
+    const currentHash = hashOf(toYaml(state.spec));
+    if ((args?.baseHash as string) !== currentHash) {
+      throw { protocol: PROTOCOL, code: "YAML_CONFLICT", message: "supertask.yaml 已被外部修改，请重新加载后重试", retryable: false };
+    }
+    const preview = mockProcfilePreview();
+    let applied = 0;
+    for (const item of preview.items) {
+      if (!selected.includes(item.service_id)) continue;
+      if (item.skipped) continue; // skipped 不可导入
+      const argv = item.command.split(" ").filter(Boolean);
+      state.spec.services[item.service_id] = {
+        kind: "generic",
+        enabled: true,
+        labels: { origin: "imported", "imported-from": `Procfile:${item.name}` },
+        env: {},
+        env_file: [],
+        depends_on: [],
+        program: argv[0] ?? item.name,
+        args: argv.slice(1),
+      };
+      applied += 1;
+    }
+    const text = toYaml(state.spec);
+    return { spec: state.spec, hash: hashOf(text), warnings: [`已导入 ${applied} 个服务（mock）`] };
   }
 
   // -------------------------------------------------------------------------

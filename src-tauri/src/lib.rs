@@ -356,6 +356,8 @@ pub fn run() {
             commands::workspace_scan_apply,
             commands::import_taskfile_preview,
             commands::import_taskfile_apply,
+            commands::import_procfile_preview,
+            commands::import_procfile_apply,
             commands::import_readme_preview,
             commands::import_readme_apply,
             commands::workspace_adopt_preview,
