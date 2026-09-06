@@ -6,6 +6,18 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### compose/容器作为 needs 来源（方向三·环境供给）
+
+- `workspace.needsResolve` 新增 compose/容器中间件供给分支：运行中容器镜像版本
+  匹配（或无版本要求）→ `satisfied`（`found_path` 为容器引用，reason 标注
+  `来源=compose`）；存在但未运行 / 仅 compose 声明 / 缺席三态在 reason 中可区分；
+  版本未知（`latest`）+ 明确要求 → 提示不用固定 tag 不可确认。
+- 匹配口径：中间件镜像仓库名（postgres/mysql/mariadb/redis/mongo/minio/rabbitmq/
+  elasticsearch/memcached，语言工具永不走容器分支）；摘要剥离、registry 端口不误判、
+  前缀大小写不敏感。供给采集失败（无 docker）不阻塞其余条目，退化为原语义。
+- 契约进 ipc.md §10.17；core `needs::` 10 项 + `docker::ps`/`compose_config` /
+  engine fake 集成 2 项；零新增错误码与 DTO 字段。
+
 #### 模板并入现有工作区（方向四·网络与身份）
 
 - 新增 `templates.mergePreview` / `templates.mergeApply`：模板块（或普通模板全部

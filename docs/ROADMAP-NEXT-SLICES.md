@@ -12,13 +12,14 @@
 > 方向一剩余三项（钩子 / 级联重启 / 失败保持）补录为打包切片 D2；
 > T（M2 三平台 release 产物）、C（Procfile 导入）、F（needs 钉扎写回）、
 > J（隧道公网 URL 提取）、R（环境快照上下文）、O（工作区定时备份）、
-> A（运行中进程原地接管）、M（模板并入现有工作区）均已交付并移出。
+> A（运行中进程原地接管）、M（模板并入现有工作区）、G（compose 作为 needs 来源）
+> 均已交付并移出。
 
 | 顺位 | 切片 | 方向 | 调整后优先级 | 调整理由 |
 |---|---|---|---|---|
 | 1 | A 运行中进程原地接管 | 二 | ✅ 已交付 | 见 §方向二 A（2026-09-06，契约 ipc.md §10.16 增补） |
 | 2 | M 隧道模板并入现有工作区 | 四 | ✅ 已交付 | 见 §方向四 M（2026-09-06，契约 ipc.md §10.1） |
-| 3 | G compose 作为 needs 来源 | 三 | 中 | 依赖方向二数据复用边界拍板 |
+| 3 | G compose 作为 needs 来源 | 三 | ✅ 已交付 | 见 §方向三 G（2026-09-06，契约 ipc.md §10.17 增补） |
 | 4 | E 归档供给执行器 | 三 | 中 | 打开能力上限但工程量大（下载器/校验/隔离） |
 | 5 | V M4 三平台真机冒烟 | 八 | 中 | 需真机环境；K 网关行为清单并入本项 |
 | 6 | D2 钩子 / 级联重启 / 失败保持 | 一 | 中 | ROADMAP 主表剩余 ★★ 项，打包成一个切片 |
@@ -113,19 +114,14 @@ program/args）；含 shell 语法（`$`、管道、重定向、组合、通配�
 重新 resolve 翻转 satisfied；`YAML_CONFLICT` 时安装保留、仅写回失败（§4.3）。
 契约增补见 `docs/spec/ipc.md` §10.17。
 
-### G. compose / 运行中容器作为 needs 的「已存在」来源 —— 优先级：中
+### G. compose / 运行中容器作为 needs 的「已存在」来源 —— ✅ 已交付（2026-09-06）
 
-- **目标**：needs 解析除本机 PATH/安装枚举外，识别 compose 栈或运行中容器
-  提供的中间件（如栈内已有 postgres:16 容器 → satisfied，来源标注 compose），
-  兑现 ROADMAP「needs: postgres:16 → 自动发现本机 / compose / 可安装」的完整链路。
-- **已有材料**：`docker/` 模块（probe_docker / ps / images）、方向二发现与纳管
-  的进程/来源识别、graph 拓扑。
-- **验收雏形**：compose 工作区声明 `needs: [postgres@16]` 且栈内存在匹配镜像的
-  service → satisfied（来源=compose）；容器存在但未启动与不存在可区分；
-  判定逻辑离线 fake 覆盖，docker 不可用时不阻塞其余条目解析。
-- **待细化**：镜像 tag ↔ 版本前缀的匹配口径、compose service 与 needs id 的
-  映射规则、容器来源 satisfied 是否要求服务已在拓扑中纳管、与方向二纳管
-  数据的复用边界。
+落地口径：`resolve_with_supply` 新增 compose/容器分支（`Engine::needs_resolve`
+采集：compose 声明经 loader + 全机 `docker ps`，失败降级不阻塞）。运行中容器镜像
+版本匹配（或无要求）→ satisfied（来源=compose）；版本失配回退原链路；停止/仅声明/
+缺席在 reason 中可区分；`latest` + 明确要求提示版本无法确认。语言工具永不走容器
+分支；容器是否在拓扑中纳管不作为 satisfied 条件（供给只回答“有没有”，编排归属
+仍由引擎运行时判定）。契约见 `docs/spec/ipc.md` §10.17 增补。
 
 ---
 

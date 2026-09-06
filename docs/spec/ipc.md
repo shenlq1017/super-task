@@ -1105,6 +1105,30 @@ resolve 即翻转为 satisfied；`YAML_CONFLICT` 时安装结果保留、仅写�
 **错误码**：运行期不新增（不可满足是状态不是错误）；加载期新增 `NEEDS_INVALID`
 （id/版本要求格式、lts 别名、`@` 数量、条目数超限，见 §7）。
 
+**compose/容器中间件来源（方向三·G，2026-09-06）**：resolve 在本机探测之前先查
+compose/容器供给——中间件需求（postgres/mysql/mariadb/redis/mongo/mongodb/minio/
+rabbitmq/elasticsearch/memcached；**语言工具永不走容器分支**）按镜像仓库名匹配：
+
+- 运行中容器镜像版本匹配（或无版本要求）→ `satisfied`，`found_version` = 镜像 tag，
+  `found_path` = `compose 服务 <svc>（容器 <name>）`，reason 标注 `来源=compose`。
+- 版本不匹配的运行容器不采信（继续看其他容器）；`latest`/无 tag 且有明确版本要求 →
+  不满足但提示版本无法确认（建议固定 tag 重建）。
+- 容器存在但未运行 / 仅 `compose config` 声明无容器（版本兼容的才提示）→ 状态走原链路，
+  reason 增补启动提示（`启动后可满足` / `` `docker compose up -d <svc>` 后可满足``）；
+  存在/声明/缺席三态可区分。
+- 镜像引用口径：剥离 `@sha256:` 摘要；`latest`/无 tag = 版本未知；registry 端口
+  （`myreg:5000/…`）不误判为 tag；仓库匹配为裸名相等或同名后缀（`docker.io/library/…`）。
+- 供给采集（`Engine::needs_resolve`）：compose 声明经 `compose_loader`（失败即空），
+  容器列表走全机 `docker ps`（不限定 project，覆盖独立容器；失败即无供给）。
+  docker 不可用不阻塞其余条目解析。`found_path` 在 compose 来源时为容器引用
+  （非路径），UI 展示以 reason 为准。
+
+**测试**：core `needs::` 10 项离线单测（运行满足/仓库前缀大小写/版本失配回退归档/
+停止提示/仅声明提示/未知 tag/无要求即满足/非目录中间件/语言工具隔离/摘要与端口
+解析）+ `docker::ps` 全机 `Names` 键兼容 + `compose_config` 镜像提取 + engine
+2 项 fake 集成（compose postgres 端到端满足与声明提示、docker 不可用降级）。
+零新增错误码、零新增 DTO 字段（mock 不模拟 docker 供给）。
+
 **测试**：core `needs::` 28 项离线单测（条目语法、版本前缀矩阵、四态判定、平台差异、
 端到端演示：resolve → FakeRunner 安装链 → 重新 resolve satisfied）+ `spec::validate`
 3 项（round-trip / 非法条目 `NEEDS_INVALID` / 超 32 条）。
