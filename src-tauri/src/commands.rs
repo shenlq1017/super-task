@@ -1541,6 +1541,19 @@ pub fn workspace_adopt_apply(
     })
 }
 
+/// `workspace.adoptAttach`（方向二·原地接管，ipc.md §10.16 增补）：把纳管后仍在
+/// 运行的外部进程免重启纳入引擎监管。归属复核在引擎侧（端口 + 工作目录 + 程序
+/// 类型），Windows 专用（Unix → `PLATFORM_UNSUPPORTED`）。
+#[tauri::command(rename = "workspace.adoptAttach")]
+pub fn workspace_adopt_attach(
+    state: EngineState<'_>,
+    workspace_id: String,
+    service_id: String,
+) -> Result<supertask_core::ipc::AdoptAttachOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    state.adopt_attach(&service_id).map_err(ipc_err)
+}
+
 // ---------------------------------------------------------------------------
 // 声明式需求 needs（方向三·环境供给，ipc.md §10.17）：resolve-only dry-run
 // ---------------------------------------------------------------------------

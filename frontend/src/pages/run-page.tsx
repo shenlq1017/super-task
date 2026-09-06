@@ -91,6 +91,7 @@ import {
   Boxes,
   Loader2,
   Container,
+  Magnet,
   MemoryStick,
   PackagePlus,
   SquareTerminal,
@@ -1326,6 +1327,8 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<"logs" | "vars" | "ports" | "runtime" | "health" | "config" | "metrics" | "terminal" | "container" | "proxy">("logs");
   const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmAttach, setConfirmAttach] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const [building, setBuilding] = useState(false);
   const [copied, setCopied] = useState(false);
   const { toast } = useToast();
@@ -1359,6 +1362,22 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
       toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
     } finally {
       setBuilding(false);
+    }
+  };
+
+  // 方向二·原地接管：仅停止态 + 声明 port + 非 compose 可见；端口被外部进程
+  // 监听时免重启纳入监管（Windows 专用，Unix 明确返回不支持）。
+  const canAttach = !isRunning && !isBusy && !portConflict && !isCompose && spec?.port != null;
+  const doAttach = async () => {
+    setConfirmAttach(false);
+    if (attaching) return;
+    setAttaching(true);
+    try {
+      await runtime.actions.adoptAttach(id);
+    } catch {
+      /* 错误已由 provider toast + error 位呈现 */
+    } finally {
+      setAttaching(false);
     }
   };
 
@@ -1455,6 +1474,18 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
               {isBusy ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />} {t("common.restart")}
             </Button>
           ) : null}
+          {canAttach ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              className="gap-1"
+              disabled={isBusy || attaching}
+              title={t("pages.run.adoptAttachTitle", { port: spec?.port ?? "" })}
+              onClick={() => setConfirmAttach(true)}
+            >
+              {attaching ? <Loader2 className="size-3.5 animate-spin" /> : <Magnet className="size-3.5" />} {t("pages.run.adoptAttach")}
+            </Button>
+          ) : null}
           {isRunning || svc.state === "starting" ? (
             <Button
               size="sm"
@@ -1497,6 +1528,16 @@ function ServiceDetail({ id, compact }: { id: string; compact: boolean }) {
           runtime.actions.stopOne(id);
         }}
         onCancel={() => setConfirmStop(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmAttach}
+        title={t("pages.run.adoptConfirmTitle", { id })}
+        description={t("pages.run.adoptConfirmDesc", { port: spec?.port ?? "" })}
+        confirmText={t("pages.run.adoptAttach")}
+        cancelText={t("common.cancel")}
+        onConfirm={() => void doAttach()}
+        onCancel={() => setConfirmAttach(false)}
       />
 
       {/* command line：深色终端风，与浅色 meta 条形成层次 */}

@@ -37,6 +37,7 @@ import {
   type ProcfilePreview,
   type AdoptPreviewOut,
   type AdoptChoice,
+  type AdoptAttachOut,
   type NeedsResolveOut,
   type WorkspaceOpenOut,
   type YamlSaveOut,
@@ -582,6 +583,10 @@ export const apiAdoptPreview = (workspaceId: string) =>
 /** 应用纳管选择；应用前重算，写回走 saveForm（base_hash 冲突 → YAML_CONFLICT）。 */
 export const apiAdoptApply = (workspaceId: string, choices: AdoptChoice[], baseHash: string) =>
   invoke<YamlSaveOut>(cmd.WORKSPACE_ADOPT_APPLY, { workspaceId, choices, baseHash });
+
+/** 原地接管（方向二）：把纳管后仍在运行的外部进程免重启纳入监管（Windows 专用）。 */
+export const apiAdoptAttach = (workspaceId: string, serviceId: string) =>
+  invoke<AdoptAttachOut>(cmd.WORKSPACE_ADOPT_ATTACH, { workspaceId, serviceId });
 
 /** 声明式需求 needs 解析（ipc.md §10.17）：resolve-only dry-run，纯只读零副作用。 */
 export const apiNeedsResolve = (workspaceId: string, refresh = false) =>

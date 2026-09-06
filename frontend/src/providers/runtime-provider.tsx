@@ -21,6 +21,7 @@ import {
   apiStopAll,
   apiStopOne,
   apiRestartOne,
+  apiAdoptAttach,
 } from "../ipc/api";
 import { useWorkspace } from "./workspace-provider";
 
@@ -40,6 +41,8 @@ type RuntimeActions = {
   restartOne: (id: string) => Promise<void>;
   startAll: () => Promise<void>;
   stopAll: () => Promise<void>;
+  /** 方向二·原地接管：把端口上运行中的外部进程免重启纳入引擎监管（Windows 专用）。 */
+  adoptAttach: (id: string) => Promise<void>;
   clearError: () => void;
 };
 
@@ -168,6 +171,22 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       restartOne: (id) => wrap(() => apiRestartOne(id), t("operations.restartRequested", { id })),
       startAll: () => wrap(() => apiStartAll(), t("operations.startedAll")),
       stopAll: () => wrap(() => apiStopAll(), t("operations.stoppedAll")),
+      adoptAttach: async (id) => {
+        setError(null);
+        if (!wsId) {
+          setError("No workspace");
+          return;
+        }
+        try {
+          const out = await apiAdoptAttach(wsId, id);
+          toast(t("pages.run.adoptAttached", { id, pid: out.pid }), "ok");
+        } catch (e) {
+          const msg = e instanceof IpcFailure ? e.message : String(e);
+          setError(msg);
+          toast(msg, "err");
+          throw e;
+        }
+      },
       clearError: () => setError(null),
     },
   };

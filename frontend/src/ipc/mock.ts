@@ -277,6 +277,8 @@ type ServiceRT = {
   last_exit: { code: number; at_ms: number } | null;
   last_error: string | null;
   log_seq: number;
+  /** false = 外部进程（仅监控）；mock 种子默认全部受管，adoptAttach 可翻转演示 */
+  managed: boolean;
 };
 
 const mockCloud = {
@@ -371,6 +373,7 @@ function seedRuntime() {
       last_exit: exited ? { code: 0, at_ms: Date.now() - 60000 } : null,
       last_error: null,
       log_seq: 0,
+      managed: true,
     };
   }
   // compose 服务日志样例：stdout 容器输出 + system 来源的 docker CLI 行（§5.4）
@@ -2763,6 +2766,8 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
         env: {},
         env_file: [],
         depends_on: [],
+        ports: [],
+        jvm_args: [],
         program: argv[0] ?? item.name,
         args: argv.slice(1),
       };
@@ -2822,6 +2827,25 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     if (applied === 0) warnings.push("未添加任何服务");
     const text = toYaml(state.spec);
     return { spec: state.spec, hash: hashOf(text), warnings };
+  }
+
+  if (command === "workspace.adoptAttach") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    const serviceId = (args?.serviceId as string) ?? "";
+    const svc = state.spec.services[serviceId];
+    if (!svc) throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `服务 ${serviceId} 不存在`, retryable: false };
+    // mock：演示口径——仅停止态可接管，转受管 Running 并给 mock pid；
+    // 真实实现由引擎 attach 外部进程（含归属复核与 kill-on-close Job）。
+    const rt = state.services[serviceId];
+    if (!rt) throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `服务 ${serviceId} 不存在`, retryable: false };
+    if (rt.state !== "stopped" && rt.state !== "exited") throw { protocol: PROTOCOL, code: "ALREADY_IN_PROGRESS", message: `${serviceId}: 仅停止中的服务可原地接管`, retryable: false };
+    if (svc.port == null) throw { protocol: PROTOCOL, code: "SPEC_INVALID", message: `${serviceId}: 未声明 port，无法定位运行中的外部进程`, retryable: false };
+    rt.managed = true;
+    rt.state = "running";
+    if (rt.pid == null) rt.pid = 41000 + (serviceId.length % 1000);
+    rt.started_at_ms = Date.now();
+    return { service_id: serviceId, pid: rt.pid, warnings: [] };
   }
 
   // -------------------------------------------------------------------------

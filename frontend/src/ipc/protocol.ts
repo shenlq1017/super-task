@@ -87,6 +87,8 @@ export const cmd = {
   // 孤儿进程纳管（ipc.md §10.16）
   WORKSPACE_ADOPT_PREVIEW: "workspace.adoptPreview",
   WORKSPACE_ADOPT_APPLY: "workspace.adoptApply",
+  // 原地接管（方向二，ipc.md §10.16 增补）
+  WORKSPACE_ADOPT_ATTACH: "workspace.adoptAttach",
   // 声明式需求 needs（ipc.md §10.17）
   WORKSPACE_NEEDS_RESOLVE: "workspace.needsResolve",
   // 1.6（ipc.md §10.10）：网关
@@ -1075,6 +1077,9 @@ export type AdoptPreviewOut = { items: AdoptItem[]; warnings: string[] };
 
 /** `workspace.adoptApply` 选择项：用户确认纳管的 pid。 */
 export type AdoptChoice = { pid: number; action: "add" | "keep" };
+
+/** `workspace.adoptAttach` 输出：被接管的外部进程（方向二·原地接管）。 */
+export type AdoptAttachOut = { service_id: string; pid: number; warnings: string[] };
 
 // ---------------------------------------------------------------------------
 // DTOs — 声明式需求 needs（ipc.md §10.17，mirror `crates/supertask-core/src/needs.rs`）
