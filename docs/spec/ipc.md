@@ -352,6 +352,7 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
   "last_exit": { "code": 1, "at_ms": 0 },
   "exit_reason": "crash",
   "restart_attempt": 2,
+  "tunnel_url": "https://random-words-here.trycloudflare.com",
   "last_error": null,
   "log_seq": 1844
 }
@@ -362,6 +363,10 @@ payload 可以是 **增量**（只含变化的 id）。UI 应 merge；想省事�
 `exit_reason`：`"crash"`（意外退出）/ `"stop"`（手动停止）；缺省 = 无退出记录（崩溃通知用）。
 `restart_attempt`（2.2，additive，缺省不序列化）：`restart` 策略自动重启的当前/最近尝试序号（1 起）；
 退避等待与重启进行中出现，手动启动后消失。
+`tunnel_url`（方向四，additive，缺省不序列化）：隧道服务的公网 URL（当前覆盖
+cloudflared quick tunnel 分配行，frpc 远程地址日志形态不稳定不做推测式提取）。
+服务日志出现 URL 即提取，粘性至重启（重启后旧 URL 失效、重新分配）；只读展示，
+token 走 env_file 不回显。
 
 ---
 

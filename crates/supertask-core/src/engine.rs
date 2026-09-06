@@ -79,6 +79,9 @@ pub struct ServiceRuntimeView {
     /// 仅策略 != never 且发生过自动重启的服务出现。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_attempt: Option<u32>,
+    /// 方向四：隧道公网 URL（cloudflared quick tunnel 日志提取，粘性至重启）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_url: Option<String>,
     pub log_seq: u64,
     /// false = 外部进程（端口探测识别，无 Job 无法优雅树管理）
     #[serde(default = "default_true")]
@@ -210,6 +213,8 @@ struct Slot {
     /// 粘性命中：一旦匹配不因环形缓冲淘汰回退
     log_matched: bool,
     log_detail: Option<String>,
+    /// 方向四：隧道公网 URL（日志提取，粘性至重启；重启后重新分配）
+    tunnel_url: Option<String>,
     last_error: Option<String>,
     last_exit: Option<ExitView>,
     cancel: Arc<AtomicBool>,
@@ -825,6 +830,7 @@ impl Engine {
                     log_scan_seq: 0,
                     log_matched: false,
                     log_detail: None,
+                    tunnel_url: None,
                     cancel: Arc::new(AtomicBool::new(false)),
                     managed,
                     artifact: None,
@@ -2740,6 +2746,7 @@ impl Engine {
             slot.log_scan_seq = log_watermark;
             slot.log_matched = false;
             slot.log_detail = None;
+            slot.tunnel_url = None; // 重启后 quick tunnel 重新分配，旧 URL 失效
             slot.last_error = None;
             slot.last_exit = None;
             slot.exit_reason = None;
@@ -3584,6 +3591,7 @@ fn apply_spec_slots(g: &mut Inner, file: &SuperTaskFile) -> Result<()> {
                 log_scan_seq: 0,
                 log_matched: false,
                 log_detail: None,
+                tunnel_url: None,
                 cancel: Arc::new(AtomicBool::new(false)),
                 managed: true,
                 artifact: None,
@@ -3871,6 +3879,7 @@ fn build_snapshot(g: &Inner) -> RuntimeSnapshot {
                 last_error: slot.last_error.clone(),
                 exit_reason: slot.exit_reason.map(str::to_string),
                 restart_attempt: slot.restart_attempt,
+                tunnel_url: slot.tunnel_url.clone(),
                 log_seq: g.logs.next_seq().saturating_sub(1),
                 // 有 Job 即本引擎托管（防止历史 slot.managed=false 误标「外部」）
                 managed: slot.managed || slot.job.is_some(),
@@ -4059,9 +4068,29 @@ fn strip_ansi(text: &str) -> String {
     re.replace_all(text, "").into_owned()
 }
 
+/// 方向四：从日志行提取隧道公网 URL。当前覆盖 cloudflared quick tunnel
+/// （`+ https://<子域>.trycloudflare.com` 分配行）；frpc 的「远程地址」日志
+/// 形态不稳定，不做推测式提取。只读展示，不回显 token（token 走 env_file）。
+fn extract_tunnel_url(text: &str) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com").unwrap());
+    re.find(text).map(|m| m.as_str().to_string())
+}
+
 fn push_line(inner: &Mutex<Inner>, source: LogSource, stream: LogStream, text: String) {
     let text = strip_ansi(&text);
     let mut g = inner.lock().expect("engine lock");
+    // 方向四：隧道公网 URL 提取（先于入库，行文本已剥 ANSI）。
+    // 子串快筛保证无隧道日志的服务零正则成本；提取粘性存 Slot，重启清零。
+    if source.kind == LogSourceKind::Service && text.contains("trycloudflare.com") {
+        if let Some(url) = extract_tunnel_url(&text) {
+            if let Some(slot) = g.slots.get_mut(&source.id) {
+                if slot.tunnel_url.as_deref() != Some(url.as_str()) {
+                    slot.tunnel_url = Some(url);
+                }
+            }
+        }
+    }
     let line = LogLine {
         seq: 0,
         source: source.clone(),
@@ -4408,6 +4437,7 @@ fn spawn_core(
         slot.log_scan_seq = log_watermark;
         slot.log_matched = false;
         slot.log_detail = None;
+        slot.tunnel_url = None; // 重启后 quick tunnel 重新分配，旧 URL 失效
         slot.last_error = None;
         slot.exit_reason = None;
         slot.env_snapshot = Some(EnvSnapshot {
@@ -6024,6 +6054,37 @@ mod tests {
 
     use crate::docker::FakeDockerRunner;
 
+    // ---- 方向四：隧道公网 URL 提取 ----
+
+    #[test]
+    fn extract_tunnel_url_finds_quick_tunnel_url() {
+        // cloudflared quick tunnel 分配行的真实形态（框线包裹）
+        let line = "|  https://random-words-here.trycloudflare.com  |";
+        assert_eq!(
+            extract_tunnel_url(line).as_deref(),
+            Some("https://random-words-here.trycloudflare.com")
+        );
+        // 带时间戳/级别前缀的行
+        let line = "2026-09-06T04:00:00Z INF https://a-b-c.trycloudflare.com";
+        assert_eq!(
+            extract_tunnel_url(line).as_deref(),
+            Some("https://a-b-c.trycloudflare.com")
+        );
+    }
+
+    #[test]
+    fn extract_tunnel_url_takes_first_and_rejects_non_tunnel_hosts() {
+        let line = "https://first-one.trycloudflare.com then https://second-2.trycloudflare.com";
+        assert_eq!(
+            extract_tunnel_url(line).as_deref(),
+            Some("https://first-one.trycloudflare.com")
+        );
+        // 非 trycloudflare 域名不命中
+        assert_eq!(extract_tunnel_url("see https://example.com/docs"), None);
+        // 裸域无 scheme 不命中
+        assert_eq!(extract_tunnel_url("xxx.trycloudflare.com"), None);
+    }
+
     /// 回归：node 服务日志出现乱码
     /// 1) cmd/npm 包装层 echo 的中文是 GBK（936）字节，UTF-8 严格解码必乱
     /// 2) 旧实现 lines() 遇 InvalidData 直接断流，后续日志全部丢失
@@ -7479,6 +7540,7 @@ data:
             log_scan_seq: 0,
             log_matched: false,
             log_detail: None,
+            tunnel_url: None,
             cancel: Arc::new(AtomicBool::new(false)),
             managed: false,
             artifact: None,
