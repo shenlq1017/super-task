@@ -6,6 +6,24 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 运行中进程原地接管（方向二·纳管任意来源）
+
+- 新增 `workspace.adoptAttach`（`{ workspace_id, service_id }` → `{ service_id, pid,
+  warnings[] }`）：纳管后仍在运行的外部进程免重启纳入引擎监管——归属复核复用
+  纳管同一三维判定（端口 + 工作目录 + 程序类型），端口被占但归属不属于本工作区
+  一律拒绝，绝不把错误进程挂进 kill-on-close Job；成功后服务从 Stopped 转为受管
+  Running（`managed=true`），停止走树杀、关闭随场清空。
+- 并发安全：attach 占位期间同服务的 start/stop/restart/二次 attach 一律
+  `ALREADY_IN_PROGRESS`；attach 窗口内 pid 复用 / 进程退出 / 归属翻转即取消；
+  暂存 Job 不带 kill-on-close，失败路径释放不误杀目标进程，转正只在提交前一刻生效。
+- 语义边界：Windows 专用（Unix → `PLATFORM_UNSUPPORTED`，不伪造接管）；
+  attached 服务 restart 压成 `never`；退出检测为 pid 存活轮询，`last_exit.code`
+  记 `-1` 表示退出码未知；接管前历史日志不补入；健康检查沿用声明段跟随。
+- 运行页服务详情在停止态 + 声明 port + 非 compose 时提供「接管运行中进程」按钮
+  （确认文案明示停止/关闭将结束整棵进程树），成功 toast 带 pid。
+- 契约进 ipc.md §4.2 / §10.16 增补；core 引擎守卫 2 项 + `proc::windows` 暂存回滚
+  安全 1 项；零新增错误码。
+
 #### 工作区定时备份与保留策略（方向六·数据与备份）
 
 - `data.volumes.*.backup` 新增定时自动备份与保留声明：`interval_mins`（5..=43200，

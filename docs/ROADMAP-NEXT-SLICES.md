@@ -11,11 +11,12 @@
 > 2026-09-06 更新：首顺位 D（日志模式就绪判定）已交付并移出（进 `CHANGELOG.md`）；
 > 方向一剩余三项（钩子 / 级联重启 / 失败保持）补录为打包切片 D2；
 > T（M2 三平台 release 产物）、C（Procfile 导入）、F（needs 钉扎写回）、
-> J（隧道公网 URL 提取）、R（环境快照上下文）、O（工作区定时备份）均已交付并移出。
+> J（隧道公网 URL 提取）、R（环境快照上下文）、O（工作区定时备份）、
+> A（运行中进程原地接管）均已交付并移出。
 
 | 顺位 | 切片 | 方向 | 调整后优先级 | 调整理由 |
 |---|---|---|---|---|
-| 1 | A 运行中进程原地接管 | 二 | 中 | 叙事核心，但 Windows attach 权限边界需先调研 |
+| 1 | A 运行中进程原地接管 | 二 | ✅ 已交付 | 见 §方向二 A（2026-09-06，契约 ipc.md §10.16 增补） |
 | 2 | M 隧道模板并入现有工作区 | 四 | 中 | 复用 preview/apply；与 C 同批可做 |
 | 3 | G compose 作为 needs 来源 | 三 | 中 | 依赖方向二数据复用边界拍板 |
 | 4 | E 归档供给执行器 | 三 | 中 | 打开能力上限但工程量大（下载器/校验/隔离） |
@@ -53,17 +54,17 @@
 > 已交付：孤儿进程纳管 dry-run 预览与确认写回（generic 忠实复刻原命令，
 > `docs/spec/ipc.md` §10.16）。以下为剩余切片。
 
-### A. 运行中进程原地接管（免重启纳入引擎监管） —— 优先级：中
+### A. 运行中进程原地接管（免重启纳入引擎监管） —— ✅ 已交付（2026-09-06）
 
-- **目标**：纳管后的服务无需重启，运行中的外部进程即受引擎监管（统一启停 /
-  进程树清理），而不是靠「重开工作区识别为外部实例」衔接。
-- **已有材料**：Windows Job Object（`proc/windows.rs`）、`DETACHED` 会话内接管
-  注册表（`engine.rs`）、`stop_one` 外部分支的归属复核 + `kill_foreign_by_pid`。
-- **验收雏形**：纳管后不杀进程、不重启，运行页该服务从「外部 · 仅监控」转为受管
-  状态；停止走树杀；重启走引擎完整链路。attach 失败可诊断并可回退到现有外部实例语义。
-- **待细化**：Windows `AssignProcessToJobObject` attach 的权限边界与失败面；
-  Unix 无 attach 等价物的降级语义（pid 会话级跟踪 vs 明确不支持）；attach 后
-  `Slot` 生命周期与 `managed` 翻转时机；`ipc.md` §6 状态机增补。
+落地口径：`workspace.adoptAttach`（`{ workspace_id, service_id }` → `{ service_id,
+pid, warnings[] }`，Windows 专用，Unix → `PLATFORM_UNSUPPORTED`）。归属复核复用
+纳管同一三维判定（端口 + 工作目录 + 程序类型），归属不符一律拒绝；attach 占位
+guard 互斥同服务 start/stop/restart/二次 attach；暂存 Job（无 kill-on-close）
+失败路径释放不误杀，转正只在提交前一刻生效；attached 服务 restart 压 `never`、
+退出码未知记 `-1`、接管前历史日志不可见。运行页服务详情（停止态 + 声明 port +
+非 compose）提供「接管运行中进程」按钮与确认文案，成功 toast 带 pid。
+契约见 `docs/spec/ipc.md` §10.16 增补。剩余：专用 kind 智能推断（B）、compose
+导入等仍按原顺位推进。
 
 ### B. 专用 kind 智能推断（仅当证据充分） —— 优先级：中低
 

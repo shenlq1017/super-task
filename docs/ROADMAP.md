@@ -147,8 +147,12 @@
 > 已交付移出：**Procfile 导入**——Foreman / Overmind 格式每行转 generic 服务，
 > 忠实优先：含 shell 语法的命令跳过不导入，`.env` 走 env_file 引用不回显
 > （进 `CHANGELOG.md` 与 `docs/spec/ipc.md` §10.19）。
-> 剩余范围：运行中进程**原地接管**（免重启纳入引擎监管，当前靠「重开工作区识别为外部实例」衔接）、
-> 专用 kind 的智能推断（仅当证据充分）、compose 导入、devcontainer / `.env` 导入。
+> 已交付移出：**运行中进程原地接管**——`workspace.adoptAttach` 把端口上的外部进程
+> 免重启纳入引擎监管（Windows 专用，Unix 明确不支持）：三维归属复核、attach 占位
+> 互斥、暂存 Job 失败安全回滚；attached 服务 restart 压 `never`、退出码未知记 `-1`、
+> 接管前历史日志不可见（进 `CHANGELOG.md` 与 `docs/spec/ipc.md` §10.16 增补）。
+> 剩余范围：专用 kind 的智能推断（仅当证据充分）、compose 导入、
+> devcontainer / `.env` 导入。
 | 反向导出矩阵 | Devbox「一份定义多处使用」 | 无 | ★★ | 中 | 高 | 导出 devcontainer.json / compose.yml / `.mise.toml`，把自己变成环境的通用翻译层 |
 
 ---

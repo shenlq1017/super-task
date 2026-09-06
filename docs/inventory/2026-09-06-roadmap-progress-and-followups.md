@@ -248,3 +248,28 @@ Windows `kill-on-close` 进程安全边界，必须先关闭下面列出的竞�
 - 已交付 Procfile 契约：`docs/spec/ipc.md:1060-1120`（§10.19）
 - 已交付环境快照 MCP：`docs/spec/cli.md:77-90` 附近
 - 已交付定时备份契约：`docs/spec/yaml.md:377-425` 与 `docs/spec/ipc.md:1050-1065`
+
+---
+
+## 7. 补记（2026-09-06）：A 原地接管已按 §3 要求收尾交付
+
+§1.3 / §3 列出的 A 阻塞项已关闭，不再有「执行中」切片：
+
+- **竞态修复**：`adopt_attach_windows` 改为占位 guard → 锁外发现 → 暂存 Job
+  （`WindowsJob::create_staging`，无 kill-on-close）attach → 二次归属复核 →
+  转正（`enable_kill_on_close`）→ 持锁提交；转正后提交失败先
+  `clear_kill_on_close` 再释放（摘除失败则 `mem::forget`，绝不 drop 误杀）。
+  同服务 start（`start_one` + `spawn_service` 内层）/ stop / 二次 attach 在占位
+  期间一律 `ALREADY_IN_PROGRESS`；close/detach 无需额外阻塞（提交复核自然失败，
+  暂存释放安全）。
+- **用户入口**：运行页服务详情「停止态 + 声明 port + 非 compose」出现
+  「接管运行中进程」按钮 + 确认对话框（明示停止/关闭结束整棵进程树）+ 成功
+  toast（带 pid）；四语言文案；mock 镜像守卫。
+- **契约回落**：`docs/spec/ipc.md` §4.2 命令表 + §10.16 增补（含平台差异、
+  并发语义、restart/logging/退出码边界、测试清单）；`CHANGELOG.md`
+  `[Unreleased]`；`docs/ROADMAP.md` 方向二；`docs/ROADMAP-NEXT-SLICES.md`
+  切片 A 改写为已交付。
+- **验证**：`cargo fmt --check` 通过；core 定向 5 项通过
+  （`adopt_attach_guard_paths`、`adopt_attach_guard_blocks_lifecycle`、
+  `proc::windows` 3 项含新增 `staging_job_drop_does_not_kill_attached_pid`）；
+  其余全量回归与前端构建见本轮提交时的验证记录。

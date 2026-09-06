@@ -134,6 +134,7 @@
 | `system.killProcess` | `{ pid }` | `{ ok }` 终止该监听进程整棵树（`taskkill /T /F`）。护栏：pid ≤ 4 / SuperTask 自身 / 当前无 LISTEN 端口 → 拒绝（`JobKill`）；UI 侧二次确认 |
 | `workspace.adoptPreview` | `{ workspace_id }` | `AdoptPreviewOut`（§10.16）孤儿进程纳管 dry-run：与当前工作区相关的监听进程 → generic 服务草稿 + 冲突/警告报告。**纯内存计算，不落盘、不杀进程**；命令行与草稿参数已脱敏 |
 | `workspace.adoptApply` | `{ workspace_id, choices: [{pid, action}], base_hash }` | `{ spec, hash, warnings[] }` 只新增用户确认的服务草稿；**apply 前重新发现进程**（退出的 pid 按警告跳过），写回走 saveForm（base_hash 冲突 → `YAML_CONFLICT`） |
+| `workspace.adoptAttach` | `{ workspace_id, service_id }` | `AdoptAttachOut`（§10.16 增补）运行中进程原地接管：端口上的外部进程免重启纳入监管。Windows 专用，Unix → `PLATFORM_UNSUPPORTED` |
 | `workspace.needsResolve` | `{ workspace_id, refresh? }` | `NeedsResolveOut`（§10.17）声明式需求 needs 解析：逐条给出四态（已存在/可安装/可归档供给/不可满足）+ reason 解释。**resolve-only dry-run：不安装、不下载、不写盘** |
 | `workspace.dataList` | `{ workspace_id }` | `DataListOut`（§10.18）数据卷与各自快照列表（created_at 降序）。**只读** |
 | `workspace.dataSnapshotCreate` | `{ workspace_id, volume_id, note? }` | `DataSnapshotCreatedOut`（§10.18）为数据卷创建离线快照；绑定服务未停止 → `SNAPSHOT_BUSY` |
@@ -935,6 +936,52 @@ matched / unadoptable 不动作；重复添加同一 pid 或目标 id 已存在 
 **测试**：core `adopt::` 22 项单测（草稿推导、Windows 引号/反斜杠切词、大小写不敏感
 相对化、脱敏（预览 JSON 与 yaml 文本均无明文）、matched/id_conflict/unadoptable、
 同端口冲突、apply 幂等、进程退出跳过、to_yaml/parse_yaml 往返校验、确定性）。
+
+#### 10.16 增补 · 运行中进程原地接管（方向二，2026-09-06）
+
+`workspace.adoptAttach` 把纳管后仍在运行的外部进程**免重启**纳入引擎监管：
+适用「服务已写入 yaml（多为 adoptApply 纳管项）但进程仍在外部运行」的衔接——
+成功后运行页该服务从 Stopped 转为受管 Running（`managed=true`），停止走 Job
+树杀、关闭工作区随场清空；失败则保持 Stopped 与外部实例语义，可诊断、可重试。
+
+```text
+workspace.adoptAttach
+  input:  { workspace_id, service_id }
+  output: { service_id, pid, warnings[] }   # mirror ipc::v17::AdoptAttachOut
+```
+
+**前置守卫**（同步返回，不触碰槽位语义）：服务不存在 → `NOT_FOUND`；
+未声明 `port` → `SPEC_INVALID`（定位不了外部进程）；非 Stopped 态 →
+`ALREADY_IN_PROGRESS`（仅停止中的服务可接管）；端口无监听 → `NOT_FOUND`；
+端口监听进程归属不属于本工作区（工作目录不符）→ `DISCOVER` 拒绝，
+**绝不把错误进程挂进 kill-on-close Job**。
+
+**平台差异**：Windows 专用（`OpenProcess(PROCESS_SET_QUOTA|PROCESS_TERMINATE)` +
+`AssignProcessToJobObject`；目标已在不兼容 Job 内 / 受保护进程 / 权限不足 →
+`JOB_CREATE` 可诊断错误，回退到外部实例语义）。Unix 无 Job attach 等价物，
+一律 `PLATFORM_UNSUPPORTED`，不伪造「已接管」（重开工作区仍按外部实例识别）。
+
+**并发安全**：attach 占位（`attaching` guard）期间同服务的 start/stop/restart/
+二次 attach 一律 `ALREADY_IN_PROGRESS`；归属在 attach 窗口内变化（pid 复用/
+进程退出/归属翻转）→ 取消并报 `DISCOVER`/`NOT_FOUND`。暂存 Job 不带
+kill-on-close，任一失败路径释放都不误杀目标进程；转正（补 kill-on-close）
+只在提交前一刻生效，提交失败先摘限制再释放。
+
+**语义边界**：attached 服务 `restart` 压成 `never`（无 `RestartPlan` 可重放，
+退出按 Exited 收场，用户手动 start 走完整链路）；退出检测为 pid 存活轮询
+（1s，无 `Child::wait`），`last_exit.code` 记 `-1` 表示**退出码未知**
+（IPC/诊断文案不得伪装成真实退出码）；接管前历史日志不补入 LogHub
+（仅后续输出/文件日志可见）；健康检查沿用声明的 `health` 段同节奏跟随。
+
+**UI**：运行页服务详情在「停止态 + 声明 port + 非 compose」时提供「接管运行中
+进程」按钮（确认文案明示停止/关闭将结束整棵进程树），成功 toast 带 pid，
+失败透出后端可诊断错误。mock 模式镜像守卫（非停止态/`port` 缺失同样报错）。
+
+**测试**：core 引擎守卫 2 项（`adopt_attach_guard_paths` Windows 真发现路径：
+不存在/无 port/运行态/无监听/失败清 guard/占位互斥；`adopt_attach_guard_blocks_lifecycle`
+全平台 guard 互斥 + Unix `PLATFORM_UNSUPPORTED`）+ `proc::windows` 3 项
+（含 `staging_job_drop_does_not_kill_attached_pid`：暂存 drop 与转正回滚均不
+误杀、正式 Job 仍可清理）。零新增错误码。
 
 ### 10.17 声明式需求 needs 解析（方向三·环境供给，2026-09-05）
 
