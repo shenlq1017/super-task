@@ -6,6 +6,19 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 工作区定时备份与保留策略（方向六·数据与备份）
+
+- `data.volumes.*.backup` 新增定时自动备份与保留声明：`interval_mins`（5..=43200，
+  缺省不启用）+ `max_count` / `max_age_days` / `max_total_bytes` 三种保留上限，
+  越界 `DATA_INVALID`。
+- 引擎打开工作区即启动常驻调度线程（tick 30s）：到期自动创建快照（note 标记
+  `auto`，工作区页快照列表可见）；绑定服务运行中该轮跳过；**保留策略只作用于
+  auto 快照，手动快照不受限且最新一份从不清除**；close/detach 停调度，快照写入
+  临时文件 + 原子改名，任意时刻关闭不产生半截快照。零新增错误码。
+- 跨应用重启基线：重新打开工作区时以既有最新 auto 快照为基线，不重复补拍。
+- 契约进 yaml.md §7.3 与 ipc.md §10.18；core 新增 3 项离线单测（保留矩阵 /
+  tick 集成 / 字段范围）。
+
 #### 环境快照上下文 MCP 工具（方向七·AI 原生）
 
 - 新增 MCP 工具 `supertask_env_snapshot`：一次调用返回可直接进 prompt 的结构化
