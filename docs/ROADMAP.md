@@ -253,12 +253,13 @@
 **目标：** 让 AI 能在明确权限和安全边界内完成“检查环境、补齐依赖、启动工作区、等待就绪、
 汇总错误并给出下一步”这一闭环；所有输出可脱敏、操作可审计，且不依赖 AI 猜测日志或主机状态。
 
+> 已交付移出：**环境快照上下文**——MCP `supertask_env_snapshot` 一次调用聚合
+> 主机指标 / 工具链版本 / needs 四态 / 服务就绪与错误摘要为结构化上下文
+> （大小有界、全脱敏，进 `CHANGELOG.md` 与 cli.md MCP 清单）。
+
 | 候选点 | 来源 | 现状 | 价值 | 成本 | 契合 | 说明 |
 |---|---|---|---|---|---|---|
-| MCP 环境供给能力 | ServBay MCP 能装包、建站、查库 | MCP 只有运行控制类工具 | ★★★ | 中 | 高 | `ensure_tool` / `ensure_service`，让 Agent 说一句「跑起这个项目」就能补齐依赖 |
-| MCP 错误聚合与就绪等待 | orckit MCP `get_errors` / `wait_for_build` | 已交付（MCP `supertask_errors` / `supertask_wait_ready`，cli.md；outcome 区分 reached/failed/stopped/timeout，超时是结果不是错误） | ★★★ | 小 | 高 | AI 一次调用拿到「当前栈是否就绪 + 按服务聚合的错误摘要」 |
-| MCP 输出脱敏 | orckit 明确警告可能泄露密钥 | 已交付（MCP 全工具出口统一过 `ai::sanitize::Redactor`：声明密钥值替换 + 敏感行整行掩码，幂等） | ★★★ | 小 | 高 | **安全即卖点**，且是竞品的公开短板 |
-| 环境快照上下文 | 自有 | 无 | ★★ | 中 | 高 | 把工具版本、端口、健康、错误摘要结构化输出给 AI |
+| MCP 环境供给能力 | ServBay MCP 能装包、建站、查库 | MCP 只有运行控制类工具 | ★★★ | 中 | 高 | `ensure_tool` / `ensure_service`，让 Agent 说一句「跑起这个项目」就能补齐依赖；硬依赖归档供给执行器落地 |
 | AI 操作审计与回放 | 自有 | 无 | ★★ | 中 | 高 | 可查看「AI 这段时间动了什么」并回滚 |
 
 ---

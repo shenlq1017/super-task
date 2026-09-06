@@ -6,6 +6,18 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 环境快照上下文 MCP 工具（方向七·AI 原生）
+
+- 新增 MCP 工具 `supertask_env_snapshot`：一次调用返回可直接进 prompt 的结构化
+  环境画像——主机指标、工具链版本摘要（不带路径）与 mise/winget 可用性、
+  spec 钉扎（`toolchain.*`）、needs 声明的四态解析（reason 截断 ≤200 字符）、
+  服务就绪分账与错误摘要（不含日志原文）与隧道 URL。AI 不再靠多次调用拼凑上下文。
+- 大小有界、全脱敏（出口统一过 Redactor）、缺采样字段为 null 而非 0；会取得工作区锁
+  但不改动服务状态。与 `supertask_status`（轻量状态）/ `supertask_errors`
+  （带日志摘录）分工明确。MCP 工具 10 → 11。
+- 聚合复用既有采样面（诊断视图 / 工具链探测缓存 / needs resolve / 主机指标），
+  零新增采样；契约进 cli.md MCP 清单；core + cli 新增 3 项离线单测。
+
 #### 隧道公网 URL 提取到服务卡片（方向四·网络与身份）
 
 - 运行页服务卡片自动展示隧道公网地址：引擎日志管道识别 cloudflared quick tunnel
