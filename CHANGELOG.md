@@ -6,6 +6,22 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 归档供给执行器（方向三·环境供给）
+
+- 新增 `archive.install`（hub 长操作）/ `archive.list`：`archive` 状态从可供给性
+  报告变成可执行供给——下载官方发行包 → sha256 校验 → 解压到 app data 隔离目录
+  （`<appdata>/SuperTask/archives/<id>/<version>/<platform>/` + `.complete` 标记），
+  已安装直接复用，needs 解析版本匹配即 satisfied（`来源=archive`）。
+- 确定性计划 + 传输可注入（`FakeTransport` 全离线测试）；zip-slip 拒绝与
+  条目/字节上限；`.part` 分片复用、中断重跑收敛；错误只含主机名，代理凭据不进日志。
+- 只有官方公布 sha256 的发行版进入可执行目录（首批 minio pinned release，五平台
+  真实哈希已核验）；mysql（官方仅 MD5）、postgres（无官方免安装包）保留目录声明
+  并明确拒绝无校验供给。
+- 工作区 `needs` 声明的中间件：已安装归档 bin 前插服务子进程 PATH；环境页
+  archive 行新增「下载安装」按钮，成功自动重跑 resolve。
+- 契约进 ipc.md §10.17 增补；新增错误码 `ARCHIVE_FETCH` / `ARCHIVE_HASH` /
+  `ARCHIVE_EXTRACT` / `ARCHIVE_UNAVAILABLE`；core `archive::` 8 项 + `needs::` 3 项。
+
 #### compose/容器作为 needs 来源（方向三·环境供给）
 
 - `workspace.needsResolve` 新增 compose/容器中间件供给分支：运行中容器镜像版本

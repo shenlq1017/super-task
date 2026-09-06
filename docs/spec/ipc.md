@@ -438,6 +438,10 @@ token 走 env_file 不回显。
 | `SNAPSHOT_INVALID` | 快照 zip/manifest 损坏、条目哈希不符、zip-slip、超上限（条目数/总字节）、落盘失败 |
 | `SNAPSHOT_VERSION` | 快照 format 高于支持版本 |
 | `SNAPSHOT_BUSY` | 绑定服务未停止，禁止快照/恢复 |
+| `ARCHIVE_FETCH` | 归档下载失败（主机不可达/超时/HTTP 错误/超上限；消息只含主机名） |
+| `ARCHIVE_HASH` | 归档 sha256 与官方公布不一致（分片已删，请重试） |
+| `ARCHIVE_EXTRACT` | 归档解压/落盘失败（zip-slip/超限/布局缺可执行文件/写失败；不落半成品） |
+| `ARCHIVE_UNAVAILABLE` | 归档不可供给（未知 id / 版本不满足 / 平台无构建 / 无官方 sha256 发行版） |
 | `PROCFILE_NOT_FOUND`（方向二） | 工作区无 Procfile |
 | `PROCFILE_INVALID`（方向二） | Procfile 读取失败 |
 
@@ -497,7 +501,7 @@ clone、pull、模板创建、更新下载/安装统一走 operation：
 }
 ```
 
-`progress` 可为 `null`（不伪造无法测量的百分比）；`succeeded` 时 `result` 为结果对象（如 `{ "workspace_id": "..." }`）；`failed` 时 `error_code` 为稳定错误码。`kind` ∈ `git.clone | git.pull | templates.create | app.update`。
+`progress` 可为 `null`（不伪造无法测量的百分比）；`succeeded` 时 `result` 为结果对象（如 `{ "workspace_id": "..." }`）；`failed` 时 `error_code` 为稳定错误码。`kind` ∈ `git.clone | git.pull | templates.create | app.update | toolchain.install | toolchain.upgrade | archive.install`。
 
 ### 10.1 Templates
 
@@ -1104,6 +1108,49 @@ resolve 即翻转为 satisfied；`YAML_CONFLICT` 时安装结果保留、仅写�
 
 **错误码**：运行期不新增（不可满足是状态不是错误）；加载期新增 `NEEDS_INVALID`
 （id/版本要求格式、lts 别名、`@` 数量、条目数超限，见 §7）。
+
+**归档供给执行器（方向三·E，2026-09-06）**：`archive.install` /
+`archive.list` 把 `archive` 状态变成可执行供给。核心实现
+`crates/supertask-core/src/archive.rs`；环境页 needs 卡片 archive 行「下载安装」
+按钮经 hub 长操作（`kind: archive.install`）执行，成功后自动重跑 resolve 翻转。
+
+```text
+archive.install
+  input:  { id, version? }     # version 缺省 = 目录最新；同步校验不过直接拒绝
+  output: { operation_id }     # result = { id, version, release, bin_dir, reused }
+
+archive.list
+  input:  {}
+  output: { archives: [{ id, version, release, bin_dir }] }
+```
+
+**执行语义**
+
+- 确定性计划：相同（目录版本，平台）得到相同下载计划（url + sha256 + 落点）。
+  只有官方公布 sha256 的发行版进入可执行目录（当前仅 minio pinned release）；
+  mysql（官方仅 MD5）、postgres（无官方免安装包）保留目录声明，执行器报
+  `ARCHIVE_UNAVAILABLE` 并说明门槛——**不用弱校验供给可执行文件**。
+- 安装布局：`<appdata>/SuperTask/archives/<id>/<version>/<platform>/` + `.complete`
+  标记 + `manifest.json`（url/sha256/时间）；下载经 `.part` 分片（sha256 命中复用，
+  中断后重跑收敛；成功后删分片省磁盘）；解压走 `.stage` 暂存 + 改名落盘。
+- zip-slip 拒绝（`enclosed_name` 为 None 即拒）+ 条目数（10 万）/总字节（4GiB）/
+  下载（1GiB）上限；解压后校验可执行文件齐备（缺失 = 包布局变更，拒绝落盘）；
+  任一失败不落半成品。Unix 补可执行位。
+- 已安装（`.complete` + 可执行文件齐备）直接复用；needs 解析中已安装归档版本匹配
+  即 `satisfied`（`found_path` = 隔离 bin 目录，reason 标注 `来源=archive`），
+  优先级：compose 运行态 > 已安装归档 > 目录报告。
+- PATH 注入：工作区 `needs` 声明了对应中间件 id 的服务启动时，已安装归档 bin
+  前插子进程 PATH（显式钉扎之后；只影响子进程，不改用户 PATH）。
+- 传输可注入（`ArchiveTransport`，测试 `FakeTransport` 全离线）；生产 `UreqTransport`
+  代理取 HTTPS_PROXY → HTTP_PROXY → ALL_PROXY；错误消息只含主机名，
+  proxy userinfo 与 token 永不进日志/事件。
+
+**错误码**：新增 `ARCHIVE_FETCH` / `ARCHIVE_HASH` / `ARCHIVE_EXTRACT` /
+`ARCHIVE_UNAVAILABLE`（§7）。
+
+**测试**：core `archive::` 8 项离线单测（计划确定性与门槛/单文件安装校验复用续传/
+哈希不符删分片/错误脱敏/zip 布局与 zip-slip/缺可执行文件/扫描只列 complete/
+代理描述脱敏）+ `needs::` 3 项（已安装满足/版本失配回退/compose 优先）。
 
 **compose/容器中间件来源（方向三·G，2026-09-06）**：resolve 在本机探测之前先查
 compose/容器供给——中间件需求（postgres/mysql/mariadb/redis/mongo/mongodb/minio/

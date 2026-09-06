@@ -12,15 +12,15 @@
 > 方向一剩余三项（钩子 / 级联重启 / 失败保持）补录为打包切片 D2；
 > T（M2 三平台 release 产物）、C（Procfile 导入）、F（needs 钉扎写回）、
 > J（隧道公网 URL 提取）、R（环境快照上下文）、O（工作区定时备份）、
-> A（运行中进程原地接管）、M（模板并入现有工作区）、G（compose 作为 needs 来源）
-> 均已交付并移出。
+> A（运行中进程原地接管）、M（模板并入现有工作区）、G（compose 作为 needs 来源）、
+> E（归档供给执行器）均已交付并移出。
 
 | 顺位 | 切片 | 方向 | 调整后优先级 | 调整理由 |
 |---|---|---|---|---|
 | 1 | A 运行中进程原地接管 | 二 | ✅ 已交付 | 见 §方向二 A（2026-09-06，契约 ipc.md §10.16 增补） |
 | 2 | M 隧道模板并入现有工作区 | 四 | ✅ 已交付 | 见 §方向四 M（2026-09-06，契约 ipc.md §10.1） |
 | 3 | G compose 作为 needs 来源 | 三 | ✅ 已交付 | 见 §方向三 G（2026-09-06，契约 ipc.md §10.17 增补） |
-| 4 | E 归档供给执行器 | 三 | 中 | 打开能力上限但工程量大（下载器/校验/隔离） |
+| 4 | E 归档供给执行器 | 三 | ✅ 已交付 | 见 §方向三 E（2026-09-06，契约 ipc.md §10.17 增补） |
 | 5 | V M4 三平台真机冒烟 | 八 | 中 | 需真机环境；K 网关行为清单并入本项 |
 | 6 | D2 钩子 / 级联重启 / 失败保持 | 一 | 中 | ROADMAP 主表剩余 ★★ 项，打包成一个切片 |
 | 7 | B kind 智能推断 / X M6 差异收敛 / L apache 预检 | 二/八/四 | 中低 | 顺手级或依赖前项 |
@@ -93,17 +93,17 @@ program/args）；含 shell 语法（`$`、管道、重定向、组合、通配�
 > 已交付：声明式 needs 的 resolve-only dry-run 与 mise/winget 供给接入（ipc.md §10.17）。
 > 以下为剩余切片。
 
-### E. 归档供给执行器（免安装中间件下载/校验/解压） —— 优先级：中
+### E. 归档供给执行器（免安装中间件下载/校验/解压） —— ✅ 已交付（2026-09-06）
 
-- **目标**：让 archive 状态从「可供给性报告」变成可执行供给（下载官方 zip/单文件
-  → sha256 校验 → 解压到 app data 工作区隔离目录 → PATH 注入/解析）。
-- **已有材料**：`needs.rs` 的 `ARCHIVE_CATALOG` 与平台键、`toolchain/runner.rs`
-  SpawnSpec/FakeRunner 注入模式、模板包的 zip 读写与 zip-slip 先例（template.rs）、
-  `network::tool_env` 代理注入。
-- **验收雏形**：相同目录+平台得到确定性下载计划；下载/解压可被 fake transport 全
-  离线测试；安装目录不出沙箱；中断后重试状态一致；凭据/代理不进日志。
-- **待细化**：传输 trait 与 fake 注入点、sha256 清单托管方式（内置 vs 远端化）、
-  解压后如何进入服务 PATH/launcher 解析、错误码（沿用 vs 新增 `ARCHIVE_*`）。
+落地口径：新模块 `archive.rs`（传输 trait + `FakeTransport` / `UreqTransport`、
+确定性计划、`.part`/`.stage`/`.complete` 幂等安装、`appdata/archives` 隔离目录、
+zip-slip 与上限防护、可执行文件校验）。`archive.install`（hub 长操作）/
+`archive.list` 命令；环境页 archive 行「下载安装」；已安装归档在 needs 解析中
+优先 satisfied；`needs` 声明的中间件 bin 前插服务子进程 PATH。清单内置：
+minio pinned release（五平台官方 sha256 已核验）；mysql（官方仅 MD5）、postgres
+（无官方免安装包）保留声明并明确拒绝无校验供给。新增错误码 `ARCHIVE_*`。
+契约见 `docs/spec/ipc.md` §10.17 增补。剩余：远端清单（加工具免发版，见工具清单
+远端化）、项目级版本隔离联动。
 
 ### F. needs 安装与钉扎写回一体化（persist） —— ✅ 已交付（2026-09-06）
 
