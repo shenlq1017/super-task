@@ -1,4 +1,4 @@
-//! `supertask mcp`（1.5 §5）：stdio 传输、tools only、10 个工具。
+//! `supertask mcp`（1.5 §5）：stdio 传输、tools only、11 个工具。
 //! 业务走 supertask-core；tokio 只在本模块，引擎调用经 spawn_blocking 桥接（§3.2）。
 //!
 //! 生命周期：进程启动即就绪；**首个可变工具**触发取锁 + `engine.open`（holder=mcp）；
@@ -6,8 +6,9 @@
 //! → stop_all → close（释放锁）→ 进程退出（防孤儿优先）。
 //!
 //! 方向七·AI 原生：`supertask_errors`（错误聚合）与 `supertask_wait_ready`（等待就绪，
-//! outcome 区分 reached/failed/stopped/timeout）；`dispatch` 出口对所有工具返回值与
-//! 错误信封统一脱敏（声明密钥值替换 + 敏感行整行掩码，幂等）。
+//! outcome 区分 reached/failed/stopped/timeout）；`supertask_env_snapshot`（环境快照
+//! 上下文，2026-09-06）；`dispatch` 出口对所有工具返回值与错误信封统一脱敏
+//! （声明密钥值替换 + 敏感行整行掩码，幂等）。
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,7 @@ pub const TOOL_CANCEL_SCRIPT: &str = "supertask_cancel_script";
 pub const TOOL_HOST_METRICS: &str = "supertask_host_metrics";
 pub const TOOL_ERRORS: &str = "supertask_errors";
 pub const TOOL_WAIT_READY: &str = "supertask_wait_ready";
+pub const TOOL_ENV_SNAPSHOT: &str = "supertask_env_snapshot";
 
 /// 等待就绪的默认与钳制边界（毫秒）。
 const WAIT_READY_DEFAULT_MS: u64 = 30_000;
@@ -93,6 +95,15 @@ pub fn tool_definitions() -> Vec<(&'static str, &'static str, Value)> {
              是否就绪、错误来源（exit=进程退出 / health=健康检查失败 / generic=构建失败等）、\
              脱敏后的错误摘要与最近日志摘录。一次调用即可判断「当前栈哪里没就绪、为什么」。\
              返回 error 为 null 表示该服务当前没有捕获到的错误。",
+            obj_schema(json!({})),
+        ),
+        (
+            TOOL_ENV_SNAPSHOT,
+            "环境快照上下文：一次调用返回可直接进 prompt 的结构化环境画像——主机指标、\
+             工具链版本与 mise/winget 可用性、spec 钉扎与 needs 声明的四态解析、\
+             服务就绪与错误摘要（不含日志原文）。只读但会取得工作区锁；输出统一脱敏、\
+             大小有界，取不到的字段为 null 而非 0。轻量状态用 supertask_status，\
+             带日志摘录的错误诊断用 supertask_errors，本工具用于一次性建立环境上下文。",
             obj_schema(json!({})),
         ),
         (
@@ -182,6 +193,7 @@ impl McpServer {
                 Ok(json!({ "ok": true }))
             }),
             TOOL_ERRORS => self.errors(),
+            TOOL_ENV_SNAPSHOT => self.env_snapshot(),
             TOOL_WAIT_READY => self.wait_ready(&args),
             _ => Err(Error::new(ErrorCode::NotFound, format!("未知工具: {tool}"))),
         };
@@ -218,6 +230,18 @@ impl McpServer {
             let view = e.diagnostics()?;
             serde_json::to_value(view).map_err(|err| {
                 Error::new(ErrorCode::Protocol, format!("诊断视图序列化失败: {err}"))
+            })
+        })
+    }
+
+    /// 环境快照上下文（方向七，2026-09-06）：聚合主机指标 / 工具链 / needs /
+    /// 服务就绪摘要为一次结构化返回。会取锁打开引擎（不改动服务状态）；
+    /// 出口统一脱敏由 dispatch 负责。
+    fn env_snapshot(&self) -> Result<Value, Error> {
+        self.with_engine(|e| {
+            let view = e.env_snapshot()?;
+            serde_json::to_value(view).map_err(|err| {
+                Error::new(ErrorCode::Protocol, format!("环境快照序列化失败: {err}"))
             })
         })
     }
@@ -621,6 +645,28 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// 环境快照（方向七）：一次调用聚合环境上下文；会取锁打开引擎但不改动服务状态；
+    /// 输出可序列化（MCP 出参，dispatch 内已统一脱敏）。
+    #[test]
+    fn env_snapshot_dispatch_returns_bounded_context() {
+        let root = temp_root("env-snapshot");
+        let server = McpServer::new(root.clone());
+        let out = server.dispatch(TOOL_ENV_SNAPSHOT, None).unwrap();
+        assert_eq!(out["workspace_id"], root.to_string_lossy().as_ref());
+        assert_eq!(out["total_count"], 1);
+        assert!(out["host"].is_object(), "主机指标为对象");
+        assert!(out["services"].is_array());
+        assert!(out["services"][0]["id"] == "api");
+        assert!(out["services"][0]["ready"].is_boolean());
+        assert!(
+            out["tools"].get("java").is_some(),
+            "工具版本摘要在 tools 下"
+        );
+        // 错误信封：未知参数不炸（additionalProperties=false 的 schema 层面约束）
+        server.shutdown();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// 出口统一脱敏：声明密钥值从日志工具输出中掩掉，敏感行整行掩码，
     /// 无声明密钥的普通行不受影响。
     #[test]
@@ -647,9 +693,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_cover_ten_tools() {
+    fn tool_definitions_cover_eleven_tools() {
         let names: Vec<&str> = tool_definitions().into_iter().map(|(n, _, _)| n).collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         for expected in [
             TOOL_STATUS,
             TOOL_START,
@@ -661,6 +707,7 @@ mod tests {
             TOOL_HOST_METRICS,
             TOOL_ERRORS,
             TOOL_WAIT_READY,
+            TOOL_ENV_SNAPSHOT,
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }

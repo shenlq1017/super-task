@@ -80,9 +80,20 @@
     `failed`（有服务 Exited/Unhealthy，附脱敏错误）/ `stopped`（有服务未启动或被停止）/
     `timeout`（超时，`pending` 列出未就绪目标）。超时是结果不是错误；等待期间持有工作区锁，
     同进程其他工具调用排队（与 run_script 等待语义一致）。
+  - `supertask_env_snapshot`：无参数；环境快照上下文（方向七·AI 原生，2026-09-06）。
+    一次调用聚合可直接进 prompt 的结构化环境画像：`workspace_id`、就绪分账
+    （`ready`/`ready_count`/`total_count`）、`host`（与 host_metrics 同一采样）、
+    `tools`（java/maven/gradle/node/npm/pnpm/yarn/bun/python/go 的 `found`/`version`
+    摘要，**不带路径**）、`managers`（mise/winget 可用性）、`pinned_toolchain`
+    （spec 钉扎的 `toolchain.*`）、`declared_needs` + `needs`（四态解析，`reason`
+    截断 ≤200 字符）、`services`（id/kind/state/port/ready/error 摘要与隧道 URL，
+    **不含日志原文**）。会取得工作区锁（不改动服务状态）；大小有界、出口统一脱敏，
+    缺采样字段为 null 而非 0。与 `supertask_status`（轻量状态）/`supertask_errors`
+    （带日志摘录）分工：本工具用于一次性建立环境上下文。
 - 仅 `supertask_status` / `supertask_logs` / `supertask_host_metrics` 为只读（不取锁，其中
   host metrics 与工作区有效性无关）；其余可变工具在首次调用时惰性获取工作区锁（holder=mcp）。
-  `supertask_errors` / `supertask_wait_ready` 不改动服务状态，但需要引擎运行时视图，同属取锁类。
+  `supertask_errors` / `supertask_wait_ready` / `supertask_env_snapshot` 不改动服务状态，
+  但需要引擎运行时视图，同属取锁类。
 - **出口统一脱敏（方向七·AI 原生）**：所有工具的返回值与错误信封统一过 core
   `ai::sanitize::Redactor` 掩码——声明密钥值（主密钥文件 + 全部服务 env_file 的全部值 +
   env backend `required` key 的用户环境变量值；≥4 字符）精确子串替换为 `<redacted>`，

@@ -3719,6 +3719,164 @@ pub struct WaitReadyView {
 /// recent_lines 摘录行数上限。
 const DIAG_RECENT_LINES: usize = 5;
 
+// ---------------------------------------------------------------------------
+// 方向七：环境快照上下文（MCP `supertask_env_snapshot`）。
+// 一次调用返回可直接进 prompt 的结构化环境画像：主机指标 + 工具链版本 +
+// needs 四态 + 服务就绪/错误摘要。大小有界（无日志原文，reason 截断），
+// 缺采样字段为 null/缺省而非伪造；出口仍走 MCP 统一脱敏。
+// ---------------------------------------------------------------------------
+
+/// 需求 reason 截断上限（字符，按字符边界截断）。
+const ENV_SNAPSHOT_REASON_CAP: usize = 200;
+
+/// 工具版本摘要：不带路径——本视图是紧凑上下文，路径由需要时的 logs/probe 面.
+#[derive(Debug, Clone, Serialize)]
+pub struct EnvToolView {
+    pub found: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// 服务就绪摘要：diagnostics 的服务行去掉日志摘录（那是 supertask_errors 的职责），
+/// 加回 port 与隧道 URL。
+#[derive(Debug, Clone, Serialize)]
+pub struct EnvServiceView {
+    pub id: String,
+    pub kind: String,
+    pub state: RtState,
+    pub port: Option<u16>,
+    pub ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<DiagErrorView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EnvSnapshotView {
+    pub workspace_id: String,
+    pub ready: bool,
+    pub ready_count: usize,
+    pub total_count: usize,
+    /// spec 声明的 needs 原文（如 `node@20`）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_needs: Vec<String>,
+    /// spec 钉扎的 toolchain.*（键 = 工具名；package_manager 为 npm/pnpm/yarn/bun）
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub pinned_toolchain: IndexMap<String, String>,
+    /// needs 四态解析（reason 截断至 [`ENV_SNAPSHOT_REASON_CAP`] 字符）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<crate::needs::NeedItem>,
+    /// 工具版本摘要（java/maven/gradle/node/npm/pnpm/yarn/bun/python/go）
+    pub tools: IndexMap<String, EnvToolView>,
+    /// 供给管理器可用性（mise / winget）
+    pub managers: crate::toolchain::ManagerAvailability,
+    pub services: Vec<EnvServiceView>,
+    /// 主机指标（与 `supertask_host_metrics` 同一采样口径，取不到为 null）
+    pub host: serde_json::Value,
+}
+
+/// 按字符边界截断字符串（超长加 …）。
+fn truncate_chars(s: &str, cap: usize) -> String {
+    if s.chars().count() <= cap {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(cap).collect();
+    format!("{cut}…")
+}
+
+impl Engine {
+    /// 方向七：环境快照上下文。聚合既有采样面（诊断视图 / 工具链探测缓存 /
+    /// needs resolve / 主机指标），纯只读、不改动服务状态；会取工作区锁
+    /// （与 diagnostics 同级）。resolve 与 probe 共用同一探测缓存，不重复探测。
+    pub fn env_snapshot(&self) -> Result<EnvSnapshotView> {
+        let spec = self.spec()?;
+        let diag = self.diagnostics()?;
+        let bundle = self.toolchain_probe(false);
+        let needs = self.needs_resolve(false)?;
+        let snap = self.snapshot()?;
+
+        let mut pinned_toolchain = IndexMap::new();
+        if let Some(tc) = spec.toolchain.as_ref() {
+            for (k, v) in [
+                ("java", tc.java.clone()),
+                ("maven", tc.maven.clone()),
+                ("node", tc.node.clone()),
+                ("python", tc.python.clone()),
+                ("go", tc.go.clone()),
+                (
+                    "package_manager",
+                    tc.package_manager.map(|p| match p {
+                        crate::spec::PackageManager::Npm => "npm".to_string(),
+                        crate::spec::PackageManager::Pnpm => "pnpm".to_string(),
+                        crate::spec::PackageManager::Yarn => "yarn".to_string(),
+                        crate::spec::PackageManager::Bun => "bun".to_string(),
+                    }),
+                ),
+            ] {
+                if let Some(v) = v {
+                    pinned_toolchain.insert(k.to_string(), v);
+                }
+            }
+        }
+
+        let mut tools = IndexMap::new();
+        for (k, p) in [
+            ("java", &bundle.tools.java),
+            ("maven", &bundle.tools.maven),
+            ("gradle", &bundle.tools.gradle),
+            ("node", &bundle.tools.node),
+            ("npm", &bundle.tools.npm),
+            ("pnpm", &bundle.tools.pnpm),
+            ("yarn", &bundle.tools.yarn),
+            ("bun", &bundle.tools.bun),
+            ("python", &bundle.tools.python),
+            ("go", &bundle.tools.go),
+        ] {
+            tools.insert(
+                k.to_string(),
+                EnvToolView {
+                    found: p.found,
+                    version: p.version.clone(),
+                },
+            );
+        }
+
+        let mut needs_items = needs.items;
+        for it in &mut needs_items {
+            it.reason = truncate_chars(&it.reason, ENV_SNAPSHOT_REASON_CAP);
+        }
+
+        let services = diag
+            .services
+            .iter()
+            .map(|s| EnvServiceView {
+                id: s.id.clone(),
+                kind: s.kind.clone(),
+                state: s.state,
+                port: snap.services.get(&s.id).and_then(|v| v.port),
+                ready: s.ready,
+                error: s.error.clone(),
+                tunnel_url: snap.services.get(&s.id).and_then(|v| v.tunnel_url.clone()),
+            })
+            .collect();
+
+        Ok(EnvSnapshotView {
+            workspace_id: diag.workspace_id,
+            ready: diag.ready,
+            ready_count: diag.ready_count,
+            total_count: diag.total_count,
+            declared_needs: spec.needs.unwrap_or_default(),
+            pinned_toolchain,
+            needs: needs_items,
+            tools,
+            managers: bundle.managers,
+            services,
+            host: crate::host_metrics::HostMetrics::mcp_sample(),
+        })
+    }
+}
+
 /// ready 判定（诊断与等待共用同一口径）。`health_configured` 来自 spec——
 /// 运行时视图无法区分「未配置」与「尚未采样」；`type: none` 视为未配置
 /// （与 spawn 路径的 health_none 口径一致）。
@@ -7900,6 +8058,47 @@ services:
         assert_eq!(err.source, "exit");
         assert_eq!(err.exit_code, Some(1));
         assert!(err.message.contains("退出码 1"), "{}", err.message);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn env_snapshot_aggregates_bounded_context() {
+        let root = write_ws_yaml(diag_yaml());
+        let eng = Engine::ping_for_test();
+        // 探测注入 fake（离线确定）：版本进视图、路径不进视图
+        eng.set_toolchain_probe_fn_for_test(|| crate::probe::ToolchainProbeBundle {
+            tools: crate::probe::ToolchainProbe {
+                java: crate::probe::ToolProbe {
+                    found: true,
+                    version: Some("17.0.2".into()),
+                    path: Some("C:\\jdk\\bin\\java.exe".into()),
+                },
+                ..Default::default()
+            },
+            managers: crate::toolchain::ManagerAvailability {
+                mise: true,
+                winget: false,
+            },
+        });
+        eng.open(&root).unwrap();
+        eng.start_one("ok").unwrap();
+        assert!(wait_eq(&eng, "ok", RtState::Running));
+        let view = eng.env_snapshot().unwrap();
+        assert_eq!(view.total_count, 2);
+        assert!(view.ready_count >= 1);
+        assert!(!view.ready, "bad 未启动，整体未就绪");
+        let java = view.tools.get("java").unwrap();
+        assert!(java.found);
+        assert_eq!(java.version.as_deref(), Some("17.0.2"));
+        assert!(view.managers.mise && !view.managers.winget);
+        let ok = view.services.iter().find(|s| s.id == "ok").unwrap();
+        assert!(ok.ready && ok.error.is_none());
+        // 可序列化（MCP 出参），且 reason 截断不 panic 的路径被覆盖（无 needs 时为空）
+        assert!(view.needs.is_empty());
+        assert!(view.declared_needs.is_empty());
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(!json.contains("C:\\\\jdk"), "探测路径不进环境快照: {json}");
         eng.close().unwrap();
         let _ = fs::remove_dir_all(&root);
     }
