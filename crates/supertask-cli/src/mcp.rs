@@ -652,7 +652,12 @@ mod tests {
         let root = temp_root("env-snapshot");
         let server = McpServer::new(root.clone());
         let out = server.dispatch(TOOL_ENV_SNAPSHOT, None).unwrap();
-        assert_eq!(out["workspace_id"], root.to_string_lossy().as_ref());
+        // 引擎 open 时 canonicalize 工作区路径（CI 的 macOS /var 软链与 Windows
+        // 8.3 短文件名会导致原始 temp 路径不一致），断言按同一口径比较。
+        let canon = supertask_core::sandbox::strip_verbatim(
+            std::fs::canonicalize(&root).expect("temp root 可解析"),
+        );
+        assert_eq!(out["workspace_id"], canon.to_string_lossy().as_ref());
         assert_eq!(out["total_count"], 1);
         assert!(out["host"].is_object(), "主机指标为对象");
         assert!(out["services"].is_array());
