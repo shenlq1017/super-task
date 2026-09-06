@@ -807,6 +807,72 @@ pub fn toolchain_upgrade(
     )
 }
 
+// ---------------------------------------------------------------------------
+// 方向三·E：归档供给执行器（ipc.md §10.17 增补）
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct ArchiveListOut {
+    pub archives: Vec<supertask_core::archive::InstalledArchive>,
+}
+
+/// 已安装归档列表（只读，读 `.complete` + manifest，损坏跳过）。
+#[tauri::command(rename = "archive.list")]
+pub fn archive_list() -> Result<ArchiveListOut, IpcError> {
+    Ok(ArchiveListOut {
+        archives: supertask_core::archive::installed(),
+    })
+}
+
+/// 安装归档（长操作，立即返回 operation_id；下载 → 校验 → 解压到隔离目录）。
+/// 同步快速校验：id 未知 / 版本不满足 / 平台无构建立即拒绝（`ARCHIVE_UNAVAILABLE`），
+/// 不发 operation。代理经 network 策略注入传输（凭据不进日志与事件）。
+#[tauri::command(rename = "archive.install")]
+pub fn archive_install(
+    hub: HubState<'_>,
+    appdata: AppDataRef<'_>,
+    exiting: State<'_, Exiting>,
+    id: String,
+    version: Option<String>,
+) -> Result<OperationOut, IpcError> {
+    use supertask_core::{archive, needs};
+    ensure_not_exiting(&exiting)?;
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err(err(ErrorCode::ArchiveUnavailable, "归档 id 不能为空"));
+    }
+    if let Some(v) = version.as_deref() {
+        supertask_core::toolchain::validate_version(v).map_err(ipc_err)?;
+    }
+    // 确定性计划先行：算不出计划（未知 id / 版本 / 平台）直接拒绝
+    let plan = archive::plan(&id, version.as_deref(), needs::platform_key()).map_err(ipc_err)?;
+    // 生效网络：app 默认（归档安装不依赖工作区，workspace 覆盖仍生效）
+    let app_network = {
+        let data = appdata.lock().expect("appdata lock");
+        data.network.clone()
+    };
+    let env = supertask_core::network::tool_env(
+        &supertask_core::network::resolve(None, Some(&app_network)).map_err(ipc_err)?,
+    )
+    .map_err(ipc_err)?;
+    let op_id = hub.spawn("archive.install", move |ctx| {
+        ctx.report(None, format!("正在准备归档 {id}"));
+        let transport = archive::UreqTransport::new(&env);
+        let receipt =
+            archive::install(&transport, &plan, &|msg| ctx.report(None, msg.to_string()))?;
+        Ok(json_into(serde_json::json!({
+            "id": receipt.id,
+            "version": receipt.version,
+            "release": receipt.release,
+            "bin_dir": receipt.bin_dir.to_string_lossy(),
+            "reused": receipt.reused,
+        }))?)
+    });
+    Ok(OperationOut {
+        operation_id: op_id,
+    })
+}
+
 #[tauri::command(rename = "app.savePrefs")]
 pub fn app_save_prefs(
     app: AppHandle,

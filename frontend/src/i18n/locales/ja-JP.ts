@@ -771,6 +771,8 @@ const jaJP = {
         installAndPin: "インストールしてピン留め",
         installDone: "{{id}} {{version}} をインストールし、ニーズを満たしました",
         installDonePinned: "{{id}} {{version}} をインストールして toolchain.* にピン留めしました。ニーズを満たしました",
+        archiveInstall: "ダウンロードして導入",
+        archiveDone: "アーカイブ {{id}} を導入しました。ニーズを満たしました",
         warnings: "ヒント",
         status: {
           satisfied: "既存",

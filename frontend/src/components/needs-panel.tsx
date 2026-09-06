@@ -25,10 +25,13 @@ function NeedRow({
   item,
   installing,
   onInstall,
+  onArchiveInstall,
 }: {
   item: NeedItem;
   installing: boolean;
   onInstall: (item: NeedItem, pin: boolean) => void;
+  /** 方向三·E：archive 行一键安装（归档执行器，无钉扎概念）。 */
+  onArchiveInstall: (item: NeedItem) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -42,6 +45,21 @@ function NeedRow({
           <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
             {item.found_version}
           </Badge>
+        ) : null}
+        {item.status === "archive" ? (
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            <Button
+              variant="default"
+              size="sm"
+              className="h-7 gap-1 px-2 text-[0.72rem]"
+              disabled={installing}
+              title={item.archive_version ? `v${item.archive_version}` : undefined}
+              onClick={() => onArchiveInstall(item)}
+            >
+              {installing ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+              {installing ? t("pages.env.needs.installing") : t("pages.env.needs.archiveInstall")}
+            </Button>
+          </span>
         ) : null}
         {item.status === "installable" ? (
           <span className="ml-auto flex shrink-0 items-center gap-1">
@@ -92,6 +110,7 @@ export function NeedsPanel({
   installingIds,
   onResolve,
   onInstall,
+  onArchiveInstall,
 }: {
   /** 当前工作区 spec 顶层 needs 声明（未声明为 undefined / 空数组）。 */
   needs: string[] | undefined;
@@ -102,6 +121,7 @@ export function NeedsPanel({
   installingIds: string[];
   onResolve: () => void;
   onInstall: (item: NeedItem, pin: boolean) => void;
+  onArchiveInstall: (item: NeedItem) => void;
 }) {
   const { t } = useTranslation();
   const declared = needs ?? [];
@@ -159,6 +179,7 @@ export function NeedsPanel({
                 item={it}
                 installing={installingIds.includes(it.id)}
                 onInstall={onInstall}
+                onArchiveInstall={onArchiveInstall}
               />
             ))}
           </div>

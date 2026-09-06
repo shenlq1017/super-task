@@ -39,6 +39,7 @@ import {
   type AdoptPreviewOut,
   type AdoptChoice,
   type AdoptAttachOut,
+  type ArchiveListOut,
   type NeedsResolveOut,
   type WorkspaceOpenOut,
   type YamlSaveOut,
@@ -632,6 +633,16 @@ export const apiAdoptAttach = (workspaceId: string, serviceId: string) =>
 /** 声明式需求 needs 解析（ipc.md §10.17）：resolve-only dry-run，纯只读零副作用。 */
 export const apiNeedsResolve = (workspaceId: string, refresh = false) =>
   invoke<NeedsResolveOut>(cmd.WORKSPACE_NEEDS_RESOLVE, { workspaceId, refresh });
+
+/** 归档安装（方向三 E）：下载→校验→解压到隔离目录，长操作返回 operation_id。 */
+export const apiArchiveInstall = (id: string, version?: string) =>
+  invoke<OperationIdOut>(cmd.ARCHIVE_INSTALL, {
+    id,
+    ...(version ? { version } : {}),
+  });
+
+/** 已安装归档列表（只读）。 */
+export const apiArchiveList = () => invoke<ArchiveListOut>(cmd.ARCHIVE_LIST, {});
 
 // ---------------------------------------------------------------------------
 // 网关（1.6，ipc.md §10.10）

@@ -887,6 +887,8 @@ const zhTW = {
         "installAndPin": "安裝並釘扎",
         "installDone": "已安裝 {{id}} {{version}}，需求已滿足",
         "installDonePinned": "已安裝 {{id}} {{version}} 並釘扎到 toolchain.*，需求已滿足",
+        "archiveInstall": "下載安裝",
+        "archiveDone": "封存 {{id}} 安裝完成，需求已滿足",
         "warnings": "提示",
         "status": {
           "satisfied": "已存在",

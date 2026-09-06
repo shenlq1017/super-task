@@ -389,6 +389,8 @@ pub fn run() {
             commands::templates_preview,
             commands::templates_merge_preview,
             commands::templates_merge_apply,
+            commands::archive_list,
+            commands::archive_install,
             commands::templates_import,
             commands::templates_export,
             commands::workspace_export_package,

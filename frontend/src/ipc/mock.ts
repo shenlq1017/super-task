@@ -3039,6 +3039,36 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
   }
 
   // -------------------------------------------------------------------------
+  // 方向三 E：归档供给执行器（mock 语义对齐 core：未知 id 即拒，无真下载）
+  // -------------------------------------------------------------------------
+
+  if (command === "archive.list") {
+    return { archives: [] as { id: string; version: string; release: string; bin_dir: string }[] };
+  }
+
+  if (command === "archive.install") {
+    const id = ((args?.id as string) ?? "").trim();
+    if (!id) {
+      throw { protocol: PROTOCOL, code: "ARCHIVE_UNAVAILABLE", message: "归档 id 不能为空", retryable: false };
+    }
+    if (!["minio", "postgres", "mysql"].includes(id)) {
+      throw { protocol: PROTOCOL, code: "ARCHIVE_UNAVAILABLE", message: `归档 ${id} 不可供给：未知归档 id。`, retryable: false };
+    }
+    if (id !== "minio") {
+      throw { protocol: PROTOCOL, code: "ARCHIVE_UNAVAILABLE", message: `归档 ${id} 不可供给：该中间件暂无官方公布 sha256 的免安装发行版。`, retryable: false };
+    }
+    const opId = `op-${++opSeq}`;
+    emitOperation("archive.install", opId, "queued", null, "排队中…", null, null);
+    setTimeout(() => emitOperation("archive.install", opId, "running", 0.4, `正在下载归档 ${id}…`, null, null), 400);
+    setTimeout(() => emitOperation("archive.install", opId, "running", 0.8, "校验通过，正在解压到隔离目录…", null, null), 900);
+    setTimeout(
+      () => emitOperation("archive.install", opId, "succeeded", 1, "安装完成", null, { id, version: "2024" }),
+      1400,
+    );
+    return { operation_id: opId };
+  }
+
+  // -------------------------------------------------------------------------
   // 声明式需求 needs（ipc.md §10.17）：resolve-only dry-run，纯只读零副作用。
   // 简化但忠实镜像 core needs::resolve 的四态判定：
   // 工具 probe → 安装枚举 → mise（优先）/ winget 白名单 → 归档目录 → 未知 id。

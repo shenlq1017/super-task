@@ -35,7 +35,7 @@ import { useYaml } from "@/providers/yaml-provider";
 import { useOperations } from "../providers/operation-provider";
 import { useToast } from "@/components/ui/toast";
 import { useUnsavedEntry } from "@/providers/unsaved-guard";
-import { apiNeedsResolve, apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade, apiToolchainVersions, apiYamlSaveForm } from "../ipc/api";
+import { apiArchiveInstall, apiNeedsResolve, apiToolchainInstall, apiToolchainProbe, apiToolchainUpgrade, apiToolchainVersions, apiYamlSaveForm } from "../ipc/api";
 import { IpcFailure, type DiscoveredInstall, type ManagerAvailability, type NeedItem, type NeedsResolveOut, type NetworkSpec, type SuperTaskFile, type ToolProbe, type ToolchainProbeOut } from "../ipc/protocol";
 import { opErrorLabel } from "@/lib/status";
 import { errorDisplayText, formatIpcFailure } from "@/lib/error-messages";
@@ -295,7 +295,9 @@ export function EnvPage() {
   const [needsLoading, setNeedsLoading] = useState(false);
   const [needsError, setNeedsError] = useState<string | null>(null);
   /** needs 面板发起的安装 op → 终态成功时给 needs 专属 toast 并自动重跑 resolve。 */
-  const needsOps = useRef(new Map<string, { id: string; version: string; pinned: boolean }>());
+  const needsOps = useRef(new Map<string, { id: string; version: string; pinned: boolean; archive: boolean }>());
+  /** 归档安装进行中（need id → opId；pending keyed by ToolKey 装不下中间件 id，另记）。 */
+  const [archivePending, setArchivePending] = useState<Record<string, string>>({});
 
   const setManagerPick = (m: ManagerPick) => {
     setManagerPickState(m);
@@ -360,6 +362,24 @@ export function EnvPage() {
       const entry = Object.entries(pendingRef.current).find(([, p]) => p?.opId === op.operation_id);
       if (!entry) continue;
       handledOps.current.add(op.operation_id);
+      // 方向三·E：归档安装 op（不在 tool pending 表里，先处理）
+      const archiveNeed = needsOps.current.get(op.operation_id);
+      if (archiveNeed?.archive) {
+        needsOps.current.delete(op.operation_id);
+        setArchivePending((prev) => {
+          const next = { ...prev };
+          delete next[archiveNeed.id];
+          return next;
+        });
+        if (op.state === "succeeded") {
+          toast(t("pages.env.needs.archiveDone", { id: archiveNeed.id }), "ok");
+          void resolveNeeds();
+        } else {
+          const label = opErrorLabel(op.error_code);
+          toast(op.message ? `${label}（${op.message}）` : label, "err");
+        }
+        continue;
+      }
       const tool = entry[0] as ToolKey;
       const { verb } = entry[1] as PendingOp;
       setPending((prev) => ({ ...prev, [tool]: null }));
@@ -454,6 +474,24 @@ export function EnvPage() {
     }
   };
 
+  /** 方向三·E：needs archive 行安装——归档执行器（下载→校验→解压），成功后重跑 resolve 翻转。 */
+  const installArchiveNeed = async (item: NeedItem) => {
+    if (archivePending[item.id]) return; // 同一归档进行中禁止重复发起
+    try {
+      const out = await apiArchiveInstall(item.id, item.archive_version ?? item.version_req ?? undefined);
+      handledOps.current.delete(out.operation_id);
+      needsOps.current.set(out.operation_id, {
+        id: item.id,
+        version: item.archive_version ?? item.version_req ?? "",
+        pinned: false,
+        archive: true,
+      });
+      setArchivePending((prev) => ({ ...prev, [item.id]: out.operation_id }));
+    } catch (e) {
+      toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
+    }
+  };
+
   /** needs installable 行安装：复用 toolchain.install 长操作链路（tool=id，版本/manager 取 resolve 建议值）。
    *  pin=true 时经 persist 一并把版本写回 toolchain.*（§10.17 钉扎写回；YAML_CONFLICT 仅写回失败，安装保留）。 */
   const installNeed = async (item: NeedItem, pin: boolean) => {
@@ -468,7 +506,7 @@ export function EnvPage() {
         baseHash: pin ? yaml.state.hash : null,
       });
       handledOps.current.delete(out.operation_id);
-      needsOps.current.set(out.operation_id, { id: item.id, version: item.install_version ?? "", pinned: pin });
+      needsOps.current.set(out.operation_id, { id: item.id, version: item.install_version ?? "", pinned: pin, archive: false });
       setPending((prev) => ({ ...prev, [tool]: { opId: out.operation_id, verb: "install" } }));
     } catch (e) {
       toast(e instanceof IpcFailure ? formatIpcFailure(e) : String(e), "err");
@@ -672,11 +710,15 @@ export function EnvPage() {
             output={needsOut}
             loading={needsLoading}
             error={needsError}
-            installingIds={Object.entries(pending)
-              .filter(([, p]) => p != null)
-              .map(([k]) => k)}
+            installingIds={[
+              ...Object.entries(pending)
+                .filter(([, p]) => p != null)
+                .map(([k]) => k),
+              ...Object.keys(archivePending),
+            ]}
             onResolve={() => void resolveNeeds()}
             onInstall={(item, pin) => void installNeed(item, pin)}
+            onArchiveInstall={(item) => void installArchiveNeed(item)}
           />
         )}
 

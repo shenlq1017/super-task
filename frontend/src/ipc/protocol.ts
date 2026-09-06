@@ -87,6 +87,9 @@ export const cmd = {
   // Procfile 导入（ipc.md §10.19）
   IMPORT_PROCFILE_PREVIEW: "import.procfilePreview",
   IMPORT_PROCFILE_APPLY: "import.procfileApply",
+  // 归档供给执行器（方向三 E，ipc.md §10.17 增补）
+  ARCHIVE_INSTALL: "archive.install",
+  ARCHIVE_LIST: "archive.list",
   // 孤儿进程纳管（ipc.md §10.16）
   WORKSPACE_ADOPT_PREVIEW: "workspace.adoptPreview",
   WORKSPACE_ADOPT_APPLY: "workspace.adoptApply",
@@ -1115,6 +1118,17 @@ export type AdoptChoice = { pid: number; action: "add" | "keep" };
 
 /** `workspace.adoptAttach` 输出：被接管的外部进程（方向二·原地接管）。 */
 export type AdoptAttachOut = { service_id: string; pid: number; warnings: string[] };
+
+/** 已安装归档（`archive.list` 输出项，mirror `archive::InstalledArchive`）。 */
+export type InstalledArchive = {
+  id: string;
+  version: string;
+  release: string;
+  bin_dir: string;
+};
+
+/** `archive.list` 输出。 */
+export type ArchiveListOut = { archives: InstalledArchive[] };
 
 // ---------------------------------------------------------------------------
 // DTOs — 声明式需求 needs（ipc.md §10.17，mirror `crates/supertask-core/src/needs.rs`）

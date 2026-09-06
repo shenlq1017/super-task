@@ -886,6 +886,8 @@ const zhCN = {
         installAndPin: "安装并钉扎",
         installDone: "已安装 {{id}} {{version}}，需求已满足",
         installDonePinned: "已安装 {{id}} {{version}} 并钉扎到 toolchain.*，需求已满足",
+        archiveInstall: "下载安装",
+        archiveDone: "归档 {{id}} 安装完成，需求已满足",
         warnings: "提示",
         status: {
           satisfied: "已存在",
