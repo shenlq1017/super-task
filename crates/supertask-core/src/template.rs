@@ -1501,6 +1501,528 @@ pub fn export_template(
     Ok(out_path)
 }
 
+// ---------------------------------------------------------------------------
+// 方向四·M：模板并入现有工作区——preview/apply（只增改所选块，其余不动）。
+// 与孤儿纳管 / Taskfile / Procfile 同一机制：preview 纯内存、apply 重算、
+// 写盘走 `yaml.saveForm`（base_hash 乐观锁）。文件复制跳过已存在文件
+// （不覆盖），幂等可重试；零新增错误码（复用 TEMPLATE_* / NOT_FOUND /
+// YAML_CONFLICT）。
+// ---------------------------------------------------------------------------
+
+/// 并入项状态：`add` 可新增；`id_conflict`/`port_conflict` 默认不勾、apply 跳过。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateMergeStatus {
+    Add,
+    IdConflict,
+    PortConflict,
+}
+
+/// `templates.mergePreview` 的服务条目。
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateMergeItem {
+    pub service_id: String,
+    /// 组合模板来源块 id；普通模板为 None。
+    pub block_id: Option<String>,
+    pub status: TemplateMergeStatus,
+    pub port: Option<u16>,
+    /// 默认动作：干净 add = true；冲突默认 false。
+    pub selected: bool,
+    pub warnings: Vec<String>,
+}
+
+/// `templates.mergePreview` 的文件条目（supertask.yaml 本身不计入，只读）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateMergeFile {
+    pub path: String,
+    pub will_copy: bool,
+    /// 跳过原因（已存在不覆盖等）；will_copy 时为 None。
+    pub reason: Option<String>,
+}
+
+/// `templates.mergePreview` 输出。
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateMergePreview {
+    pub template_id: String,
+    pub items: Vec<TemplateMergeItem>,
+    pub files: Vec<TemplateMergeFile>,
+    /// 模板声明、本工作区缺失的 needs 条目（apply 时并入）。
+    pub needs_added: Vec<String>,
+    /// 模板声明、本工作区未钉扎的 toolchain 键（apply 时补齐，不覆盖已有）。
+    pub toolchain_added: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// `templates.mergeApply` 的执行报告（调用方拼进 YamlSaveOut.warnings）。
+#[derive(Debug, Clone)]
+pub struct TemplateMergeReport {
+    pub added_services: Vec<String>,
+    pub skipped_services: Vec<(String, String)>,
+    pub files_copied: Vec<String>,
+    pub files_skipped: Vec<String>,
+    pub needs_added: Vec<String>,
+    pub toolchain_added: Vec<String>,
+}
+
+struct MergeCandidateService {
+    id: String,
+    block_id: Option<String>,
+    spec: crate::spec::ServiceSpec,
+}
+
+/// 并入计划：候选服务 + needs/toolchain 增量 + 待复制文件（params 已应用）。
+struct MergePlan {
+    template_id: String,
+    services: Vec<MergeCandidateService>,
+    needs: Vec<String>,
+    toolchain: Option<crate::spec::ToolchainSpec>,
+    /// (相对路径, 内容)；不含 supertask.yaml。
+    files: Vec<(String, Vec<u8>)>,
+    /// 组合模板的块声明（文件归属判定用；普通模板为空）。
+    blocks: Vec<TemplateBlock>,
+}
+
+fn build_merge_plan(
+    template_id: &str,
+    source: TemplateSourceKind,
+    local_dir: Option<&Path>,
+    blocks: Option<&[String]>,
+    ports: &BTreeMap<String, u32>,
+    params: &BTreeMap<String, String>,
+) -> Result<MergePlan> {
+    let entry = resolve_entry(template_id, source, local_dir)?;
+    if entry.summary.invalid {
+        return Err(Error::new(
+            ErrorCode::TemplateInvalid,
+            entry
+                .summary
+                .invalid_reason
+                .unwrap_or_else(|| "模板清单损坏".into()),
+        ));
+    }
+    validate_param_values(&entry, params)?;
+    let mut files = verify_entry_files(&entry)?;
+    apply_params(&mut files, params);
+    if entry.blocks.is_empty() {
+        // 普通模板：supertask.yaml 经 params 替换后解析为 typed spec。
+        let yaml_bytes = files
+            .iter()
+            .find(|(rel, _)| rel == "supertask.yaml")
+            .map(|(_, b)| b.as_slice())
+            .ok_or_else(|| Error::new(ErrorCode::TemplateInvalid, "模板缺少 supertask.yaml"))?;
+        let yaml_text = std::str::from_utf8(yaml_bytes).map_err(|_| {
+            Error::new(ErrorCode::TemplateInvalid, "模板 supertask.yaml 不是 UTF-8")
+        })?;
+        let (tpl_file, _) = crate::spec::parse_yaml(yaml_text).map_err(|e| {
+            Error::new(
+                ErrorCode::TemplateInvalid,
+                format!("模板 supertask.yaml 解析失败: {}", e.message()),
+            )
+        })?;
+        let services = tpl_file
+            .services
+            .into_iter()
+            .map(|(id, spec)| MergeCandidateService {
+                id,
+                block_id: None,
+                spec,
+            })
+            .collect();
+        files.retain(|(rel, _)| rel != "supertask.yaml");
+        Ok(MergePlan {
+            template_id: entry.summary.id.clone(),
+            services,
+            needs: tpl_file.needs.unwrap_or_default(),
+            toolchain: tpl_file.toolchain,
+            files,
+            blocks: Vec::new(),
+        })
+    } else {
+        // 组合模板：复用 plan_blocks（依赖闭合 + {{port}} 占位 + 端口查重）。
+        let plan = plan_blocks(&entry, blocks, ports)?.ok_or_else(|| {
+            Error::new(ErrorCode::TemplateInvalid, "组合模板计划为空".to_string())
+        })?;
+        let mut services = Vec::with_capacity(plan.services.len());
+        for (svc_id, item) in &plan.services {
+            let block_id = entry
+                .blocks
+                .iter()
+                .find(|b| {
+                    b.services
+                        .as_mapping()
+                        .is_some_and(|m| m.contains_key(Value::from(svc_id.as_str())))
+                })
+                .map(|b| b.id.clone());
+            let mut spec: crate::spec::ServiceSpec =
+                serde_yaml::from_value(item.clone()).map_err(|e| {
+                    Error::new(
+                        ErrorCode::TemplateInvalid,
+                        format!("块服务 {svc_id:?} 解析失败: {e}"),
+                    )
+                })?;
+            // 来源留痕（adopt 同口径）：不覆盖模板自带 labels。
+            spec.labels
+                .entry("origin".into())
+                .or_insert_with(|| "template-merge".into());
+            spec.labels
+                .entry("template".into())
+                .or_insert_with(|| entry.summary.id.clone());
+            services.push(MergeCandidateService {
+                id: svc_id.clone(),
+                block_id,
+                spec,
+            });
+        }
+        let wanted: HashSet<&str> = plan.files.iter().map(|s| s.as_str()).collect();
+        files.retain(|(rel, _)| wanted.contains(rel.as_str()));
+        Ok(MergePlan {
+            template_id: entry.summary.id.clone(),
+            services,
+            needs: Vec::new(),
+            toolchain: None,
+            files,
+            blocks: entry.blocks.clone(),
+        })
+    }
+}
+
+/// `templates.mergePreview`：纯内存计算，不落盘、不复制文件。
+pub fn merge_preview(
+    current: &SuperTaskFile,
+    root: &Path,
+    template_id: &str,
+    source: TemplateSourceKind,
+    local_dir: Option<&Path>,
+    blocks: Option<&[String]>,
+    ports: &BTreeMap<String, u32>,
+    params: &BTreeMap<String, String>,
+) -> Result<TemplateMergePreview> {
+    let plan = build_merge_plan(template_id, source, local_dir, blocks, ports, params)?;
+    let mut used_ports: HashSet<u16> = HashSet::new();
+    for svc in current.services.values() {
+        if let Some(p) = svc.port {
+            used_ports.insert(p);
+        }
+        used_ports.extend(svc.ports.iter().copied());
+    }
+    let mut items = Vec::with_capacity(plan.services.len());
+    for cand in &plan.services {
+        let mut warnings = Vec::new();
+        let status = if current.services.contains_key(&cand.id) {
+            warnings.push(format!(
+                "服务 id {:?} 已存在，并入时跳过（不覆盖）",
+                cand.id
+            ));
+            TemplateMergeStatus::IdConflict
+        } else if let Some(p) = cand.spec.port {
+            if used_ports.contains(&p) {
+                warnings.push(format!(
+                    "端口 {p} 已被本工作区其他服务声明，并入时跳过（可改 ports 后重试）"
+                ));
+                TemplateMergeStatus::PortConflict
+            } else {
+                TemplateMergeStatus::Add
+            }
+        } else {
+            TemplateMergeStatus::Add
+        };
+        // 依赖指向并入范围外且工作区内也不存在：只警告（启动时按既有语义处理）。
+        for dep in &cand.spec.depends_on {
+            let in_plan = plan.services.iter().any(|s| &s.id == dep);
+            if !in_plan && !current.services.contains_key(dep) {
+                warnings.push(format!("依赖 {dep:?} 不在工作区内，启动时可能 DEP_DEAD"));
+            }
+        }
+        let selected = status == TemplateMergeStatus::Add;
+        items.push(TemplateMergeItem {
+            service_id: cand.id.clone(),
+            block_id: cand.block_id.clone(),
+            status,
+            port: cand.spec.port,
+            selected,
+            warnings,
+        });
+    }
+    let existing_needs: HashSet<&str> = current
+        .needs
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+    let needs_added: Vec<String> = plan
+        .needs
+        .iter()
+        .filter(|n| !existing_needs.contains(n.as_str()))
+        .cloned()
+        .collect();
+    let toolchain_added =
+        toolchain_missing_keys(current.toolchain.as_ref(), plan.toolchain.as_ref());
+    let mut files = Vec::with_capacity(plan.files.len());
+    for (rel, _) in &plan.files {
+        let dest = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if dest.exists() {
+            files.push(TemplateMergeFile {
+                path: rel.clone(),
+                will_copy: false,
+                reason: Some("目标已存在，不覆盖".into()),
+            });
+        } else {
+            files.push(TemplateMergeFile {
+                path: rel.clone(),
+                will_copy: true,
+                reason: None,
+            });
+        }
+    }
+    let mut warnings = Vec::new();
+    if !needs_added.is_empty() {
+        warnings.push(format!("将新增 needs 声明 {} 条", needs_added.len()));
+    }
+    if !toolchain_added.is_empty() {
+        warnings.push(format!(
+            "将补齐 toolchain 钉扎：{}",
+            toolchain_added.join(", ")
+        ));
+    }
+    Ok(TemplateMergePreview {
+        template_id: plan.template_id,
+        items,
+        files,
+        needs_added,
+        toolchain_added,
+        warnings,
+    })
+}
+
+/// `templates.mergeApply`：重算预览 → 只增改所选 → 返回合并后 spec 与报告。
+/// 文件复制跳过已存在文件；`selected` 为 None 时取预览默认勾选。
+/// 幂等：重复 apply 同一批选择全部落为跳过 + 警告。
+pub fn merge_apply(
+    current: &SuperTaskFile,
+    root: &Path,
+    template_id: &str,
+    source: TemplateSourceKind,
+    local_dir: Option<&Path>,
+    blocks: Option<&[String]>,
+    ports: &BTreeMap<String, u32>,
+    params: &BTreeMap<String, String>,
+    selected: Option<&[String]>,
+) -> Result<(SuperTaskFile, TemplateMergeReport)> {
+    let plan = build_merge_plan(template_id, source, local_dir, blocks, ports, params)?;
+    // 预览同口径的状态判定（apply 重算，不信任调用方传的状态）。
+    let mut used_ports: HashSet<u16> = HashSet::new();
+    for svc in current.services.values() {
+        if let Some(p) = svc.port {
+            used_ports.insert(p);
+        }
+        used_ports.extend(svc.ports.iter().copied());
+    }
+    let mut status_of: BTreeMap<&str, TemplateMergeStatus> = BTreeMap::new();
+    for cand in &plan.services {
+        let st = if current.services.contains_key(&cand.id) {
+            TemplateMergeStatus::IdConflict
+        } else if cand.spec.port.is_some_and(|p| used_ports.contains(&p)) {
+            TemplateMergeStatus::PortConflict
+        } else {
+            TemplateMergeStatus::Add
+        };
+        status_of.insert(cand.id.as_str(), st);
+    }
+    let chosen: HashSet<&str> = match selected {
+        Some(ids) => {
+            for id in ids {
+                if !status_of.contains_key(id.as_str()) {
+                    return Err(Error::new(
+                        ErrorCode::NotFound,
+                        format!("选择 {id:?} 不在模板服务内"),
+                    ));
+                }
+            }
+            ids.iter().map(|s| s.as_str()).collect()
+        }
+        None => status_of
+            .iter()
+            .filter(|(_, st)| **st == TemplateMergeStatus::Add)
+            .map(|(id, _)| *id)
+            .collect(),
+    };
+    let mut merged = current.clone();
+    let mut report = TemplateMergeReport {
+        added_services: Vec::new(),
+        skipped_services: Vec::new(),
+        files_copied: Vec::new(),
+        files_skipped: Vec::new(),
+        needs_added: Vec::new(),
+        toolchain_added: Vec::new(),
+    };
+    for cand in &plan.services {
+        if !chosen.contains(cand.id.as_str()) {
+            continue;
+        }
+        match status_of[cand.id.as_str()] {
+            TemplateMergeStatus::Add => {
+                let mut spec = cand.spec.clone();
+                // 普通模板同样来源留痕（不覆盖模板自带 labels）。
+                spec.labels
+                    .entry("origin".into())
+                    .or_insert_with(|| "template-merge".into());
+                spec.labels
+                    .entry("template".into())
+                    .or_insert_with(|| plan.template_id.clone());
+                merged.services.insert(cand.id.clone(), spec);
+                report.added_services.push(cand.id.clone());
+            }
+            TemplateMergeStatus::IdConflict => report
+                .skipped_services
+                .push((cand.id.clone(), "服务 id 已存在，未覆盖".into())),
+            TemplateMergeStatus::PortConflict => report.skipped_services.push((
+                cand.id.clone(),
+                "端口与现有服务冲突，未并入（可改 ports 后重试）".into(),
+            )),
+        }
+    }
+    // needs 并集（只增不改）；toolchain 只补当前未钉扎的键。
+    let mut need_set: HashSet<String> = merged
+        .needs
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    for n in &plan.needs {
+        if need_set.insert(n.clone()) {
+            report.needs_added.push(n.clone());
+        }
+    }
+    if !report.needs_added.is_empty() {
+        let mut v: Vec<String> = need_set.into_iter().collect();
+        v.sort();
+        merged.needs = Some(v);
+    }
+    report.toolchain_added = merge_toolchain(&mut merged, plan.toolchain.as_ref());
+    // 文件：仅复制所选服务归属块的文件（普通模板无归属概念 → 全量候选文件）；
+    // 已存在跳过（幂等），父目录按需创建。
+    let scoped_files: HashSet<&str> = if plan.blocks.is_empty() {
+        plan.files.iter().map(|(r, _)| r.as_str()).collect()
+    } else {
+        let chosen_blocks: HashSet<&str> = plan
+            .services
+            .iter()
+            .filter(|s| chosen.contains(s.id.as_str()))
+            .filter_map(|s| s.block_id.as_deref())
+            .collect();
+        let mut set = HashSet::new();
+        for b in &plan.blocks {
+            if chosen_blocks.contains(b.id.as_str()) {
+                set.extend(b.files.iter().map(|s| s.as_str()));
+            }
+        }
+        set
+    };
+    for (rel, bytes) in &plan.files {
+        if !scoped_files.contains(rel.as_str()) {
+            continue;
+        }
+        let dest = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if dest.exists() {
+            report.files_skipped.push(rel.clone());
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                Error::new(
+                    ErrorCode::TemplateWrite,
+                    format!("无法创建目录 {}: {e}", parent.display()),
+                )
+            })?;
+        }
+        fs::write(&dest, bytes).map_err(|e| {
+            Error::new(
+                ErrorCode::TemplateWrite,
+                format!("写入失败: {}: {e}", dest.display()),
+            )
+        })?;
+        report.files_copied.push(rel.clone());
+    }
+    Ok((merged, report))
+}
+
+/// 当前 spec 相对模板缺失的 toolchain 键（展示 + apply 共用）。
+fn toolchain_missing_keys(
+    current: Option<&crate::spec::ToolchainSpec>,
+    tpl: Option<&crate::spec::ToolchainSpec>,
+) -> Vec<String> {
+    let Some(t) = tpl else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let pairs: [(&Option<String>, bool, &str); 5] = [
+        (&t.java, current.is_none_or(|c| c.java.is_none()), "java"),
+        (&t.maven, current.is_none_or(|c| c.maven.is_none()), "maven"),
+        (&t.node, current.is_none_or(|c| c.node.is_none()), "node"),
+        (
+            &t.python,
+            current.is_none_or(|c| c.python.is_none()),
+            "python",
+        ),
+        (&t.go, current.is_none_or(|c| c.go.is_none()), "go"),
+    ];
+    for (tpl_v, cur_missing, name) in pairs {
+        if tpl_v.is_some() && cur_missing {
+            out.push(name.to_string());
+        }
+    }
+    if t.manager.is_some() && current.is_none_or(|c| c.manager.is_none()) {
+        out.push("manager".into());
+    }
+    if t.package_manager.is_some() && current.is_none_or(|c| c.package_manager.is_none()) {
+        out.push("package_manager".into());
+    }
+    for k in t.extra.keys() {
+        let missing = current.is_none_or(|c| !c.extra.contains_key(k));
+        if missing {
+            out.push(format!("extra.{k}"));
+        }
+    }
+    out
+}
+
+/// 把模板 toolchain 缺失键补进 merged（不覆盖已有钉扎），返回补齐的键。
+fn merge_toolchain(
+    merged: &mut SuperTaskFile,
+    tpl: Option<&crate::spec::ToolchainSpec>,
+) -> Vec<String> {
+    let added = toolchain_missing_keys(merged.toolchain.as_ref(), tpl);
+    if added.is_empty() {
+        return added;
+    }
+    let t = tpl.expect("added 非空则 tpl 必存在");
+    let cur = merged.toolchain.get_or_insert_with(Default::default);
+    if cur.java.is_none() {
+        cur.java = t.java.clone();
+    }
+    if cur.maven.is_none() {
+        cur.maven = t.maven.clone();
+    }
+    if cur.node.is_none() {
+        cur.node = t.node.clone();
+    }
+    if cur.python.is_none() {
+        cur.python = t.python.clone();
+    }
+    if cur.go.is_none() {
+        cur.go = t.go.clone();
+    }
+    if cur.manager.is_none() {
+        cur.manager = t.manager;
+    }
+    if cur.package_manager.is_none() {
+        cur.package_manager = t.package_manager;
+    }
+    for (k, v) in &t.extra {
+        cur.extra.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    added
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2504,5 +3026,273 @@ mod tests {
             out.services.as_mapping().unwrap().len()
         );
         let _ = fs::remove_dir_all(&parent);
+    }
+
+    // ---- 方向四·M：模板并入现有工作区 ----
+
+    fn empty_ws() -> SuperTaskFile {
+        // spec 要求至少一个服务：用占位服务代表“空工作区”，断言时排除它。
+        let (f, _) = parse_yaml(
+            "version: 1\nservices:\n  placeholder:\n    kind: generic\n    program: placeholder\n",
+        )
+        .unwrap();
+        f
+    }
+
+    fn tpl_params(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn merge_tunnel_adds_service_files_and_params() {
+        // tunnel-cloudflared：普通模板，service tunnel + 必填 target_port + README。
+        let root = temp_dir("merge-tunnel");
+        let current = empty_ws();
+        let pv = merge_preview(
+            &current,
+            &root,
+            "tunnel-cloudflared",
+            TemplateSourceKind::Builtin,
+            None,
+            None,
+            &BTreeMap::new(),
+            &tpl_params(&[("target_port", "8080")]),
+        )
+        .unwrap();
+        assert_eq!(pv.items.len(), 1);
+        assert_eq!(pv.items[0].service_id, "tunnel");
+        assert_eq!(pv.items[0].status, TemplateMergeStatus::Add);
+        assert!(pv.items[0].selected);
+        // supertask.yaml 本身不计入待复制文件
+        assert!(pv
+            .files
+            .iter()
+            .any(|f| f.path == "README.md" && f.will_copy));
+        assert!(!pv.files.iter().any(|f| f.path == "supertask.yaml"));
+        let (merged, report) = merge_apply(
+            &current,
+            &root,
+            "tunnel-cloudflared",
+            TemplateSourceKind::Builtin,
+            None,
+            None,
+            &BTreeMap::new(),
+            &tpl_params(&[("target_port", "8080")]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.added_services, vec!["tunnel".to_string()]);
+        assert_eq!(report.files_copied, vec!["README.md".to_string()]);
+        let svc = &merged.services["tunnel"];
+        let args = serde_json::to_value(&svc).unwrap();
+        assert!(
+            args.to_string().contains("8080"),
+            "params 必须替换进服务参数：{args}"
+        );
+        assert_eq!(
+            svc.labels.get("origin").map(|s| s.as_str()),
+            Some("template-merge")
+        );
+        // 落盘 yaml 可重新解析（save_form 前置条件）
+        let text = crate::spec::to_yaml(&merged).unwrap();
+        parse_yaml(&text).unwrap();
+        assert!(root.join("README.md").is_file());
+        assert!(!root.join("supertask.yaml").exists(), "不得写模板自带 yaml");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_id_conflict_skips_without_overwrite() {
+        let root = temp_dir("merge-idconflict");
+        let (current, _) = parse_yaml(
+            "version: 1\nservices:\n  tunnel:\n    kind: node\n    dir: web\n    script: dev\n    port: 5173\n",
+        )
+        .unwrap();
+        let pv = merge_preview(
+            &current,
+            &root,
+            "tunnel-cloudflared",
+            TemplateSourceKind::Builtin,
+            None,
+            None,
+            &BTreeMap::new(),
+            &tpl_params(&[("target_port", "8080")]),
+        )
+        .unwrap();
+        assert_eq!(pv.items[0].status, TemplateMergeStatus::IdConflict);
+        assert!(!pv.items[0].selected);
+        // 显式勾选冲突项：不覆盖，记跳过（默认选择则根本不会选中它）。
+        let (merged, report) = merge_apply(
+            &current,
+            &root,
+            "tunnel-cloudflared",
+            TemplateSourceKind::Builtin,
+            None,
+            None,
+            &BTreeMap::new(),
+            &tpl_params(&[("target_port", "8080")]),
+            Some(&["tunnel".to_string()]),
+        )
+        .unwrap();
+        assert!(report.added_services.is_empty());
+        assert_eq!(report.skipped_services.len(), 1);
+        // 原服务一字不动
+        assert_eq!(merged.services["tunnel"].kind, "node");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_combo_port_conflict_and_idempotent_retry() {
+        // 现有服务占用 8081 → combo backend（default_port 8081）端口冲突。
+        let root = temp_dir("merge-portconflict");
+        let (current, _) = parse_yaml(
+            "version: 1\nservices:\n  api:\n    kind: node\n    dir: web\n    script: dev\n    port: 8081\n",
+        )
+        .unwrap();
+        let pv = merge_preview(
+            &current,
+            &root,
+            "spring-node-combo",
+            TemplateSourceKind::Builtin,
+            None,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let backend = pv.items.iter().find(|i| i.service_id == "backend").unwrap();
+        assert_eq!(backend.status, TemplateMergeStatus::PortConflict);
+        assert!(!backend.selected);
+        assert_eq!(backend.block_id.as_deref(), Some("backend"));
+        // 只选 web：依赖 backend 自动闭合进计划，但 apply 仅写 web；
+        // web 文件复制、backend 不写服务（未选）。
+        let (merged, report) = merge_apply(
+            &current,
+            &root,
+            "spring-node-combo",
+            TemplateSourceKind::Builtin,
+            None,
+            Some(&["web".to_string()]),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Some(&["web".to_string()]),
+        )
+        .unwrap();
+        assert_eq!(report.added_services, vec!["web".to_string()]);
+        assert!(merged.services.contains_key("web"));
+        assert!(!merged.services.contains_key("backend"));
+        assert!(root.join("web/package.json").is_file());
+        assert!(!root.join("pom.xml").exists(), "未选块的文件不得复制");
+        // 幂等重试：服务已存在 → IdConflict，文件已存在 → 跳过
+        let (merged2, report2) = merge_apply(
+            &merged,
+            &root,
+            "spring-node-combo",
+            TemplateSourceKind::Builtin,
+            None,
+            Some(&["web".to_string()]),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Some(&["web".to_string()]),
+        )
+        .unwrap();
+        assert!(report2.added_services.is_empty());
+        assert_eq!(report2.skipped_services.len(), 1);
+        assert!(report2.files_copied.is_empty());
+        assert!(!report2.files_skipped.is_empty());
+        assert!(merged2.services.contains_key("web"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_unknown_selected_is_not_found() {
+        let root = temp_dir("merge-unknown");
+        let current = empty_ws();
+        let e = merge_apply(
+            &current,
+            &root,
+            "tunnel-cloudflared",
+            TemplateSourceKind::Builtin,
+            None,
+            None,
+            &BTreeMap::new(),
+            &tpl_params(&[("target_port", "8080")]),
+            Some(&["nope".to_string()]),
+        )
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::NotFound);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_needs_and_toolchain_union_without_overwrite() {
+        // local 模板自带 needs/toolchain：缺失补齐、已有不覆盖。
+        let base = temp_dir("merge-union");
+        let local_dir = base.join("lib");
+        fs::create_dir_all(&local_dir).unwrap();
+        let tid = "union-tpl";
+        let tdir = local_dir.join(tid);
+        fs::create_dir_all(&tdir).unwrap();
+        fs::write(
+            tdir.join("supertask.yaml"),
+            "version: 1\nname: u\nneeds:\n  - node@20\n  - postgres@16\ntoolchain:\n  node: \"20.11.0\"\n  python: \"3.12.0\"\nservices:\n  helper:\n    kind: generic\n    program: helper\n",
+        )
+        .unwrap();
+        fs::write(tdir.join("README.md"), "# u\n").unwrap();
+        fs::write(
+            tdir.join(MANIFEST_FILE),
+            format!("id: {tid}\nversion: \"1\"\nname: 联合\ndescription: 测试\nstacks:\n  - generic\nfiles:\n  - supertask.yaml\n  - README.md\n"),
+        )
+        .unwrap();
+        let root = base.join("ws");
+        fs::create_dir_all(&root).unwrap();
+        let (current, _) = parse_yaml(
+            "version: 1\nneeds:\n  - node@20\ntoolchain:\n  node: \"18.0.0\"\nservices:\n  placeholder:\n    kind: generic\n    program: placeholder\n",
+        )
+        .unwrap();
+        let pv = merge_preview(
+            &current,
+            &root,
+            tid,
+            TemplateSourceKind::Local,
+            Some(&local_dir),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(pv.needs_added, vec!["postgres@16".to_string()]);
+        assert_eq!(pv.toolchain_added, vec!["python".to_string()]);
+        let (merged, report) = merge_apply(
+            &current,
+            &root,
+            tid,
+            TemplateSourceKind::Local,
+            Some(&local_dir),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+        assert!(merged
+            .needs
+            .as_ref()
+            .unwrap()
+            .contains(&"node@20".to_string()));
+        assert!(merged
+            .needs
+            .as_ref()
+            .unwrap()
+            .contains(&"postgres@16".to_string()));
+        let tc = merged.toolchain.as_ref().unwrap();
+        assert_eq!(tc.node.as_deref(), Some("18.0.0"), "已有钉扎不得覆盖");
+        assert_eq!(tc.python.as_deref(), Some("3.12.0"));
+        assert_eq!(report.needs_added, vec!["postgres@16".to_string()]);
+        assert_eq!(report.toolchain_added, vec!["python".to_string()]);
+        let _ = fs::remove_dir_all(&base);
     }
 }
