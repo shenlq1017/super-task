@@ -6,6 +6,15 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 隧道公网 URL 提取到服务卡片（方向四·网络与身份）
+
+- 运行页服务卡片自动展示隧道公网地址：引擎日志管道识别 cloudflared quick tunnel
+  的分配行（`https://<子域>.trycloudflare.com`），提取后随运行时快照下发
+  （`ServiceRuntimeView.tunnel_url`，additive），卡片上只读徽标点击即开。
+- 粘性至重启：URL 提取后不因环形缓冲淘汰回退；服务重启即清零（quick tunnel
+  重启会重新分配）。子串快筛保证非隧道服务零正则成本；token 走 env_file 不回显。
+- frpc 的「远程地址」日志形态不稳定，不做推测式提取（后续按真实日志证据补充）。
+
 #### needs 安装并钉扎写回（方向三·环境供给）
 
 - 环境页 needs 卡片 installable 行新增「安装并钉扎」：与「安装」同一 `toolchain.install`

@@ -191,6 +191,8 @@
 > （`redirect` + `redirect_status`、`strip_prefix`、`static_dir` 整站静态）、
 > **网关 CORS 与多域名别名**（route 级白名单回显 CORS + preflight 本地 204、
 > host 逗号分隔别名组）（进 `CHANGELOG.md` 与 `docs/spec/yaml.md` §7.1）。
+> 已交付移出：**隧道公网 URL 提取**——cloudflared quick tunnel 分配行进日志管道
+> 提取后随快照下发，运行页服务卡片只读展示（进 `CHANGELOG.md` 与 ipc.md §6）。
 > 反代「能通 → 够用」的缺口已闭；剩余两项均为涉及平台权限的高成本项。
 
 ---
