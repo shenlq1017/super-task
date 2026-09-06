@@ -45,6 +45,15 @@ pub struct DataSnapshotCreatedOut {
     pub warnings: Vec<String>,
 }
 
+/// `workspace.adoptAttach` 输出（方向二·原地接管，2026-09-06）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdoptAttachOut {
+    pub service_id: String,
+    /// 被接管的外部进程 pid
+    pub pid: u32,
+    pub warnings: Vec<String>,
+}
+
 /// `workspace.dataRestorePreview` 输出（纯只读；覆盖面陈述）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRestorePreviewOut {

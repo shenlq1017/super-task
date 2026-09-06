@@ -220,6 +220,9 @@ struct Slot {
     cancel: Arc<AtomicBool>,
     /// 外部进程（端口被占时识别为已运行的非 SuperTask 托管实例）
     managed: bool,
+    /// 方向二·原地接管临界标志：attach 流程持有期间拒绝同服务的
+    /// start/stop/restart/二次 attach，避免暂存 Job 在失败路径被 drop 误杀目标进程。
+    attaching: bool,
     /// 1.2 launch: jar：已构建 artifact 的绝对路径
     artifact: Option<PathBuf>,
     /// 1.2 §8.5：进程退出原因（crash / stop）
@@ -847,6 +850,7 @@ impl Engine {
                     tunnel_url: None,
                     cancel: Arc::new(AtomicBool::new(false)),
                     managed,
+                    attaching: false,
                     artifact: None,
                     exit_reason: None,
                     restart: crate::spec::RestartSpec::default(),
@@ -988,6 +992,268 @@ impl Engine {
             slot.started = None;
             slot.job = Some(d.job);
             slot.cancel = Arc::new(AtomicBool::new(false));
+        }
+    }
+
+    /// 方向二·原地接管（2026-09-06，ipc.md §10.16 增补）：把正在运行的外部进程
+    /// 免重启纳入引擎监管。归属复核复用纳管同一三维判定（端口 + 工作目录 +
+    /// 程序类型，`discover::classify_with_list`）——端口被占但归属不属于本工作区
+    /// 一律拒绝，**绝不把错误进程挂进 kill-on-close Job**。接管后运行页从
+    /// 「外部 · 仅监控」转为受管 Running：停止走树杀、关闭工作区随场清空。
+    /// Windows 专用（8+ 嵌套 Job）；Unix 无 attach 等价物 → `PLATFORM_UNSUPPORTED`。
+    pub fn adopt_attach(&self, service_id: &str) -> Result<crate::ipc::AdoptAttachOut> {
+        #[cfg(not(windows))]
+        {
+            let _ = service_id;
+            Err(Error::new(
+                ErrorCode::PlatformUnsupported,
+                "原地接管当前仅 Windows 支持（Unix 无 Job attach 等价物；重开工作区仍按外部实例识别）",
+            ))
+        }
+        #[cfg(windows)]
+        {
+            self.adopt_attach_windows(service_id)
+        }
+    }
+
+    /// attach 失败可诊断并可回退：失败路径不杀目标进程、不触碰槽位语义。
+    /// 安全顺序：占位 guard → 锁外发现 → 暂存 Job（无 kill）attach →
+    /// 二次归属复核 → 转正 kill-on-close → 持锁提交。暂存 Job 在任一失败
+    /// 路径 drop 都是安全的（无 kill-on-close，不会误杀目标进程）。
+    #[cfg(windows)]
+    fn adopt_attach_windows(&self, service_id: &str) -> Result<crate::ipc::AdoptAttachOut> {
+        // 1. 占位：同服务并发 start/stop/restart/二次 attach 一律被 guard 挡住。
+        let (port, kind, root, health) = {
+            let mut g = self.inner.lock().expect("engine lock");
+            require_ws(&g)?;
+            let Some(slot) = g.slots.get_mut(service_id) else {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    format!("服务 {service_id} 不存在"),
+                ));
+            };
+            if slot.attaching {
+                return Err(Error::new(
+                    ErrorCode::AlreadyInProgress,
+                    format!("{service_id}: 正在接管中，请稍后重试"),
+                ));
+            }
+            if !matches!(slot.state, RtState::Stopped) {
+                return Err(Error::new(
+                    ErrorCode::AlreadyInProgress,
+                    format!("{service_id}: 仅停止中的服务可原地接管"),
+                ));
+            }
+            let Some(port) = slot.port else {
+                return Err(Error::new(
+                    ErrorCode::SpecInvalid,
+                    format!("{service_id}: 未声明 port，无法定位运行中的外部进程"),
+                ));
+            };
+            slot.attaching = true;
+            (
+                port,
+                slot.kind.clone(),
+                g.root.clone(),
+                g.spec
+                    .services
+                    .get(service_id)
+                    .and_then(|s| s.health.clone()),
+            )
+        };
+        // 发现是慢调用：锁外执行（guard 已占位，期间 start/stop 会被拒绝）。
+        let attach_result = self.adopt_attach_locked_out(service_id, port, &kind, &root);
+        match attach_result {
+            Ok((pid, job)) => {
+                // 3. 持锁提交：guard 保证期间无 start/stop 插入；仍复核工作区/槽位存在。
+                let mut g = self.inner.lock().expect("engine lock");
+                if g.workspace_id.is_empty() {
+                    // 工作区已关闭：Job 已转正但尚未提交——先摘 kill-on-close
+                    // 再释放，目标进程不受影响；摘除失败则 forget（推迟到
+                    // 应用退出），绝不直接 drop 误杀。
+                    if job.clear_kill_on_close().is_err() {
+                        std::mem::forget(job);
+                    }
+                    return Err(Error::new(ErrorCode::NoWorkspace, "工作区已关闭，接管取消"));
+                }
+                let Some(slot) = g.slots.get_mut(service_id) else {
+                    if job.clear_kill_on_close().is_err() {
+                        std::mem::forget(job);
+                    }
+                    return Err(Error::new(ErrorCode::NotFound, "工作区状态已变化"));
+                };
+                if !matches!(slot.state, RtState::Stopped) || !slot.attaching {
+                    slot.attaching = false;
+                    if job.clear_kill_on_close().is_err() {
+                        std::mem::forget(job);
+                    }
+                    return Err(Error::new(
+                        ErrorCode::AlreadyInProgress,
+                        format!("{service_id}: 状态已变化，接管取消"),
+                    ));
+                }
+                slot.pid = Some(pid);
+                slot.managed = true;
+                slot.state = RtState::Running;
+                slot.started = Some(Instant::now());
+                slot.started_at_ms = Some(now_ms());
+                let cancel = Arc::new(AtomicBool::new(false));
+                slot.cancel = Arc::clone(&cancel);
+                slot.stop_requested = false;
+                slot.last_error = None;
+                slot.last_exit = None;
+                slot.exit_reason = None;
+                // attached 外部进程没有 RestartPlan（监管重放依赖捕获的启动计划），
+                // 压成 never：进程退出按 Exited 收场，用户可手动 start 走完整链路。
+                slot.restart = crate::spec::RestartSpec::default();
+                slot.restart_plan = None;
+                slot.restart_left = 0;
+                slot.attaching = false;
+                slot.job = Some(Arc::new(job));
+                emit_runtime(&g);
+                drop(g);
+                // 健康跟随与退出检测：与常规服务同一探测节奏；pid 存活轮询顶替 child.wait
+                if let Some(hs) = health {
+                    spawn_health(
+                        Arc::clone(&self.inner),
+                        service_id.to_string(),
+                        hs,
+                        Some(port),
+                        cancel,
+                    );
+                }
+                spawn_pid_watcher(Arc::clone(&self.inner), service_id.to_string(), pid);
+                Ok(crate::ipc::AdoptAttachOut {
+                    service_id: service_id.to_string(),
+                    pid,
+                    warnings: Vec::new(),
+                })
+            }
+            Err(e) => {
+                // 锁外失败（发现/attach/二次复核/转正）：清 guard，槽位语义不动，
+                // 暂存 Job（未转正、无 kill）drop 安全，不杀目标进程。
+                let mut g = self.inner.lock().expect("engine lock");
+                if let Some(slot) = g.slots.get_mut(service_id) {
+                    slot.attaching = false;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// adopt 锁外阶段（Windows）：发现 → 暂存 attach → 二次复核 → 转正。
+    /// 返回已转正（kill-on-close 生效）的 Job；调用方持锁提交，失败路径由
+    /// 调用方清 guard。注意：转正成功但提交失败时调用方必须泄漏 Job 而非 drop。
+    #[cfg(windows)]
+    fn adopt_attach_locked_out(
+        &self,
+        _service_id: &str,
+        port: u16,
+        kind: &str,
+        root: &std::path::Path,
+    ) -> Result<(u32, crate::proc::windows::WindowsJob)> {
+        use crate::discover::PortOwnership;
+        let procs = crate::discover::discover_services()?;
+        let pid = match crate::discover::classify_with_list(port, kind, root, &procs) {
+            PortOwnership::Owned(p) => p.pid,
+            PortOwnership::Conflict(_) => {
+                return Err(Error::new(
+                    ErrorCode::Discover,
+                    format!("端口 {port} 的监听进程不属于本工作区（工作目录不符），拒绝接管"),
+                ));
+            }
+            PortOwnership::Free => {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    format!("端口 {port} 当前无监听进程可接管"),
+                ));
+            }
+            PortOwnership::Unknown => {
+                return Err(Error::new(
+                    ErrorCode::Discover,
+                    "进程发现表不可读，无法验证归属；请重试",
+                ));
+            }
+        };
+        // 暂存 Job 无 kill-on-close：attach 后、提交前的任何失败都可安全 drop。
+        let job = crate::proc::windows::WindowsJob::create_staging()?;
+        job.attach_pid(pid)?;
+        // 二次复核：attach 窗口内 pid 复用/归属变化则不转正，直接报冲突。
+        // 暂存 Job 无 kill，drop 不杀进程，安全回退到外部实例语义。
+        let procs2 = crate::discover::discover_services()?;
+        match crate::discover::classify_with_list(port, kind, root, &procs2) {
+            PortOwnership::Owned(p) if p.pid == pid => {}
+            PortOwnership::Owned(p) => {
+                return Err(Error::new(
+                    ErrorCode::Discover,
+                    format!(
+                        "端口 {port} 的监听进程在接管窗口内发生变化（{pid} → {}），已取消以避免误接",
+                        p.pid
+                    ),
+                ));
+            }
+            PortOwnership::Conflict(_) => {
+                return Err(Error::new(
+                    ErrorCode::Discover,
+                    format!("端口 {port} 的监听进程归属发生变化，拒绝接管"),
+                ));
+            }
+            PortOwnership::Free => {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    format!("端口 {port} 的监听进程在接管窗口内退出，接管取消"),
+                ));
+            }
+            PortOwnership::Unknown => {
+                return Err(Error::new(
+                    ErrorCode::Discover,
+                    "进程发现表不可读，无法二次验证归属；请重试",
+                ));
+            }
+        }
+        job.enable_kill_on_close()?;
+        Ok((pid, job))
+    }
+
+    /// 非 Windows 测试钩子：guard 语义（占位/清位/并发拒绝）与平台无关，
+    /// 用可注入的发现结果验证失败路径一定清 guard 且不触碰槽位语义。
+    #[cfg(not(windows))]
+    fn adopt_attach_guard_for_test(&self, service_id: &str) -> Result<u16> {
+        let mut g = self.inner.lock().expect("engine lock");
+        require_ws(&g)?;
+        let Some(slot) = g.slots.get_mut(service_id) else {
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                format!("服务 {service_id} 不存在"),
+            ));
+        };
+        if slot.attaching {
+            return Err(Error::new(
+                ErrorCode::AlreadyInProgress,
+                format!("{service_id}: 正在接管中，请稍后重试"),
+            ));
+        }
+        if !matches!(slot.state, RtState::Stopped) {
+            return Err(Error::new(
+                ErrorCode::AlreadyInProgress,
+                format!("{service_id}: 仅停止中的服务可原地接管"),
+            ));
+        }
+        let Some(port) = slot.port else {
+            return Err(Error::new(
+                ErrorCode::SpecInvalid,
+                format!("{service_id}: 未声明 port，无法定位运行中的外部进程"),
+            ));
+        };
+        slot.attaching = true;
+        Ok(port)
+    }
+
+    #[cfg(not(windows))]
+    fn adopt_attach_clear_for_test(&self, service_id: &str) {
+        let mut g = self.inner.lock().expect("engine lock");
+        if let Some(slot) = g.slots.get_mut(service_id) {
+            slot.attaching = false;
         }
     }
 
@@ -1446,6 +1712,14 @@ impl Engine {
                 .slots
                 .get(id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+            // 方向二·原地接管临界区：attach 占位期间拒绝 start，避免暂存 Job
+            // 与 spawn 流程同时触碰同一槽位。
+            if slot.attaching {
+                return Err(Error::new(
+                    ErrorCode::AlreadyInProgress,
+                    format!("{id} 正在接管中，请稍后重试"),
+                ));
+            }
             if matches!(
                 slot.state,
                 RtState::Starting
@@ -1519,6 +1793,14 @@ impl Engine {
                 .slots
                 .get_mut(id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+            // 方向二·原地接管临界区：attach 占位期间拒绝 stop（即使 Stopped，
+            // 占位本身也意味着接管窗口未关闭，stop 会破坏提交复核）。
+            if slot.attaching {
+                return Err(Error::new(
+                    ErrorCode::AlreadyInProgress,
+                    format!("{id} 正在接管中，请稍后重试"),
+                ));
+            }
             if matches!(slot.state, RtState::Stopped) {
                 return Ok(());
             }
@@ -1784,6 +2066,14 @@ impl Engine {
                 .slots
                 .get(id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, format!("没有服务 {id}")))?;
+            // 方向二·原地接管临界区：start_one 已挡一层，这里再挡直接调
+            // ensure_started/spawn 的旁路（重启监管等内部路径）。
+            if slot.attaching {
+                return Err(Error::new(
+                    ErrorCode::AlreadyInProgress,
+                    format!("{id} 正在接管中，请稍后重试"),
+                ));
+            }
             match slot.state {
                 RtState::Starting | RtState::Running | RtState::Unhealthy => return Ok(()),
                 RtState::Stopping | RtState::Building => {
@@ -3642,6 +3932,7 @@ fn apply_spec_slots(g: &mut Inner, file: &SuperTaskFile) -> Result<()> {
                 tunnel_url: None,
                 cancel: Arc::new(AtomicBool::new(false)),
                 managed: true,
+                attaching: false,
                 artifact: None,
                 exit_reason: None,
                 restart: crate::spec::RestartSpec::default(),
@@ -5245,74 +5536,110 @@ fn metrics_loop(inner: Arc<Mutex<Inner>>) {
     }
 }
 
+/// 方向二·原地接管：attached 外部进程没有 Child 句柄，无法 `child.wait()`——
+/// 轮询 pid 存活顶替退出检测（1s 间隔）。pid 复用导致漏报的极端场景可接受
+/// （进程树已并入 kill-on-close Job，归属仍被引擎收住）。cancel 置位（手动
+/// 停止/关闭）即退出，收场交还给 stop 路径。
+#[cfg(windows)]
+fn spawn_pid_watcher(inner: Arc<Mutex<Inner>>, id: String, pid: u32) {
+    thread::Builder::new()
+        .name(format!("st-attach-{id}"))
+        .spawn(move || loop {
+            thread::sleep(Duration::from_secs(1));
+            let dead = {
+                let g = inner.lock().expect("engine lock");
+                if g.workspace_id.is_empty() || g.slots.get(&id).is_none() {
+                    return; // 工作区已关闭/移交
+                }
+                if g.slots
+                    .get(&id)
+                    .is_some_and(|s| s.cancel.load(Ordering::SeqCst) || s.pid != Some(pid))
+                {
+                    return; // 手动停止或已被收场
+                }
+                !crate::proc::pid_alive(pid)
+            };
+            if dead && process_exit_bookkeeping(&inner, &id, -1) {
+                // attached 服务 restart 恒 never，bookkeeping 不会要求监管
+                return;
+            }
+        })
+        .ok();
+}
+
 fn spawn_waiter(inner: Arc<Mutex<Inner>>, id: String, mut child: Child) {
     thread::Builder::new()
         .name(format!("st-wait-{id}"))
         .spawn(move || {
             let status = child.wait();
             let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
-            // ponytail: pumps may still be writing the last Maven ERROR line
-            thread::sleep(Duration::from_millis(80));
-            let mut g = inner.lock().expect("engine lock");
-            let src = LogSource {
-                kind: LogSourceKind::Service,
-                id: id.clone(),
-            };
-            let err_msg =
-                if !g.slots.get(&id).map(|s| s.stop_requested).unwrap_or(true) && code != 0 {
-                    Some(exit_error_from_logs(&g, &src, code))
-                } else {
-                    None
-                };
-            let Some(slot) = g.slots.get_mut(&id) else {
-                return;
-            };
-            slot.pid = None;
-            slot.job = None;
-            slot.cancel.store(true, Ordering::SeqCst);
-            slot.last_exit = Some(ExitView {
-                code,
-                at_ms: now_ms(),
-            });
-            if let Some(msg) = err_msg {
-                slot.last_error = Some(msg);
-            }
-            slot.exit_reason = if slot.stop_requested {
-                None
-            } else {
-                Some("crash")
-            };
-            let ev = RtEvent::ProcessExited {
-                stop_requested: slot.stop_requested,
-            };
-            if let Ok(next) = apply(slot.state, ev) {
-                slot.state = next;
-            }
-            slot.restart_attempt = None;
-            // 2.2 restart 监管：仅服务进程本身的意外退出（构建期退出由 build 流程
-            // 收场，不走这里；compose 由 compose 文件自管，策略恒 never）。
-            let crash_condition = !slot.stop_requested
-                && slot.state == RtState::Exited
-                && slot.restart.policy != crate::spec::RestartPolicy::Never
-                && (slot.restart.policy == crate::spec::RestartPolicy::Always || code != 0);
-            let supervise = if crash_condition && slot.restart_left > 0 {
-                // 即将进行第 n 次自动重启（预算在监管线程占用额度时扣减）
-                slot.restart_attempt = Some(slot.restart.max_retries - slot.restart_left + 1);
-                true
-            } else {
-                if crash_condition {
-                    // 预算耗尽后的最后一次崩溃：就地给出放弃原因
-                    restart_give_up(slot);
-                }
-                false
-            };
-            emit_runtime(&g);
-            drop(g);
-            if supervise {
+            if process_exit_bookkeeping(&inner, &id, code) {
                 spawn_supervisor(inner, id);
             }
         })
         .ok();
+}
+
+/// 进程退出后的统一收场（spawn_waiter 与方向二的 attached pid watcher 共用）：
+/// 标记 Exited、写退出码/原因、清 pid/job、发运行时事件。返回是否需要拉起
+/// restart 监管（attached 外部进程在 attach 时已把策略压成 never，恒 false）。
+fn process_exit_bookkeeping(inner: &Arc<Mutex<Inner>>, id: &str, code: i32) -> bool {
+    // ponytail: pumps may still be writing the last Maven ERROR line
+    thread::sleep(Duration::from_millis(80));
+    let mut g = inner.lock().expect("engine lock");
+    let src = LogSource {
+        kind: LogSourceKind::Service,
+        id: id.to_string(),
+    };
+    let err_msg = if !g.slots.get(id).map(|s| s.stop_requested).unwrap_or(true) && code != 0 {
+        Some(exit_error_from_logs(&g, &src, code))
+    } else {
+        None
+    };
+    let Some(slot) = g.slots.get_mut(id) else {
+        return false;
+    };
+    slot.pid = None;
+    slot.job = None;
+    slot.cancel.store(true, Ordering::SeqCst);
+    slot.last_exit = Some(ExitView {
+        code,
+        at_ms: now_ms(),
+    });
+    if let Some(msg) = err_msg {
+        slot.last_error = Some(msg);
+    }
+    slot.exit_reason = if slot.stop_requested {
+        None
+    } else {
+        Some("crash")
+    };
+    let ev = RtEvent::ProcessExited {
+        stop_requested: slot.stop_requested,
+    };
+    if let Ok(next) = apply(slot.state, ev) {
+        slot.state = next;
+    }
+    slot.restart_attempt = None;
+    // 2.2 restart 监管：仅服务进程本身的意外退出（构建期退出由 build 流程
+    // 收场，不走这里；compose 由 compose 文件自管，策略恒 never）。
+    let crash_condition = !slot.stop_requested
+        && slot.state == RtState::Exited
+        && slot.restart.policy != crate::spec::RestartPolicy::Never
+        && (slot.restart.policy == crate::spec::RestartPolicy::Always || code != 0);
+    let supervise = if crash_condition && slot.restart_left > 0 {
+        // 即将进行第 n 次自动重启（预算在监管线程占用额度时扣减）
+        slot.restart_attempt = Some(slot.restart.max_retries - slot.restart_left + 1);
+        true
+    } else {
+        if crash_condition {
+            // 预算耗尽后的最后一次崩溃：就地给出放弃原因
+            restart_give_up(slot);
+        }
+        false
+    };
+    emit_runtime(&g);
+    supervise
 }
 
 /// 2.2：预算耗尽后写放弃原因并清尝试序号。
@@ -7872,6 +8199,7 @@ data:
             tunnel_url: None,
             cancel: Arc::new(AtomicBool::new(false)),
             managed: false,
+            attaching: false,
             artifact: None,
             exit_reason: None,
             restart: crate::spec::RestartSpec::default(),
@@ -8093,6 +8421,122 @@ data:
         // close 后 tick 请求退出
         eng.close().unwrap();
         assert!(run_backup_tick(&eng.inner));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- 方向二·原地接管（Windows 专用能力；Unix 返回 PLATFORM_UNSUPPORTED）----
+
+    #[cfg(windows)]
+    #[test]
+    fn adopt_attach_guard_paths() {
+        let root = write_ws_yaml(
+            "version: 1\nservices:\n  noport:\n    kind: node\n    dir: web\n    script: dev\n    health:\n      type: none\n  stopped:\n    kind: node\n    dir: web\n    script: dev\n    port: 1\n  running:\n    kind: node\n    dir: web\n    script: dev\n    port: 2\n",
+        );
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+        // 服务不存在 → NOT_FOUND
+        assert_eq!(
+            eng.adopt_attach("nope").unwrap_err().code(),
+            ErrorCode::NotFound
+        );
+        // 未声明 port → SPEC_INVALID（定位不了外部进程）
+        assert_eq!(
+            eng.adopt_attach("noport").unwrap_err().code(),
+            ErrorCode::SpecInvalid
+        );
+        // 仅停止中的服务可接管
+        {
+            let mut g = eng.inner.lock().expect("engine lock");
+            g.slots
+                .insert("running".into(), running_slot_for_test("running", 2));
+        }
+        assert_eq!(
+            eng.adopt_attach("running").unwrap_err().code(),
+            ErrorCode::AlreadyInProgress
+        );
+        // 端口无监听（本机真跑发现 + 归属复核，端口 1 无监听）→ NOT_FOUND
+        let e = eng.adopt_attach("stopped").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::NotFound, "{}", e.message());
+        // 失败路径不触碰槽位：服务保持 Stopped，且 guard 已清除（可再次尝试，
+        // 不会卡在 ALREADY_IN_PROGRESS）。
+        assert_eq!(eng.state_of("stopped"), Some(RtState::Stopped));
+        {
+            let g = eng.inner.lock().expect("engine lock");
+            assert!(
+                !g.slots.get("stopped").expect("slot").attaching,
+                "失败路径必须清除 attaching 占位"
+            );
+        }
+        let e2 = eng.adopt_attach("stopped").unwrap_err();
+        assert_eq!(e2.code(), ErrorCode::NotFound, "{}", e2.message());
+        // 占位期间 start/stop/二次 attach 一律被 guard 拒绝（临界区互斥）。
+        {
+            let mut g = eng.inner.lock().expect("engine lock");
+            g.slots.get_mut("stopped").expect("slot").attaching = true;
+        }
+        assert_eq!(
+            eng.start_one("stopped").unwrap_err().code(),
+            ErrorCode::AlreadyInProgress
+        );
+        assert_eq!(
+            eng.stop_one("stopped").unwrap_err().code(),
+            ErrorCode::AlreadyInProgress
+        );
+        assert_eq!(
+            eng.adopt_attach("stopped").unwrap_err().code(),
+            ErrorCode::AlreadyInProgress
+        );
+        {
+            let mut g = eng.inner.lock().expect("engine lock");
+            g.slots.get_mut("stopped").expect("slot").attaching = false;
+        }
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 方向二·原地接管 guard（全平台）：attaching 占位期间 start/stop 互斥。
+    /// Unix 无 Job attach，该测试只覆盖与平台无关的临界区语义。
+    #[test]
+    fn adopt_attach_guard_blocks_lifecycle() {
+        let root = write_ws_yaml(
+            "version: 1\nservices:\n  svc:\n    kind: node\n    dir: web\n    script: dev\n    port: 1\n    health:\n      type: none\n",
+        );
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+        assert_eq!(eng.state_of("svc"), Some(RtState::Stopped));
+        {
+            let mut g = eng.inner.lock().expect("engine lock");
+            g.slots.get_mut("svc").expect("slot").attaching = true;
+        }
+        assert_eq!(
+            eng.start_one("svc").unwrap_err().code(),
+            ErrorCode::AlreadyInProgress
+        );
+        assert_eq!(
+            eng.stop_one("svc").unwrap_err().code(),
+            ErrorCode::AlreadyInProgress
+        );
+        #[cfg(not(windows))]
+        {
+            // Unix attach 无等价语义：明确返回 PLATFORM_UNSUPPORTED，不伪造接管。
+            assert_eq!(
+                eng.adopt_attach("svc").unwrap_err().code(),
+                ErrorCode::PlatformUnsupported
+            );
+            // guard 钩子本身与平台无关：占位/清位往返。
+            assert_eq!(
+                eng.adopt_attach_guard_for_test("svc").unwrap_err().code(),
+                ErrorCode::AlreadyInProgress
+            );
+            eng.adopt_attach_clear_for_test("svc");
+            assert_eq!(eng.adopt_attach_guard_for_test("svc").unwrap(), 1);
+            eng.adopt_attach_clear_for_test("svc");
+        }
+        {
+            let mut g = eng.inner.lock().expect("engine lock");
+            g.slots.get_mut("svc").expect("slot").attaching = false;
+        }
+        eng.close().unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 

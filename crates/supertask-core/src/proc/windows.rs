@@ -88,6 +88,74 @@ impl WindowsJob {
         }
     }
 
+    /// 方向二·原地接管：把**已运行的外部进程**并入本 Job（kill-on-close 随即生效）。
+    /// Windows 8+ 支持嵌套 Job：目标进程已在另一个 Job 内时分配失败并给出可诊断
+    /// 错误（调用方回退到「外部实例仅监控」语义）。需要 PROCESS_SET_QUOTA +
+    /// PROCESS_TERMINATE 访问权（同用户会话进程无需管理员）。
+    /// 方向二·原地接管暂存 Job：与 `create` 同形但**不带 kill-on-close**。
+    /// attach 失败/并发回退时直接 drop，不会误杀目标进程；提交成功后由
+    /// `enable_kill_on_close` 转为正式监管语义。
+    pub fn create_staging() -> Result<Self> {
+        unsafe {
+            let handle = CreateJobObjectW(None, None).map_err(|e| {
+                Error::new(ErrorCode::JobCreate, format!("CreateJobObject 失败: {e}"))
+            })?;
+            Ok(Self { handle })
+        }
+    }
+
+    /// 暂存 Job 转正：补上 kill-on-close 限制（随 Slot 提交原子生效）。
+    /// Windows 允许在进程已并入后设置该限制，关闭句柄时同样终止整树。
+    pub fn enable_kill_on_close(&self) -> Result<()> {
+        self.set_kill_on_close(true)
+    }
+
+    /// 转正后提交失败的回滚：摘掉 kill-on-close 后再 drop，目标进程不受影响。
+    /// 设置失败时调用方应 `mem::forget` 整个 Job（推迟到应用退出），绝不直接 drop。
+    pub fn clear_kill_on_close(&self) -> Result<()> {
+        self.set_kill_on_close(false)
+    }
+
+    fn set_kill_on_close(&self, kill: bool) -> Result<()> {
+        unsafe {
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            if kill {
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            }
+            SetInformationJobObject(
+                self.handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+            .map_err(|e| Error::new(ErrorCode::JobCreate, format!("Job 限制设置失败: {e}")))?;
+            Ok(())
+        }
+    }
+
+    pub fn attach_pid(&self, pid: u32) -> Result<()> {
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+        unsafe {
+            let proc =
+                OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid).map_err(|e| {
+                    Error::new(
+                        ErrorCode::JobCreate,
+                        format!("OpenProcess({pid}) 失败（受保护进程或权限不足）: {e}"),
+                    )
+                })?;
+            let res = AssignProcessToJobObject(self.handle, proc);
+            let _ = CloseHandle(proc);
+            res.map_err(|e| {
+                Error::new(
+                    ErrorCode::JobCreate,
+                    format!("AssignProcessToJobObject({pid}) 失败（进程可能已属于其他 Job）: {e}"),
+                )
+            })
+        }
+    }
+
     /// Resume after CREATE_SUSPENDED. Must run after assign.
     pub fn resume_child(&self, child: &Child) -> Result<()> {
         let proc = HANDLE(child.as_raw_handle());
@@ -252,5 +320,81 @@ mod tests {
         job.terminate().expect("term");
         let st = child.wait().expect("wait");
         assert!(!st.success());
+    }
+
+    /// 方向二·原地接管：不带 CREATE_SUSPENDED 自行启动的外部进程（不经 job.spawn），
+    /// 运行中 attach_pid 并入 Job → pids 可见 → terminate 整树终止。
+    #[test]
+    fn attach_running_external_pid_then_kill_tree() {
+        // 外部进程：直接 Command::spawn（父进程不在任何 Job 内 → 子进程也不在）
+        let mut external = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn external");
+        std::thread::sleep(Duration::from_millis(200));
+        let pid = external.id();
+        let job = WindowsJob::create().expect("job");
+        job.attach_pid(pid).expect("attach");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            job.pids().contains(&pid),
+            "attach 后 pid 应在 job 内: {:?}",
+            job.pids()
+        );
+        job.terminate().expect("term");
+        let st = external.wait().expect("wait");
+        assert!(!st.success(), "terminate 后外部进程应已退出");
+        // 已退出进程再 attach → 可诊断错误（不 panic）
+        let job2 = WindowsJob::create().expect("job2");
+        let e = job2.attach_pid(pid).expect_err("dead pid must fail");
+        assert!(
+            e.message().contains("OpenProcess") || e.message().contains("Assign"),
+            "{}",
+            e.message()
+        );
+    }
+
+    /// 方向二·失败回滚安全：暂存 Job（无 kill-on-close）attach 后直接 drop，
+    /// 目标进程必须存活——失败路径绝不误杀。转正则用 Job 兜底清理。
+    #[test]
+    fn staging_job_drop_does_not_kill_attached_pid() {
+        let mut external = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn external");
+        std::thread::sleep(Duration::from_millis(200));
+        let pid = external.id();
+        {
+            let staging = WindowsJob::create_staging().expect("staging");
+            staging.attach_pid(pid).expect("attach to staging");
+            // 模拟 attach 失败回退：暂存 Job 直接离开作用域
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            pid_alive(pid),
+            "暂存 Job drop 后目标进程必须仍存活（无 kill-on-close）"
+        );
+        // 转正/回滚往返：enable 后 clear 再 drop，同样不杀进程
+        {
+            let staging = WindowsJob::create_staging().expect("staging");
+            staging.attach_pid(pid).expect("re-attach to staging");
+            staging.enable_kill_on_close().expect("enable");
+            staging.clear_kill_on_close().expect("clear");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            pid_alive(pid),
+            "clear_kill_on_close 后 drop 不得误杀目标进程"
+        );
+        // 清理：正式 kill-on-close Job 接管后整树终止
+        let killer = WindowsJob::create().expect("job");
+        killer.attach_pid(pid).expect("attach to killer");
+        killer.terminate().expect("term");
+        let st = external.wait().expect("wait");
+        assert!(!st.success(), "清理用 Job 应能终止目标进程");
     }
 }
