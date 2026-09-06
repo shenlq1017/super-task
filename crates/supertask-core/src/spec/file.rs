@@ -7,8 +7,8 @@ use crate::ipc::{is_valid_id, MAX_CMDS, MAX_ENV_KEYS, MAX_SERVICES};
 
 /// 1.2: profile 数量上限（规格 §10.1）。
 pub const MAX_PROFILES: usize = 32;
-/// 方向三：声明式 needs 条目上限。
-pub const MAX_NEEDS: usize = 32;
+// 方向三 needs 条目上限：唯一真源是 `crate::needs::MAX_NEEDS`
+//（`spec::validate` 与解析共用它，此处不重复定义，避免 dead_code 分叉）。
 /// 方向六：data.volumes 数据卷上限（ipc.md §10.18）。
 pub const MAX_DATA_VOLUMES: usize = 32;
 /// 1.2: services.*.group 显示名最长字符数。
