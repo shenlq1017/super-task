@@ -505,11 +505,16 @@ mod tests {
         };
         let code = run_up(&ws.root, &[], Wait::Healthy, 60, &wrapper).unwrap();
         assert_eq!(code, 5, "wrapper exit code must pass through");
-        // 清场断言：桩服务端口已释放
-        assert!(
-            !supertask_core::ports::is_serving(ws.port),
-            "no stub process may survive up"
-        );
+        // 清场断言：桩服务端口已释放。Windows 上被杀进程的监听套接字可能滞留
+        // 片刻（CI 负载高时必现），轮询代替瞬时断言，意图不变：不许有残留。
+        let freed = (0..50).any(|_| {
+            if !supertask_core::ports::is_serving(ws.port) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            false
+        });
+        assert!(freed, "no stub process may survive up");
         node_stub::cleanup(&ws);
     }
 
