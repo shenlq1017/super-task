@@ -298,6 +298,12 @@ struct Inner {
     metrics_sub: u32,
     metrics: IndexMap<String, Option<crate::ipc::ServiceMetrics>>,
     metrics_prev: HashMap<String, (u64, Instant)>,
+    /// 方向六：定时备份调度取消位（open 复位；close/detach 置位，线程自行退出）
+    backup_cancel: Arc<AtomicBool>,
+    /// volume_id → 最近一次 auto 快照 created_at（0 = 打开时无历史，取打开时刻为基线）
+    last_auto_backup: IndexMap<String, u64>,
+    /// 备份调度 tick（秒）；测试可直接调 run_backup_tick，不受此影响
+    backup_tick_secs: u64,
 }
 
 /// 切换工作区时移交给全局注册表的进程存活信息。
@@ -423,6 +429,9 @@ impl Engine {
             metrics_sub: 0,
             metrics: IndexMap::new(),
             metrics_prev: HashMap::new(),
+            backup_cancel: Arc::new(AtomicBool::new(false)),
+            last_auto_backup: IndexMap::new(),
+            backup_tick_secs: BACKUP_TICK_SECS,
         }));
         let inner_b = Arc::clone(&inner);
         thread::Builder::new()
@@ -610,16 +619,7 @@ impl Engine {
         let g = self.inner.lock().expect("engine lock");
         require_ws(&g)?;
         let vol = Self::data_volume_of(&g, volume_id)?;
-        Self::ensure_bound_service_stopped(&g, vol.service.as_deref())?;
-        let dir = sandbox::confine(&g.root, &vol.dir)?;
-        let out_dir = Self::snapshots_dir(&g.root, volume_id);
-        let meta = crate::snapshot::create_snapshot(
-            &dir,
-            &out_dir,
-            volume_id,
-            vol.service.as_deref(),
-            note,
-        )?;
+        let meta = Self::create_volume_snapshot(&g, volume_id, note)?;
         let mut warnings = Vec::new();
         if vol.service.is_some() {
             warnings.push(format!(
@@ -632,6 +632,20 @@ impl Engine {
             snapshot: Self::meta_view(meta),
             warnings,
         })
+    }
+
+    /// 快照创建内核（IPC 命令与定时备份共用）：卷查找 + 绑定服务停止校验 +
+    /// 沙箱约束 + 落盘。调用方需已持有 inner 锁。
+    fn create_volume_snapshot(
+        g: &Inner,
+        volume_id: &str,
+        note: &str,
+    ) -> Result<crate::snapshot::SnapshotMeta> {
+        let vol = Self::data_volume_of(g, volume_id)?;
+        Self::ensure_bound_service_stopped(g, vol.service.as_deref())?;
+        let dir = sandbox::confine(&g.root, &vol.dir)?;
+        let out_dir = Self::snapshots_dir(&g.root, volume_id);
+        crate::snapshot::create_snapshot(&dir, &out_dir, volume_id, vol.service.as_deref(), note)
     }
 
     /// `workspace.dataRestorePreview`：恢复预览（纯只读，不要求服务已停止）。
@@ -920,6 +934,33 @@ impl Engine {
                     .unwrap_or(DEFAULT_RING_LINES as u32) as usize,
             );
             g.subscribers = 0;
+            // 方向六：定时备份调度——基线取既有 auto 快照（无历史 = 首个 tick 立即
+            // 建立基线保护）；close/detach 置取消位收场。
+            g.backup_cancel = Arc::new(AtomicBool::new(false));
+            g.last_auto_backup = IndexMap::new();
+            let backup_volumes: Vec<(String, u64)> = g
+                .spec
+                .data
+                .iter()
+                .flat_map(|d| d.volumes.iter())
+                .filter(|(_, v)| v.backup.as_ref().is_some_and(|b| b.interval_mins.is_some()))
+                .map(|(vid, _)| {
+                    let out_dir = Self::snapshots_dir(&g.root, vid);
+                    let (metas, _) = crate::snapshot::list_snapshots(&out_dir);
+                    let newest_auto = metas
+                        .iter()
+                        .filter(|m| m.note == AUTO_BACKUP_NOTE)
+                        .map(|m| m.created_at)
+                        .max()
+                        .unwrap_or(0);
+                    (vid.clone(), newest_auto)
+                })
+                .collect();
+            for (vid, newest) in backup_volumes {
+                g.last_auto_backup.insert(vid, newest);
+            }
+            let inner = Arc::clone(&self.inner);
+            thread::spawn(move || backup_scheduler_loop(inner));
         }
         self.adopt_detached(&root, &workspace_id);
         Ok((warnings, self.snapshot()?))
@@ -1089,6 +1130,10 @@ impl Engine {
         let _ = self.cancel_script();
         self.wait_script_idle(Duration::from_secs(8));
         let mut g = self.inner.lock().expect("engine lock");
+        // 方向六：停掉定时备份调度（线程在下个 tick 退出）；快照写入是
+        // tmp+rename 原子操作，任何时刻关闭都不会产生半截快照。
+        g.backup_cancel.store(true, Ordering::SeqCst);
+        g.last_auto_backup.clear();
         g.workspace_id.clear();
         g.slots.clear();
         g.files.clear();
@@ -1143,6 +1188,9 @@ impl Engine {
             g.slots.clear();
             g.files.clear();
             g.workspace_id.clear();
+            // 方向六：分离也停掉定时备份调度（open 时重启）
+            g.backup_cancel.store(true, Ordering::SeqCst);
+            g.last_auto_backup.clear();
             g.script = None;
             g.script_file = None;
             g.yaml_path = PathBuf::new();
@@ -5281,6 +5329,129 @@ fn restart_backoff(attempt: u32) -> Duration {
     Duration::from_secs(1u64 << (attempt.saturating_sub(1)).min(4))
 }
 
+// ---------------------------------------------------------------------------
+// 方向六：定时备份与保留策略（yaml `data.volumes.*.backup`）
+// ---------------------------------------------------------------------------
+
+/// 自动快照的 note 标记：保留策略只作用于带此标记的快照，手动快照不受限。
+const AUTO_BACKUP_NOTE: &str = "auto";
+/// 定时备份调度 tick（秒）：粒度换及时性，检查本身是纯内存 + 目录列举。
+const BACKUP_TICK_SECS: u64 = 30;
+
+/// 定时备份调度线程（open 时启动）。工作区关闭/分离（取消位或 workspace 清空）
+/// 后线程自行退出；配置变化（save_form 更新 g.spec）在下一个 tick 自然生效。
+fn backup_scheduler_loop(inner: Arc<Mutex<Inner>>) {
+    loop {
+        let tick = {
+            let g = inner.lock().expect("engine lock");
+            g.backup_tick_secs.max(1)
+        };
+        thread::sleep(Duration::from_secs(tick));
+        if run_backup_tick(&inner) {
+            break;
+        }
+    }
+}
+
+/// 备份调度单次 tick。返回 true = 调度线程应退出（工作区已关闭/分离）。
+/// 到期判定：距最近一次 auto 快照 ≥ interval；创建失败（绑定服务运行中等）
+/// 本 tick 跳过、不动基线，下个 tick 重试；成功后执行保留清理。
+fn run_backup_tick(inner: &Arc<Mutex<Inner>>) -> bool {
+    let mut g = inner.lock().expect("engine lock");
+    if g.workspace_id.is_empty() || g.backup_cancel.load(Ordering::SeqCst) {
+        return true;
+    }
+    let Some(data) = g.spec.data.as_ref() else {
+        return false;
+    };
+    let now = now_ms();
+    let mut due: Vec<(String, crate::spec::DataBackupSpec)> = Vec::new();
+    for (vid, vol) in &data.volumes {
+        let Some(bk) = vol.backup.as_ref() else {
+            continue;
+        };
+        let Some(mins) = bk.interval_mins else {
+            continue;
+        };
+        let last = g.last_auto_backup.get(vid).copied().unwrap_or(0);
+        if last == 0 || now.saturating_sub(last) >= u64::from(mins) * 60_000 {
+            due.push((vid.clone(), bk.clone()));
+        }
+    }
+    for (vid, bk) in due {
+        match Engine::create_volume_snapshot(&g, &vid, AUTO_BACKUP_NOTE) {
+            Ok(meta) => {
+                g.last_auto_backup.insert(vid.clone(), meta.created_at);
+                let out_dir = Engine::snapshots_dir(&g.root, &vid);
+                let (metas, _) = crate::snapshot::list_snapshots(&out_dir);
+                let autos: Vec<crate::snapshot::SnapshotMeta> = metas
+                    .into_iter()
+                    .filter(|m| m.note == AUTO_BACKUP_NOTE)
+                    .collect();
+                for id in auto_prune_ids(
+                    &autos,
+                    bk.max_count,
+                    bk.max_age_days,
+                    bk.max_total_bytes,
+                    now,
+                ) {
+                    if let Ok(zip) = Engine::snapshot_zip_path(&g.root, &vid, &id) {
+                        let _ = crate::snapshot::delete_snapshot(&zip);
+                    }
+                }
+            }
+            // 绑定服务运行中（SNAPSHOT_BUSY）等可重试失败：跳过，不崩调度线程
+            Err(_) => {}
+        }
+    }
+    false
+}
+
+/// 保留策略纯函数：输入 auto 快照（created_at 降序，list_snapshots 口径）与上限，
+/// 返回应删除的 id。**最新一份从不清除**；依次应用 天数 → 份数 → 总字节。
+fn auto_prune_ids(
+    metas: &[crate::snapshot::SnapshotMeta],
+    max_count: Option<u32>,
+    max_age_days: Option<u32>,
+    max_total_bytes: Option<u64>,
+    now_ms: u64,
+) -> Vec<String> {
+    let mut kept: Vec<&crate::snapshot::SnapshotMeta> = metas.iter().collect();
+    kept.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let mut deleted: Vec<String> = Vec::new();
+    // 1. 过期（按 created_at；最新一份豁免）
+    if let Some(days) = max_age_days {
+        let horizon = u64::from(days).saturating_mul(86_400_000);
+        let mut next: Vec<&crate::snapshot::SnapshotMeta> = Vec::new();
+        for (i, m) in kept.iter().enumerate() {
+            let expired = i > 0 && m.created_at.saturating_add(horizon) <= now_ms;
+            if expired {
+                deleted.push(m.id.clone());
+            } else {
+                next.push(m);
+            }
+        }
+        kept = next;
+    }
+    // 2. 份数上限
+    if let Some(max) = max_count {
+        while kept.len() > max as usize {
+            let oldest = kept.pop().expect("len > max >= 1");
+            deleted.push(oldest.id.clone());
+        }
+    }
+    // 3. 总字节上限（从最旧开始删，最新除外）
+    if let Some(cap) = max_total_bytes {
+        let total =
+            |kept: &[&crate::snapshot::SnapshotMeta]| kept.iter().map(|m| m.bytes).sum::<u64>();
+        while total(&kept) > cap && kept.len() > 1 {
+            let oldest = kept.pop().expect("len > 1");
+            deleted.push(oldest.id.clone());
+        }
+    }
+    deleted
+}
+
 /// 2.2：按 restart 策略的自动重启执行器。每轮占用一次额度：复核
 /// （服务仍处 Exited、未被手动停止/关闭）→ 退避等待 → 复核 → 按启动计划重放。
 /// spawn 失败（工具缺失、端口被占等可重试错误）消耗额度继续；
@@ -7785,6 +7956,143 @@ data:
         assert!(!pv.ready);
         assert!(pv.blockers.iter().any(|b| b.contains("db")));
         eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- 方向六：定时备份与保留策略 ----
+
+    /// 保留策略纯函数矩阵：天数 / 份数 / 总字节；最新一份从不清除。
+    #[test]
+    fn auto_prune_ids_matrix() {
+        let meta = |id: &str, created_at: u64, bytes: u64| crate::snapshot::SnapshotMeta {
+            id: id.to_string(),
+            created_at,
+            bytes,
+            file_count: 1,
+            total_bytes: bytes,
+            note: AUTO_BACKUP_NOTE.to_string(),
+        };
+        let now = 1_000_000_000u64;
+        // created_at 降序输入（list_snapshots 口径）：new > mid > old
+        let metas = vec![
+            meta("new", now - 1_000, 10),
+            meta("mid", now - 2_000, 10),
+            meta("old", now - 3_000, 10),
+        ];
+        // 无上限 → 不删
+        assert!(auto_prune_ids(&metas, None, None, None, now).is_empty());
+        // 份数 2 → 删最旧，保最新
+        assert_eq!(
+            auto_prune_ids(&metas, Some(2), None, None, now),
+            vec!["old"]
+        );
+        // 天数 1（horizon 86.4s）→ new/mid 未过期；older 已过期 —— 演示用 mid 覆盖
+        let aged = vec![
+            meta("new", now, 10),
+            meta("ancient", now - 10 * 86_400_000, 10),
+        ];
+        assert_eq!(
+            auto_prune_ids(&aged, None, Some(1), None, now),
+            vec!["ancient"]
+        );
+        // 最新一份即使过期也豁免
+        let only_old = vec![meta("solo", now - 10 * 86_400_000, 10)];
+        assert!(auto_prune_ids(&only_old, None, Some(1), None, now).is_empty());
+        // 总字节 15：3×10=30 > 15 → 删 old（剩 20 仍 > 15）→ 删 mid（剩 10 ≤ 15，且留最新）
+        assert_eq!(
+            auto_prune_ids(&metas, None, None, Some(15), now),
+            vec!["old", "mid"]
+        );
+        // 最新永不删：字节上限小于最新单份 → 只能删到剩最新
+        assert_eq!(
+            auto_prune_ids(&metas, None, None, Some(5), now),
+            vec!["old", "mid"]
+        );
+    }
+
+    /// tick 集成：到期创建 auto 快照并按 max_count 清理；手动快照不受限；close 后 tick 退出。
+    #[test]
+    fn backup_tick_creates_and_prunes_auto_snapshots() {
+        let root = write_ws_yaml(
+            r#"
+version: 1
+services:
+  db:
+    kind: spring-boot
+    module: db
+    port: 2
+    health:
+      type: none
+data:
+  volumes:
+    app-db:
+      dir: data/db
+      backup:
+        interval_mins: 5
+        max_count: 2
+"#,
+        );
+        fs::create_dir_all(root.join("data/db")).unwrap();
+        fs::write(root.join("data/db/rows.txt"), "seed").unwrap();
+        let eng = Engine::fail_for_test();
+        eng.open(&root).unwrap();
+
+        let now = now_ms();
+        // 基线拨回 6 分钟前 → 下个 tick 到期（interval 5 分钟）
+        {
+            let mut g = eng.inner.lock().expect("engine lock");
+            g.last_auto_backup.insert("app-db".into(), now - 6 * 60_000);
+        }
+        assert!(!run_backup_tick(&eng.inner), "工作区开着，tick 不退出");
+        let vols = eng.data_list().unwrap();
+        let autos: Vec<_> = vols.volumes[0]
+            .snapshots
+            .iter()
+            .filter(|s| s.note == AUTO_BACKUP_NOTE)
+            .collect();
+        assert_eq!(autos.len(), 1, "首次到期创建一份");
+
+        // 手动快照不受保留策略影响
+        eng.data_snapshot_create("app-db", "manual").unwrap();
+
+        // 再来两轮到期 → 共 3 份 auto，max_count=2 每轮清理后恒剩 2
+        for _ in 0..2 {
+            let now = now_ms();
+            {
+                let mut g = eng.inner.lock().expect("engine lock");
+                let last = g.last_auto_backup.get("app-db").copied().unwrap_or(0);
+                g.last_auto_backup
+                    .insert("app-db".into(), last - 6 * 60_000);
+            }
+            assert!(!run_backup_tick(&eng.inner));
+        }
+        let vols = eng.data_list().unwrap();
+        let autos: Vec<_> = vols.volumes[0]
+            .snapshots
+            .iter()
+            .filter(|s| s.note == AUTO_BACKUP_NOTE)
+            .collect();
+        assert_eq!(autos.len(), 2, "max_count=2 生效");
+        assert!(
+            vols.volumes[0]
+                .snapshots
+                .iter()
+                .any(|s| s.note != AUTO_BACKUP_NOTE),
+            "仍应存在一份手动快照"
+        );
+
+        // 未到期（基线刚更新）→ 不重复创建
+        let before = eng.data_list().unwrap().volumes[0].snapshots.len();
+        assert!(!run_backup_tick(&eng.inner));
+        assert_eq!(
+            eng.data_list().unwrap().volumes[0].snapshots.len(),
+            before,
+            "interval 未到不重复创建"
+        );
+
+        // close 后 tick 请求退出
+        eng.close().unwrap();
+        assert!(run_backup_tick(&eng.inner));
         let _ = fs::remove_dir_all(&root);
     }
 

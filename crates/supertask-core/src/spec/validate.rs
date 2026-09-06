@@ -284,6 +284,35 @@ fn validate_data(file: &SuperTaskFile) -> Result<()> {
                 ));
             }
         }
+        // 方向六：定时备份与保留策略字段范围
+        if let Some(bk) = &vol.backup {
+            if let Some(mins) = bk.interval_mins {
+                if !(5..=43200).contains(&mins) {
+                    return Err(Error::new(
+                        ErrorCode::DataInvalid,
+                        format!("data 卷 {id}: backup.interval_mins 需在 5..=43200，当前 {mins}"),
+                    ));
+                }
+            }
+            if bk.max_count.is_some_and(|n| n < 1) {
+                return Err(Error::new(
+                    ErrorCode::DataInvalid,
+                    format!("data 卷 {id}: backup.max_count 至少为 1"),
+                ));
+            }
+            if bk.max_age_days.is_some_and(|n| n < 1) {
+                return Err(Error::new(
+                    ErrorCode::DataInvalid,
+                    format!("data 卷 {id}: backup.max_age_days 至少为 1"),
+                ));
+            }
+            if bk.max_total_bytes.is_some_and(|n| n < 1) {
+                return Err(Error::new(
+                    ErrorCode::DataInvalid,
+                    format!("data 卷 {id}: backup.max_total_bytes 至少为 1"),
+                ));
+            }
+        }
         norm_dirs.push((id.clone(), comps));
     }
     let key = |comps: &[String]| -> Vec<String> {
@@ -951,6 +980,41 @@ mod tests {
         // 绑定服务不存在（depends_on 口径）
         let e = parse_yaml(&svc_yaml(
             "data:\n  volumes:\n    v:\n      service: nope\n      dir: data/db\n",
+        ))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DataInvalid);
+    }
+
+    // 方向六：backup 定时备份与保留字段范围（yaml.md §7.3）
+    #[test]
+    fn data_backup_field_ranges() {
+        // 合法配置解析保留
+        let (f, _) = parse_yaml(&svc_yaml(
+            "data:\n  volumes:\n    v:\n      dir: data/db\n      backup:\n        interval_mins: 60\n        max_count: 10\n        max_age_days: 7\n        max_total_bytes: 536870912\n",
+        ))
+        .unwrap();
+        let bk = f.data.as_ref().unwrap().volumes["v"]
+            .backup
+            .as_ref()
+            .unwrap();
+        assert_eq!(bk.interval_mins, Some(60));
+        assert_eq!(bk.max_count, Some(10));
+        assert_eq!(bk.max_age_days, Some(7));
+        assert_eq!(bk.max_total_bytes, Some(536870912));
+        // interval_mins 越界（下限 5 / 上限 43200）
+        for mins in [4, 43201] {
+            let y = format!("data:\n  volumes:\n    v:\n      dir: data/db\n      backup:\n        interval_mins: {mins}\n");
+            let e = parse_yaml(&svc_yaml(&y)).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::DataInvalid, "mins={mins}");
+        }
+        // max_count / max_age_days 下限 1
+        let e = parse_yaml(&svc_yaml(
+            "data:\n  volumes:\n    v:\n      dir: data/db\n      backup:\n        max_count: 0\n",
+        ))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::DataInvalid);
+        let e = parse_yaml(&svc_yaml(
+            "data:\n  volumes:\n    v:\n      dir: data/db\n      backup:\n        max_age_days: 0\n",
         ))
         .unwrap_err();
         assert_eq!(e.code(), ErrorCode::DataInvalid);

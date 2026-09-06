@@ -1064,6 +1064,13 @@ current_files, snapshot_files, total_bytes, remove_count, remove_sample[], warni
 3 项（round-trip / id·dir·service 非法 / `.supertask` 与嵌套拒绝）+ `engine::tests`
 数据快照 3 项（离线闭环、Running 槽注入 `SNAPSHOT_BUSY` 守护、诊断面）。
 
+**定时备份（方向六，2026-09-06）**：`data.volumes.*.backup`（yaml.md §7.3）声明
+`interval_mins` + 保留上限（`max_count`/`max_age_days`/`max_total_bytes`）。引擎
+open 时启动常驻调度线程（tick 30s），到期自动创建快照（note 标记 `auto`，字段
+规格与手动快照一致，`dataList` 可见）；绑定服务运行中该轮跳过（不报 `SNAPSHOT_BUSY`）；
+保留策略只作用于 `auto` 快照且**最新一份从不清除**，手动快照不受限；close/detach
+停调度，快照写入临时文件 + 原子改名，任意时刻关闭不产生半截快照。零新增错误码。
+
 ### 10.19 Procfile 导入（方向二·纳管任意来源，2026-09-06）
 
 只读工作区根的 `Procfile`（Foreman / Overmind / Heroku 生态，每行 `name: command`），

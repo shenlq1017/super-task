@@ -458,6 +458,30 @@ pub struct DataVolumeSpec {
     pub service: Option<String>,
     /// 必填：工作区相对路径（`sandbox::assert_rel_safe` 规则；禁在 `.supertask/` 内）。
     pub dir: String,
+    /// 方向六：定时自动备份与保留策略（缺省不启用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<DataBackupSpec>,
+    #[serde(default, flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+/// 定时备份与保留（yaml.md §7.3）。`interval_mins` 缺省 = 不启用定时备份；
+/// 保留策略只作用于引擎自动创建的快照（note == "auto"），手动快照不受限，
+/// 且最新一份从不清除。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DataBackupSpec {
+    /// 定时间隔（分钟），5..=43200；缺省不启用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_mins: Option<u32>,
+    /// 最多保留份数（auto 快照）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_count: Option<u32>,
+    /// 保留天数（按快照 created_at）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_days: Option<u32>,
+    /// auto 快照总字节上限。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_bytes: Option<u64>,
     #[serde(default, flatten)]
     pub extra: IndexMap<String, Value>,
 }

@@ -179,7 +179,6 @@ fn build_entries(
             current_services,
             &mut used_ids,
             &mut built,
-            &mut warnings,
         );
     }
     if built.is_empty() {
@@ -215,7 +214,6 @@ fn build_one_entry(
     current_services: Option<&IndexMap<String, ServiceSpec>>,
     used_ids: &mut BTreeSet<String>,
     built: &mut Vec<BuiltEntry>,
-    warnings: &mut Vec<String>,
 ) {
     let mut item_warnings: Vec<String> = Vec::new();
 

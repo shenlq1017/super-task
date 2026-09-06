@@ -387,6 +387,11 @@ data:
     app-db:
       service: api   # 可选：绑定服务 id
       dir: data/db   # 必填：工作区相对路径
+      backup:        # 可选：定时自动备份与保留策略（缺省不启用）
+        interval_mins: 60      # 5..=43200；缺省不启用定时备份
+        max_count: 10          # auto 快照最多保留份数
+        max_age_days: 7        # auto 快照保留天数
+        max_total_bytes: 536870912  # auto 快照总字节上限
 ```
 
 语法规则（加载期 fail-fast，非法即 `DATA_INVALID`）：
@@ -398,6 +403,11 @@ data:
   内**（快照存于 `.supertask/snapshots/`，防自包含递归）。
 - 卷间 `dir` 不得重复，也不得互相嵌套（前缀包含；Windows 下大小写不敏感）。
 - `service`：可选；若声明必须存在于 `services`（同 `depends_on` 口径，加载期报错）。
+- `backup`：可选（方向六）。`interval_mins` 在 5..=43200；`max_count`/`max_age_days`
+  ≥ 1；`max_total_bytes` ≥ 1，越界 `DATA_INVALID`。定时触发在引擎常驻调度线程
+  （tick 30s），绑定服务运行中该轮跳过；保留策略只作用于引擎自动创建的快照
+  （note = `auto`），**手动快照不受限且最新一份从不清除**；快照写入为临时文件
+  + 原子改名，任意时刻关闭工作区不产生半截快照。
 - 运行期语义：快照/恢复要求绑定服务已停止（`SNAPSHOT_BUSY`），快照为目录内容
   替换式恢复——见 ipc.md §10.18。
 
