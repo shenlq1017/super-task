@@ -500,15 +500,78 @@ impl Engine {
     }
 
     /// 方向三：声明式 `needs` 解析（resolve-only dry-run，ipc.md §10.17）。
-    /// 纯只读：不安装、不下载、不写盘；结果由 (needs 声明, 探测缓存, 内置归档
-    /// 目录, 当前平台) 完全决定。`refresh=true` 强制重探工具链（同 probe 按钮）。
+    /// 纯只读：不安装、不下载、不写盘；结果由 (needs 声明, 探测缓存, compose/
+    /// 容器供给, 内置归档目录, 当前平台) 完全决定。`refresh=true` 强制重探工具链
+    /// （同 probe 按钮）。docker 不可用时供给为空，不阻塞其余条目解析。
     pub fn needs_resolve(&self, refresh: bool) -> Result<crate::needs::NeedsResolveOut> {
         let spec = self.spec()?;
         let bundle = self.toolchain_probe(refresh);
-        Ok(crate::needs::resolve(
+        let supply = self.compose_supply();
+        Ok(crate::needs::resolve_with_supply(
             spec.needs.as_deref().unwrap_or(&[]),
             &bundle,
+            crate::needs::platform_key(),
+            &supply,
         ))
+    }
+
+    /// 方向三·G：采集 compose/容器中间件供给（`needs::ComposeSupply`）。
+    /// compose 声明经 `compose_loader`（失败即空，不阻塞）；容器列表走全机
+    /// `docker ps`（不限定 project，覆盖 compose 外的独立容器；失败即
+    /// `available=false`，解析退化为原语义）。
+    fn compose_supply(&self) -> crate::needs::ComposeSupply {
+        use crate::needs::{ComposeSupply, ContainerSupply};
+        let mut supply = ComposeSupply::default();
+        let (root, compose_ref) = {
+            let g = self.inner.lock().expect("engine lock");
+            if g.workspace_id.is_empty() {
+                return supply;
+            }
+            // loader 内部 confine + 缓存；此处只取 rel（与 spawn_compose 同口径）。
+            let compose_ref = g
+                .spec
+                .docker
+                .as_ref()
+                .and_then(|d| d.compose_file.clone())
+                .or_else(|| crate::scan::discover_compose_file(&g.root))
+                .map(|rel| {
+                    (
+                        rel,
+                        g.spec.docker.as_ref().and_then(|d| d.project_name.clone()),
+                    )
+                });
+            (g.root.clone(), compose_ref)
+        };
+        if let Some((rel, project)) = compose_ref {
+            // loader 持独立缓存，锁外调用；失败（无 docker/文件缺失）即无声明，不阻塞
+            if let Ok(model) = self.compose_loader.load(&root, &rel, project.as_deref()) {
+                supply.declared = model
+                    .services
+                    .iter()
+                    .filter_map(|s| s.image.clone().map(|img| (s.name.clone(), img)))
+                    .collect();
+            }
+        }
+        let out = self.docker.run(&DockerSpawn {
+            args: vec!["ps".to_string(), "--format".to_string(), "json".to_string()],
+            cwd: Some(root),
+            timeout: COMPOSE_QUERY_TIMEOUT,
+        });
+        if let Ok(out) = out {
+            if out.code == 0 {
+                supply.available = true;
+                supply.containers = crate::docker::parse_ps(&out.stdout)
+                    .into_iter()
+                    .map(|c| ContainerSupply {
+                        service: c.service.clone(),
+                        name: c.name.clone(),
+                        image: c.image.clone(),
+                        running: c.state.eq_ignore_ascii_case("running"),
+                    })
+                    .collect();
+            }
+        }
+        supply
     }
 
     // ---- 方向六：数据快照（ipc.md §10.18）。快照是离线文件快照：
@@ -7468,6 +7531,95 @@ services:
         assert!(eng2.docker_ps().unwrap().is_empty());
         eng2.close().unwrap();
         let _ = fs::remove_dir_all(&root2);
+    }
+
+    /// 方向三·G：needs 解析识别 compose 栈提供的中间件（全 fake，不真调 docker）。
+    #[test]
+    fn needs_resolve_sees_compose_postgres() {
+        let root = compose_ws(
+            "  placeholder:\n    kind: generic\n    program: placeholder\n",
+            "",
+        );
+        // 追加 needs 声明（compose_ws 只写 services/docker 段）
+        let yaml_path = root.join("supertask.yaml");
+        let mut text = fs::read_to_string(&yaml_path).unwrap();
+        text.push_str("needs:\n  - postgres@16\n  - redis@7\n");
+        fs::write(&yaml_path, &text).unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            "services:\n  db:\n    image: postgres:16.4\n  cache:\n    image: redis:7\n",
+        )
+        .unwrap();
+        let fake = Arc::new(FakeDockerRunner::new());
+        // loader config（声明：db/cache）→ docker ps（仅 db 运行）
+        fake.push_ok(
+            r#"{"services":{
+                "db":{"image":"postgres:16.4","ports":[]},
+                "cache":{"image":"redis:7","ports":[]}
+            }}"#,
+        );
+        fake.push_ok(
+            r#"[{"ID":"c1","Name":"ws-db-1","Service":"db","Image":"postgres:16.4","State":"running"}]"#,
+        );
+        let eng = Engine::with_docker_runner(fake.clone());
+        // 工具链探测注入空结果：隔离 compose 供给分支（零真实 spawn）
+        eng.set_toolchain_probe_fn_for_test(|| crate::probe::ToolchainProbeBundle {
+            tools: crate::probe::ToolchainProbe::default(),
+            managers: crate::toolchain::ManagerAvailability {
+                mise: false,
+                winget: false,
+            },
+        });
+        eng.open(&root).unwrap();
+        let out = eng.needs_resolve(false).unwrap();
+        assert_eq!(out.items.len(), 2);
+        // postgres：运行中容器版本匹配 → satisfied，来源=compose
+        let pg = out.items.iter().find(|i| i.id == "postgres").unwrap();
+        assert_eq!(
+            pg.status,
+            crate::needs::NeedStatus::Satisfied,
+            "{}",
+            pg.reason
+        );
+        assert_eq!(pg.found_version.as_deref(), Some("16.4"));
+        assert!(pg.reason.contains("来源=compose"), "{}", pg.reason);
+        // redis：仅 compose 声明、无容器 → 走归档链但带 up 提示
+        let rd = out.items.iter().find(|i| i.id == "redis").unwrap();
+        assert!(rd.reason.contains("compose 已声明"), "{}", rd.reason);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 方向三·G：docker 不可用时 needs 解析退化为原语义（不阻塞）。
+    #[test]
+    fn needs_resolve_degrades_without_docker() {
+        let root = compose_ws(
+            "  placeholder:\n    kind: generic\n    program: placeholder\n",
+            "",
+        );
+        let yaml_path = root.join("supertask.yaml");
+        let mut text = fs::read_to_string(&yaml_path).unwrap();
+        text.push_str("needs:\n  - postgres@16\n");
+        fs::write(&yaml_path, &text).unwrap();
+        let fake = Arc::new(FakeDockerRunner::new());
+        fake.push_err(std::io::ErrorKind::NotFound); // loader config spawn 失败
+        fake.push_err(std::io::ErrorKind::NotFound); // docker ps spawn 失败
+        let eng = Engine::with_docker_runner(fake.clone());
+        eng.set_toolchain_probe_fn_for_test(|| crate::probe::ToolchainProbeBundle {
+            tools: crate::probe::ToolchainProbe::default(),
+            managers: crate::toolchain::ManagerAvailability {
+                mise: false,
+                winget: false,
+            },
+        });
+        eng.open(&root).unwrap();
+        let out = eng.needs_resolve(false).unwrap();
+        let pg = &out.items[0];
+        // 无供给信息 → 归档链原语义，无 compose 提示
+        assert_eq!(pg.status, crate::needs::NeedStatus::Archive);
+        assert!(!pg.reason.contains("compose/容器"), "{}", pg.reason);
+        eng.close().unwrap();
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

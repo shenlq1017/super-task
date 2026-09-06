@@ -275,11 +275,166 @@ pub const ARCHIVE_CATALOG: &[ArchiveEntry] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// 方向三·G：compose 栈 / 运行中容器作为 needs 来源
+// ---------------------------------------------------------------------------
+
+/// 单个容器的供给快照（`docker ps --format json` 解析结果，见 `docker::ps`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContainerSupply {
+    /// compose 服务名（非 compose 容器为空或推导名，仅展示）。
+    pub service: String,
+    pub name: String,
+    pub image: String,
+    /// `state == running`（大小写不敏感）。
+    pub running: bool,
+}
+
+/// compose/容器供给输入：`available=false` 表示容器列表查询失败（docker 不可用），
+/// 此时容器分支整体跳过、不阻塞其余条目；compose 声明缺失即为空。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComposeSupply {
+    pub available: bool,
+    pub containers: Vec<ContainerSupply>,
+    /// (compose service, image)：`docker compose config` 声明但未必有容器。
+    pub declared: Vec<(String, String)>,
+}
+
+/// needs id → 可供给该中间件的镜像仓库名（小写）。语言工具（node/java…）不在此表，
+/// 容器不提供语言工具链，只提供中间件。
+fn middleware_images(id: &str) -> Option<&'static [&'static str]> {
+    Some(match id {
+        "postgres" => &["postgres"],
+        "mysql" => &["mysql"],
+        "mariadb" => &["mariadb"],
+        "redis" => &["redis"],
+        "mongo" | "mongodb" => &["mongo"],
+        "minio" => &["minio/minio", "minio"],
+        "rabbitmq" => &["rabbitmq"],
+        "elasticsearch" => &["elasticsearch"],
+        "memcached" => &["memcached"],
+        _ => return None,
+    })
+}
+
+/// 拆镜像引用为 (仓库小写, tag)：剥离 `@sha256:` 摘要；`latest`/无 tag → None
+/// （版本未知）；`registry:5000/repo:tag` 按“最后一个冒号在最后一个斜杠之后”
+/// 判定 tag，避免把 registry 端口误当 tag。
+fn split_image(image: &str) -> (String, Option<String>) {
+    let no_digest = image.split('@').next().unwrap_or(image);
+    let slash = no_digest.rfind('/');
+    let colon = no_digest.rfind(':');
+    let has_tag = colon.is_some_and(|c| slash.is_none_or(|s| c > s));
+    if !has_tag {
+        return (no_digest.to_ascii_lowercase(), None);
+    }
+    let c = colon.expect("has_tag 已保证冒号存在");
+    let repo = no_digest[..c].to_ascii_lowercase();
+    let tag = no_digest[c + 1..].to_string();
+    if tag.is_empty() || tag.eq_ignore_ascii_case("latest") {
+        (repo, None)
+    } else {
+        (repo, Some(tag))
+    }
+}
+
+/// 仓库匹配：裸名相等，或带 registry/命名空间前缀的同名后缀。
+fn image_matches_repo(repo: &str, aliases: &[&str]) -> bool {
+    aliases
+        .iter()
+        .any(|a| repo == *a || repo.ends_with(&format!("/{a}")))
+}
+
+/// compose 供给判定结果：直接满足 / 仅提示（走原链路）/ 无关。
+enum ComposeState {
+    Satisfied {
+        service: String,
+        name: String,
+        image: String,
+        tag: Option<String>,
+    },
+    Hint(String),
+    None,
+}
+
+fn compose_state(decl: &NeedDecl, supply: &ComposeSupply) -> ComposeState {
+    let Some(aliases) = middleware_images(&decl.id) else {
+        return ComposeState::None;
+    };
+    let req = decl.version_req.as_deref();
+    // 1) 运行中容器：版本匹配（或无版本要求）→ satisfied；版本不匹配 →
+    //    继续看其他容器；全都不匹配但有版本未知的运行容器 → 提示无法确认。
+    let mut unknown_running: Option<&ContainerSupply> = None;
+    for c in &supply.containers {
+        let (repo, tag) = split_image(&c.image);
+        if !image_matches_repo(&repo, aliases) {
+            continue;
+        }
+        if !c.running {
+            continue;
+        }
+        if req.is_none() || version_matches(req, tag.as_deref()) {
+            return ComposeState::Satisfied {
+                service: c.service.clone(),
+                name: c.name.clone(),
+                image: c.image.clone(),
+                tag,
+            };
+        }
+        if tag.is_none() && unknown_running.is_none() {
+            unknown_running = Some(c);
+        }
+    }
+    if let Some(c) = unknown_running {
+        return ComposeState::Hint(format!(
+            "容器 {} 正在运行（镜像 {}，版本未知），{} 的版本要求无法确认；\
+             可用固定 tag 重建容器后重新检查",
+            c.name,
+            c.image,
+            req.unwrap_or("")
+        ));
+    }
+    // 2) 存在但未运行：无版本要求即提示，有要求则须版本兼容
+    //    （避免 15 的容器干扰 16 的需求；版本未知按不兼容处理）。
+    for c in &supply.containers {
+        let (repo, tag) = split_image(&c.image);
+        if !c.running
+            && image_matches_repo(&repo, aliases)
+            && (req.is_none() || version_matches(req, tag.as_deref()))
+        {
+            return ComposeState::Hint(format!(
+                "容器 {} 存在但未运行（{}），启动后可满足 {}",
+                c.name,
+                c.image,
+                decl_req(req)
+            ));
+        }
+    }
+    // 3) 仅 compose 声明（无容器）：提示 up 后可满足。
+    for (svc, image) in &supply.declared {
+        let (repo, tag) = split_image(image);
+        if image_matches_repo(&repo, aliases)
+            && (req.is_none() || version_matches(req, tag.as_deref()))
+        {
+            return ComposeState::Hint(format!(
+                "compose 已声明服务 {svc}（镜像 {image}），`docker compose up -d {svc}` 后可满足 {}",
+                decl_req(req)
+            ));
+        }
+    }
+    ComposeState::None
+}
+
+fn decl_req(req: Option<&str>) -> &str {
+    req.unwrap_or("（无版本要求）")
+}
+
+// ---------------------------------------------------------------------------
 // 解析主流程
 // ---------------------------------------------------------------------------
 
 /// 对当前平台解析 needs 列表。`resolve` 是唯一生产入口；
 /// `resolve_with` 显式传入平台键，供离线测试固定平台差异。
+/// 两者都不感知容器（supply 为空 = docker 不可用口径）。
 pub fn resolve(needs: &[String], bundle: &ToolchainProbeBundle) -> NeedsResolveOut {
     resolve_with(needs, bundle, platform_key())
 }
@@ -288,6 +443,18 @@ pub fn resolve_with(
     needs: &[String],
     bundle: &ToolchainProbeBundle,
     platform: &str,
+) -> NeedsResolveOut {
+    resolve_with_supply(needs, bundle, platform, &ComposeSupply::default())
+}
+
+/// 带 compose/容器供给的解析（方向三·G，生产入口见 `Engine::needs_resolve`）。
+/// supply 为空（`available=false` 且无条目）时退化为 `resolve_with` 原语义，
+/// docker 不可用不阻塞其余条目解析。
+pub fn resolve_with_supply(
+    needs: &[String],
+    bundle: &ToolchainProbeBundle,
+    platform: &str,
+    supply: &ComposeSupply,
 ) -> NeedsResolveOut {
     let mut items = Vec::new();
     let mut warnings = Vec::new();
@@ -301,12 +468,17 @@ pub fn resolve_with(
             ));
             continue;
         }
-        items.push(resolve_one(raw, bundle, platform));
+        items.push(resolve_one(raw, bundle, platform, supply));
     }
     NeedsResolveOut { items, warnings }
 }
 
-fn resolve_one(raw: &str, bundle: &ToolchainProbeBundle, platform: &str) -> NeedItem {
+fn resolve_one(
+    raw: &str,
+    bundle: &ToolchainProbeBundle,
+    platform: &str,
+    supply: &ComposeSupply,
+) -> NeedItem {
     let decl = match parse_need(raw) {
         Ok(d) => d,
         // validate() 在加载期已拦截非法项；resolve 防御性兜底，绝不 panic
@@ -326,6 +498,49 @@ fn resolve_one(raw: &str, bundle: &ToolchainProbeBundle, platform: &str) -> Need
             };
         }
     };
+    // 方向三·G：compose/容器中间件来源。运行中且版本匹配 → satisfied；
+    // 存在但未运行 / 仅 compose 声明 → 提示后走原链路（状态不变、reason 增补）。
+    match compose_state(&decl, supply) {
+        ComposeState::Satisfied {
+            service,
+            name,
+            image,
+            tag,
+        } => {
+            return NeedItem {
+                need: raw.to_string(),
+                id: decl.id.clone(),
+                version_req: decl.version_req.clone(),
+                status: NeedStatus::Satisfied,
+                found_version: tag,
+                found_path: Some(format!("compose 服务 {service}（容器 {name}）")),
+                via: None,
+                install_version: None,
+                winget_id: None,
+                archive_version: None,
+                reason: format!(
+                    "compose 服务 {service} 的容器 {name} 正在运行（镜像 {image}），\
+                     满足 {}，来源=compose。",
+                    raw.trim()
+                ),
+            };
+        }
+        ComposeState::Hint(hint) => {
+            let mut item = resolve_base(raw, decl, bundle, platform);
+            item.reason.push_str(&format!("（compose/容器：{hint}）"));
+            return item;
+        }
+        ComposeState::None => {}
+    }
+    resolve_base(raw, decl, bundle, platform)
+}
+
+fn resolve_base(
+    raw: &str,
+    decl: NeedDecl,
+    bundle: &ToolchainProbeBundle,
+    platform: &str,
+) -> NeedItem {
     if let Some(kind) = ToolKind::parse(&decl.id) {
         resolve_tool(raw, decl, kind, bundle)
     } else if ARCHIVE_CATALOG.iter().any(|e| e.id == decl.id) {
@@ -1071,5 +1286,169 @@ mod tests {
         let plan2 = resolve_with(&["node@20".into()], &b2, "windows-x64");
         assert_eq!(plan2.items[0].status, NeedStatus::Satisfied);
         assert_eq!(plan2.items[0].found_version.as_deref(), Some("v20.18.1"));
+    }
+
+    // ---- 方向三·G：compose 栈 / 运行中容器作为 needs 来源 ----
+
+    fn bare_bundle() -> ToolchainProbeBundle {
+        bundle(
+            probe_of(ToolKind::Node, false, None),
+            avail(false, false),
+            vec![],
+        )
+    }
+
+    fn cont(service: &str, name: &str, image: &str, running: bool) -> ContainerSupply {
+        ContainerSupply {
+            service: service.into(),
+            name: name.into(),
+            image: image.into(),
+            running,
+        }
+    }
+
+    fn supply_with(containers: Vec<ContainerSupply>, declared: Vec<(&str, &str)>) -> ComposeSupply {
+        ComposeSupply {
+            available: true,
+            containers,
+            declared: declared
+                .into_iter()
+                .map(|(s, i)| (s.to_string(), i.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn compose_running_container_satisfies_with_version() {
+        let s = supply_with(vec![cont("db", "mall-db-1", "postgres:16.4", true)], vec![]);
+        let out = resolve_with_supply(&["postgres@16".into()], &bare_bundle(), "windows-x64", &s);
+        let item = &out.items[0];
+        assert_eq!(item.status, NeedStatus::Satisfied);
+        assert_eq!(item.found_version.as_deref(), Some("16.4"));
+        assert!(
+            item.found_path
+                .as_deref()
+                .unwrap_or("")
+                .contains("mall-db-1"),
+            "{}",
+            item.reason
+        );
+        assert!(item.reason.contains("来源=compose"), "{}", item.reason);
+    }
+
+    #[test]
+    fn compose_image_repo_prefix_and_case_insensitive() {
+        // registry 前缀 + 大小写：docker.io/library/Postgres:16 → postgres@16 满足
+        let s = supply_with(
+            vec![cont("db", "x", "docker.io/library/Postgres:16", true)],
+            vec![],
+        );
+        let out = resolve_with_supply(&["postgres@16".into()], &bare_bundle(), "windows-x64", &s);
+        assert_eq!(out.items[0].status, NeedStatus::Satisfied);
+    }
+
+    #[test]
+    fn compose_version_mismatch_falls_through_to_archive() {
+        // 运行中 15 不满足 16 → 走归档链（archive），不伪造 satisfied
+        let s = supply_with(vec![cont("db", "x", "postgres:15.7", true)], vec![]);
+        let out = resolve_with_supply(&["postgres@16".into()], &bare_bundle(), "windows-x64", &s);
+        let item = &out.items[0];
+        assert_eq!(item.status, NeedStatus::Archive);
+        assert_eq!(item.archive_version.as_deref(), Some("16.4"));
+    }
+
+    #[test]
+    fn compose_stopped_container_hinted_not_satisfied() {
+        let s = supply_with(
+            vec![cont("db", "mall-db-1", "postgres:16.4", false)],
+            vec![],
+        );
+        let out = resolve_with_supply(&["postgres@16".into()], &bare_bundle(), "windows-x64", &s);
+        let item = &out.items[0];
+        assert_eq!(item.status, NeedStatus::Archive);
+        assert!(item.reason.contains("存在但未运行"), "{}", item.reason);
+        assert!(item.reason.contains("mall-db-1"), "{}", item.reason);
+    }
+
+    #[test]
+    fn compose_declared_only_hinted() {
+        let s = supply_with(vec![], vec![("db", "postgres:16.4")]);
+        let out = resolve_with_supply(&["postgres@16".into()], &bare_bundle(), "windows-x64", &s);
+        let item = &out.items[0];
+        assert_eq!(item.status, NeedStatus::Archive);
+        assert!(item.reason.contains("compose 已声明"), "{}", item.reason);
+        assert!(item.reason.contains("up -d"), "{}", item.reason);
+    }
+
+    #[test]
+    fn compose_unknown_tag_with_req_hinted() {
+        // latest = 版本未知：有明确要求时不满足，但给出可区分的提示
+        let s = supply_with(vec![cont("db", "x", "postgres:latest", true)], vec![]);
+        let out = resolve_with_supply(&["postgres@16".into()], &bare_bundle(), "windows-x64", &s);
+        let item = &out.items[0];
+        assert_eq!(item.status, NeedStatus::Archive);
+        assert!(item.reason.contains("版本未知"), "{}", item.reason);
+    }
+
+    #[test]
+    fn compose_no_req_matches_any_running_tag() {
+        // 无版本要求：存在即满足（含 latest）
+        let s = supply_with(vec![cont("cache", "x", "redis:latest", true)], vec![]);
+        let out = resolve_with_supply(&["redis".into()], &bare_bundle(), "windows-x64", &s);
+        assert_eq!(out.items[0].status, NeedStatus::Satisfied);
+    }
+
+    #[test]
+    fn compose_non_catalog_middleware_satisfied() {
+        // redis 不在归档目录：运行中 → satisfied；无容器 → 未知 id 口径 + 无提示
+        let s = supply_with(vec![cont("cache", "x", "redis:7.2", true)], vec![]);
+        let out = resolve_with_supply(&["redis@7".into()], &bare_bundle(), "windows-x64", &s);
+        let item = &out.items[0];
+        assert_eq!(item.status, NeedStatus::Satisfied);
+        assert_eq!(item.found_version.as_deref(), Some("7.2"));
+        let out2 = resolve_with_supply(
+            &["redis@7".into()],
+            &bare_bundle(),
+            "windows-x64",
+            &ComposeSupply::default(),
+        );
+        assert_eq!(out2.items[0].status, NeedStatus::Unsatisfiable);
+        assert!(
+            !out2.items[0].reason.contains("compose/容器"),
+            "{}",
+            out2.items[0].reason
+        );
+    }
+
+    #[test]
+    fn compose_language_tools_never_match_containers() {
+        // 容器不提供语言工具链：node@20 不受 postgres 容器影响
+        let s = supply_with(vec![cont("db", "x", "postgres:16.4", true)], vec![]);
+        let out = resolve_with_supply(
+            &["node@20".into()],
+            &bundle(
+                probe_of(ToolKind::Node, false, None),
+                avail(false, false),
+                vec![],
+            ),
+            "windows-x64",
+            &s,
+        );
+        assert_eq!(out.items[0].status, NeedStatus::Unsatisfiable);
+    }
+
+    #[test]
+    fn compose_digest_and_registry_port_parse() {
+        // sha256 摘要剥离 + registry 端口不误判为 tag
+        assert_eq!(
+            split_image("postgres@sha256:abc123"),
+            ("postgres".to_string(), None)
+        );
+        assert_eq!(
+            split_image("myreg:5000/postgres:16.4"),
+            ("myreg:5000/postgres".to_string(), Some("16.4".to_string()))
+        );
+        assert!(image_matches_repo("myreg:5000/postgres", &["postgres"]));
+        assert!(!image_matches_repo("mypostgres", &["postgres"]));
     }
 }

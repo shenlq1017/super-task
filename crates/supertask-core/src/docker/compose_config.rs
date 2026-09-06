@@ -17,6 +17,7 @@ use crate::sandbox::confine;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// compose 解析结果里的单个服务。ports 保持 compose 输出顺序，`port` 取第一个。
+/// `image`（方向三·G：needs compose 来源匹配用，无 image 的 service 为 None）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ComposeServiceInfo {
     pub name: String,
@@ -25,6 +26,8 @@ pub struct ComposeServiceInfo {
     pub depends_on: Vec<String>,
     pub has_build: bool,
     pub has_healthcheck: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,6 +67,7 @@ pub fn parse_compose_config(stdout: &str) -> Result<ComposeModel> {
                 depends_on: depends_on_keys(sv.get("depends_on")),
                 has_build: sv.get("build").map(|b| !b.is_null()).unwrap_or(false),
                 has_healthcheck: sv.get("healthcheck").map(|h| !h.is_null()).unwrap_or(false),
+                image: str_of(sv, "image"),
             });
         }
         // 排序保证输出顺序稳定（JSON 对象顺序是实现细节）。
@@ -95,6 +99,10 @@ fn published_port(v: &Value) -> Option<u16> {
         Value::String(s) => s.split(['-', ':', '/']).next()?.trim().parse().ok(),
         _ => None,
     }
+}
+
+fn str_of(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
 /// 规范化输出中 `depends_on` 是 map（条件对象）或字符串列表；旧版两者都有。
@@ -311,6 +319,24 @@ mod tests {
         assert_eq!(worker.port, Some(8000));
         assert_eq!(worker.depends_on, vec!["redis", "mysql"]);
         assert!(!worker.has_build);
+    }
+
+    #[test]
+    fn parse_extracts_service_images() {
+        // 方向三·G：needs compose 来源匹配用（无 image 的 service 为 None）。
+        let model = parse_compose_config(&fixture_config_json()).expect("parse");
+        assert_eq!(
+            model.find("redis").expect("redis").image.as_deref(),
+            Some("redis:7")
+        );
+        assert_eq!(
+            model.find("mysql").expect("mysql").image.as_deref(),
+            Some("mysql:8")
+        );
+        let model2 =
+            parse_compose_config(r#"{"services":{"app":{"build":{"context":"."},"ports":[]}}}"#)
+                .expect("parse");
+        assert_eq!(model2.find("app").expect("app").image, None);
     }
 
     #[test]

@@ -60,7 +60,10 @@ pub fn parse_ps(stdout: &str) -> Vec<PsContainer> {
 }
 
 fn parse_ps_item(v: Value) -> Option<PsContainer> {
-    let name = str_of(&v, "Name").unwrap_or_default();
+    // 方向三·G：`docker ps --format json`（全机容器）用 `Names`，compose ps 用 `Name`。
+    let name = str_of(&v, "Name")
+        .or_else(|| str_of(&v, "Names"))
+        .unwrap_or_default();
     let id = str_of(&v, "ID").unwrap_or_default();
     if name.is_empty() && id.is_empty() {
         return None;
@@ -381,6 +384,18 @@ mod tests {
         assert!(items[0].exited());
         assert_eq!(items[1].service, "mysql");
         assert_eq!(items[1].state, "running");
+    }
+
+    #[test]
+    fn parse_ps_plain_names_key() {
+        // 方向三·G：全机 `docker ps --format json` 用 `Names`（非 compose 的 `Name`）。
+        let out =
+            r#"{"ID":"abc123","Names":"my-postgres","Image":"postgres:16.4","State":"running"}"#;
+        let items = parse_ps(out);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "my-postgres");
+        assert_eq!(items[0].image, "postgres:16.4");
+        assert!(!items[0].exited());
     }
 
     #[test]
