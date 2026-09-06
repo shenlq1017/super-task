@@ -14,9 +14,9 @@ jobs:
     outputs:
       release_id: ${{ steps.build.outputs.releaseId }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -80,9 +80,9 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-13
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -117,9 +117,9 @@ jobs:
     runs-on: ubuntu-22.04
     needs: windows
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
