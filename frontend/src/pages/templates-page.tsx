@@ -30,17 +30,21 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
-import { apiTemplatesCreate, apiTemplatesExport, apiTemplatesImport, apiTemplatesList, apiTemplatesPreview, type TemplatesCreateArgs } from "../ipc/api";
+import { apiTemplatesCreate, apiTemplatesExport, apiTemplatesImport, apiTemplatesList, apiTemplatesMergeApply, apiTemplatesMergePreview, apiTemplatesPreview, apiYamlGet, type TemplatesCreateArgs } from "../ipc/api";
 import { isTauri } from "../ipc/invoke";
 import {
   IpcFailure,
   type OpState,
   type TemplateBlockSummary,
+  type TemplateMergeItem,
   type TemplateSource,
   type TemplateSummary,
+  type TemplatesMergePreviewOut,
   type TemplatesPreviewOut,
 } from "../ipc/protocol";
 import { operationResultWorkspaceId, useOperations, type OperationState } from "../providers/operation-provider";
+import { useWorkspace } from "../providers/workspace-provider";
+import { useYaml } from "../providers/yaml-provider";
 import { opErrorLabel } from "../lib/status";
 import { useOpenWorkspace } from "../lib/use-open-workspace";
 
@@ -427,6 +431,8 @@ export function TemplatesPage() {
   const { t } = useTranslation();
   const openWs = useOpenWorkspace();
   const { get } = useOperations();
+  const ws = useWorkspace();
+  const yaml = useYaml();
 
   const initialPrefs = useMemo(() => loadPrefs(), []);
   const [templates, setTemplates] = useState<TemplateSummary[] | null>(null);
@@ -811,6 +817,107 @@ export function TemplatesPage() {
     }
   };
 
+  // 方向四 M：模板并入现有工作区（与创建向导共用块/端口/参数状态）。
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergePreview, setMergePreview] = useState<TemplatesMergePreviewOut | null>(null);
+  const [mergePreviewing, setMergePreviewing] = useState(false);
+  const [mergeSubmitting, setMergeSubmitting] = useState(false);
+  const [mergeSelected, setMergeSelected] = useState<string[] | null>(null);
+  const wsOpen = !!ws.state.workspaceId;
+
+  const openMerge = (id: string) => {
+    if (!ws.state.workspaceId) {
+      toast(t("pages.templates.mergeNoWs"), "warn");
+      return;
+    }
+    setSelectedId(id);
+    setMergePreview(null);
+    setMergeSelected(null);
+    setMergeOpen(true);
+    setDetailOpen(false);
+  };
+
+  const runMergePreview = async () => {
+    if (!selected || !ws.state.workspaceId || mergePreviewing) return;
+    if (portConflict || portInvalid) {
+      toast(t("pages.templates.portProblem"), "warn");
+      return;
+    }
+    setMergePreviewing(true);
+    try {
+      const out = await apiTemplatesMergePreview({
+        workspaceId: ws.state.workspaceId,
+        templateId: selected.id,
+        source: selected.source,
+        ...(selected.blocks?.length
+          ? { blocks: selectedBlocks, ports: Object.fromEntries(wizardServices.map(({ svcId, port }) => [svcId, port])) }
+          : {}),
+        params: paramValues,
+      });
+      setMergePreview(out);
+      setMergeSelected(out.items.filter((i) => i.selected).map((i) => i.service_id));
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setMergePreviewing(false);
+    }
+  };
+
+  const toggleMergeItem = (id: string) => {
+    setMergeSelected((cur) => {
+      const base = cur ?? mergePreview?.items.filter((i) => i.selected).map((i) => i.service_id) ?? [];
+      return base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+    });
+  };
+
+  const submitMerge = async () => {
+    if (!selected || !ws.state.workspaceId || mergeSubmitting) return;
+    const chosen = mergeSelected ?? mergePreview?.items.filter((i) => i.selected).map((i) => i.service_id) ?? [];
+    if (chosen.length === 0) {
+      toast(t("pages.templates.mergeNothingSelected"), "warn");
+      return;
+    }
+    setMergeSubmitting(true);
+    try {
+      const yg = await apiYamlGet();
+      const out = await apiTemplatesMergeApply({
+        workspaceId: ws.state.workspaceId,
+        templateId: selected.id,
+        source: selected.source,
+        ...(selected.blocks?.length
+          ? { blocks: selectedBlocks, ports: Object.fromEntries(wizardServices.map(({ svcId, port }) => [svcId, port])) }
+          : {}),
+        params: paramValues,
+        selected: chosen,
+        baseHash: yg.hash,
+      });
+      toast(
+        out.warnings.length > 0 ? out.warnings.join("；") : t("pages.templates.mergeMergedOk", { n: chosen.length }),
+        "ok",
+      );
+      await ws.actions.refreshSpec();
+      await yaml.actions.reload();
+      setMergeOpen(false);
+      setMergePreview(null);
+      setMergeSelected(null);
+    } catch (e) {
+      toast(e instanceof IpcFailure ? opErrorLabel(e.code) : String(e), "err");
+    } finally {
+      setMergeSubmitting(false);
+    }
+  };
+
+  const mergeStatusBadge = (item: TemplateMergeItem) => {
+    if (item.status === "add") {
+      return <Badge variant="secondary">{t("pages.templates.mergeStatusAdd")}</Badge>;
+    }
+    return (
+      <Badge variant="outline" className="border-[var(--st-danger-ring)] text-[var(--st-danger)]">
+        {item.status === "id_conflict" ? t("pages.templates.mergeStatusIdConflict") : t("pages.templates.mergeStatusPortConflict")}
+      </Badge>
+    );
+  };
+
   const goNext = () => {
     if (!selected) return;
     if (step === 1) {
@@ -1093,6 +1200,11 @@ export function TemplatesPage() {
                   {t("pages.templates.useCta")}
                 </Button>
               )}
+              {wsOpen ? (
+                <Button variant="outline" size="sm" className="gap-1" onClick={() => openMerge(selected.id)}>
+                  <Download className="size-3.5" /> {t("pages.templates.mergeCta")}
+                </Button>
+              ) : null}
             </div>
           ) : null}
 
@@ -1167,6 +1279,11 @@ export function TemplatesPage() {
                 <Button variant="outline" onClick={() => setDetailOpen(false)}>
                   {t("common.close")}
                 </Button>
+                {wsOpen ? (
+                  <Button variant="outline" onClick={() => openMerge(selected.id)}>
+                    {t("pages.templates.mergeCta")}
+                  </Button>
+                ) : null}
                 {selected.blocks?.length ? (
                   <Button onClick={() => openWizard(selected.id)}>{t("pages.templates.comboCta")}</Button>
                 ) : (
@@ -1396,6 +1513,238 @@ export function TemplatesPage() {
                     </Button>
                   )}
                 </div>
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* 并入当前工作区（方向四 M）：块/端口/参数 → 预览 → 勾选 → 写回 */}
+      <Dialog
+        open={mergeOpen && !!selected && !selected.invalid}
+        onOpenChange={(o) => {
+          if (!o) {
+            setMergeOpen(false);
+            setMergePreview(null);
+            setMergeSelected(null);
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[min(90vh,44rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" showCloseButton>
+          {selected ? (
+            <>
+              <div className="border-b border-[var(--line,#e6e6e6)] p-4 pr-12">
+                <DialogHeader>
+                  <DialogTitle className="flex flex-wrap items-center gap-2">
+                    {t("pages.templates.mergeHeading")}
+                    <Badge variant="secondary">
+                      {selected.source === "builtin" ? t("pages.templates.builtinShort") : t("pages.templates.srcLocal")}
+                    </Badge>
+                  </DialogTitle>
+                  <DialogDescription>
+                    <span className="font-medium text-[var(--t1,#222326)]">{selected.name}</span>
+                    {` — ${t("pages.templates.mergeHint")}`}
+                  </DialogDescription>
+                </DialogHeader>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-auto p-4">
+                {selected.blocks?.length ? (
+                  <div>
+                    <div className="text-[0.78rem] font-semibold text-[var(--t1,#222326)]">
+                      {t("pages.templates.blocksTitle")}
+                      <span className="ml-2 font-normal text-[var(--t3,#8a8f98)]">{t("pages.templates.blocksHint")}</span>
+                    </div>
+                    <div className="mt-2 flex flex-col gap-1.5">
+                      {activeBlocks.map((b) => (
+                        <label
+                          key={b.id}
+                          className={cn(
+                            "flex cursor-pointer items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line-strong,#d0d6e0)] px-2.5 py-1.5",
+                            selectedBlocks.includes(b.id) ? "bg-[var(--st-accent-tint,#eef0fb)]" : "bg-[var(--surface,#fff)]",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedBlocks.includes(b.id)}
+                            onChange={() => toggleBlock(b.id)}
+                            className="accent-[var(--st-accent,#5e6ad2)]"
+                          />
+                          <span className="text-[0.78rem] font-medium text-[var(--t1,#222326)]">{b.label}</span>
+                          <Badge variant="outline" className="text-[10px]">
+                            {b.kind}
+                          </Badge>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {selected.params?.length ? (
+                  <div className={cn("grid grid-cols-1 gap-3 md:grid-cols-2", selected.blocks?.length ? "mt-3" : "")}>
+                    {selected.params.map((p) => (
+                      <label key={p.key} className="flex flex-col gap-1">
+                        <span className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">
+                          {p.label || p.key}
+                          {p.required ? <span className="ml-0.5 text-[#DC2626]">*</span> : null}
+                        </span>
+                        <Input
+                          value={paramValues[p.key] ?? ""}
+                          onChange={(e) => {
+                            setParamValues((cur) => ({ ...cur, [p.key]: e.target.value }));
+                            setMergePreview(null);
+                          }}
+                          placeholder={p.key}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
+
+                {wizardServices.length > 0 ? (
+                  <div className="mt-3">
+                    <div className="text-[0.72rem] font-medium text-[var(--t2,#62666d)]">{t("pages.templates.portAssign")}</div>
+                    <div className="mt-1.5 flex flex-wrap gap-3">
+                      {wizardServices.map(({ svcId, port }) => (
+                        <label key={svcId} className="flex items-center gap-1.5 text-[0.74rem] text-[var(--t1,#222326)]">
+                          <span className="font-mono text-[var(--t2,#62666d)]">{svcId}</span>
+                          <Input
+                            type="number"
+                            value={Number.isNaN(port) ? "" : port}
+                            onChange={(e) => {
+                              changePort(svcId, e.target.value);
+                              setMergePreview(null);
+                            }}
+                            className="h-8 w-24 font-mono"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    {portConflict ? (
+                      <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                        {t("pages.templates.portConflict", { port: portConflict.port, a: portConflict.a, b: portConflict.b })}
+                      </div>
+                    ) : portInvalid ? (
+                      <div className="mt-1.5 text-[0.74rem] text-[#DC2626]" role="alert">
+                        {t("pages.templates.portInvalid")}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="soft"
+                    size="sm"
+                    className="gap-1"
+                    disabled={mergePreviewing || !!portConflict || portInvalid}
+                    onClick={() => void runMergePreview()}
+                  >
+                    {mergePreviewing ? <Loader2 className="size-3.5 animate-spin" /> : <Eye className="size-3.5" />}
+                    {t("pages.templates.mergePreviewCta")}
+                  </Button>
+                  {mergePreview ? (
+                    <span className="text-[0.72rem] text-[var(--st-ok-deep,#1e7e35)]">
+                      {t("pages.templates.mergeItemsTitle", { n: mergePreview.items.length })}
+                    </span>
+                  ) : null}
+                </div>
+
+                {mergePreview ? (
+                  <div className="mt-2 rounded-[var(--r-sm,8px)] bg-[var(--surface-2,#f3f4f5)] p-2.5">
+                    <div className="mb-1.5 text-[0.72rem] font-semibold text-[var(--t2,#62666d)]">
+                      {t("pages.templates.mergeItemsTitle", { n: mergePreview.items.length })}
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      {mergePreview.items.map((item) => {
+                        const checked = (mergeSelected ?? mergePreview.items.filter((i) => i.selected).map((i) => i.service_id)).includes(
+                          item.service_id,
+                        );
+                        const toggleable = item.status === "add";
+                        return (
+                          <label
+                            key={item.service_id}
+                            className={cn(
+                              "flex items-center gap-2 rounded-[var(--r-sm,8px)] border border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] px-2.5 py-1.5",
+                              !toggleable && "opacity-70",
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={toggleable ? checked : false}
+                              disabled={!toggleable}
+                              onChange={() => toggleMergeItem(item.service_id)}
+                              className="accent-[var(--st-accent,#5e6ad2)]"
+                            />
+                            <span className="font-mono text-[0.76rem] font-medium text-[var(--t1,#222326)]">{item.service_id}</span>
+                            {item.port != null ? (
+                              <span className="font-mono text-[0.7rem] text-[var(--t2,#62666d)]">:{item.port}</span>
+                            ) : null}
+                            {mergeStatusBadge(item)}
+                            {item.warnings.map((w) => (
+                              <span key={w} className="truncate text-[0.68rem] text-[var(--t3,#8a8f98)]" title={w}>
+                                {w}
+                              </span>
+                            ))}
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {mergePreview.needs_added.length ? (
+                      <div className="mt-2 text-[0.72rem] text-[var(--t2,#62666d)]">
+                        {t("pages.templates.mergeNeedsAdded", { items: mergePreview.needs_added.join(", ") })}
+                      </div>
+                    ) : null}
+                    {mergePreview.toolchain_added.length ? (
+                      <div className="mt-1 text-[0.72rem] text-[var(--t2,#62666d)]">
+                        {t("pages.templates.mergeToolchainAdded", { items: mergePreview.toolchain_added.join(", ") })}
+                      </div>
+                    ) : null}
+                    {mergePreview.files.length ? (
+                      <div className="mt-2">
+                        <div className="mb-1 text-[0.72rem] font-semibold text-[var(--t2,#62666d)]">
+                          {t("pages.templates.mergeFilesTitle", { n: mergePreview.files.length })}
+                        </div>
+                        <div className="max-h-28 overflow-auto font-mono text-[0.66rem] text-[var(--t3,#8a8f98)]">
+                          {mergePreview.files.map((f) => (
+                            <div key={f.path} className="truncate" title={f.will_copy ? t("pages.templates.mergeFileCopy") : (f.reason ?? t("pages.templates.mergeFileSkip"))}>
+                              {f.will_copy ? "+" : "="} {f.path}
+                              {f.will_copy ? "" : `（${t("pages.templates.mergeFileSkip")}）`}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {mergePreview.warnings.map((w) => (
+                      <div key={w} className="mt-1 text-[0.72rem] text-[var(--st-warn-dot,#eab308)]">
+                        {w}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t border-[var(--line,#e6e6e6)] bg-[var(--surface,#fff)] p-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setMergeOpen(false);
+                    setMergePreview(null);
+                    setMergeSelected(null);
+                  }}
+                >
+                  {t("common.cancel")}
+                </Button>
+                <Button size="sm" disabled={mergeSubmitting || !mergePreview} onClick={() => void submitMerge()}>
+                  {mergeSubmitting ? (
+                    <>
+                      <Loader2 className="size-3.5 animate-spin" /> {t("pages.templates.mergeApplying")}
+                    </>
+                  ) : (
+                    t("pages.templates.mergeApplyCta")
+                  )}
+                </Button>
               </div>
             </>
           ) : null}

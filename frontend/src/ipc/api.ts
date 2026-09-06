@@ -29,6 +29,7 @@ import {
   type WorkspaceDataRestoreOut,
   type WorkspaceDataSnapshotDeletedOut,
   type TemplatesPreviewOut,
+  type TemplatesMergePreviewOut,
   type TemplateSource,
   type ToolchainInstallOpts,
   type ToolchainProbeOut,
@@ -399,6 +400,46 @@ export const apiTemplatesPreview = (args: {
     ...(args.blocks ? { blocks: args.blocks } : {}),
     ...(args.ports && Object.keys(args.ports).length > 0 ? { ports: args.ports } : {}),
     ...(args.params && Object.keys(args.params).length > 0 ? { params: args.params } : {}),
+  });
+
+/** 模板并入预览（方向四 M）：候选服务 + 文件复制计划，纯计算不落盘。 */
+export const apiTemplatesMergePreview = (args: {
+  workspaceId: string;
+  templateId: string;
+  source?: TemplateSource;
+  blocks?: string[];
+  ports?: Record<string, number>;
+  params?: Record<string, string>;
+}) =>
+  invoke<TemplatesMergePreviewOut>(cmd.TEMPLATES_MERGE_PREVIEW, {
+    workspaceId: args.workspaceId,
+    templateId: args.templateId,
+    ...(args.source ? { source: args.source } : {}),
+    ...(args.blocks ? { blocks: args.blocks } : {}),
+    ...(args.ports && Object.keys(args.ports).length > 0 ? { ports: args.ports } : {}),
+    ...(args.params && Object.keys(args.params).length > 0 ? { params: args.params } : {}),
+  });
+
+/** 模板并入应用（方向四 M）：只增改所选，baseHash 冲突 → YAML_CONFLICT。 */
+export const apiTemplatesMergeApply = (args: {
+  workspaceId: string;
+  templateId: string;
+  source?: TemplateSource;
+  blocks?: string[];
+  ports?: Record<string, number>;
+  params?: Record<string, string>;
+  selected?: string[];
+  baseHash: string;
+}) =>
+  invoke<YamlSaveOut>(cmd.TEMPLATES_MERGE_APPLY, {
+    workspaceId: args.workspaceId,
+    templateId: args.templateId,
+    ...(args.source ? { source: args.source } : {}),
+    ...(args.blocks ? { blocks: args.blocks } : {}),
+    ...(args.ports && Object.keys(args.ports).length > 0 ? { ports: args.ports } : {}),
+    ...(args.params && Object.keys(args.params).length > 0 ? { params: args.params } : {}),
+    ...(args.selected ? { selected: args.selected } : {}),
+    baseHash: args.baseHash,
   });
 
 /** 导入模板包（zip）到本地模板库（方向九：社区模板分享）。 */

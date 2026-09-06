@@ -1147,6 +1147,117 @@ pub fn templates_export(
     })
 }
 
+/// `templates.mergePreview`（方向四·M：模板并入现有工作区）：纯内存计算，
+/// 不落盘、不复制文件。把模板服务块按选择展开为候选服务，并与当前工作区
+/// 做 id/端口冲突判定，附带文件复制计划与 needs/toolchain 增量。
+#[tauri::command(rename = "templates.mergePreview")]
+pub fn templates_merge_preview(
+    state: EngineState<'_>,
+    workspace_id: String,
+    template_id: String,
+    source: Option<String>,
+    blocks: Option<Vec<String>>,
+    ports: Option<std::collections::BTreeMap<String, u32>>,
+    params: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<template::TemplateMergePreview, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let source = match source.as_deref() {
+        None | Some("builtin") => template::TemplateSourceKind::Builtin,
+        Some("local") => template::TemplateSourceKind::Local,
+        Some(other) => {
+            return Err(err(
+                ErrorCode::SpecInvalid,
+                format!("未知模板来源: {other}"),
+            ))
+        }
+    };
+    let current = state.spec().map_err(ipc_err)?;
+    template::merge_preview(
+        &current,
+        Path::new(&workspace_id),
+        &template_id,
+        source,
+        state::templates_dir().as_deref(),
+        blocks.as_deref(),
+        &ports.unwrap_or_default(),
+        &params.unwrap_or_default(),
+    )
+    .map_err(ipc_err)
+}
+
+/// `templates.mergeApply`（方向四·M）：重算预览 → 只增改所选服务/文件 → 写回
+/// 走 saveForm（base_hash 冲突 → `YAML_CONFLICT`）。冲突项跳过不覆盖；文件复制
+/// 跳过已存在文件（幂等）。YAML_CONFLICT 时已复制的文件保留，重试自动跳过。
+#[tauri::command(rename = "templates.mergeApply")]
+pub fn templates_merge_apply(
+    state: EngineState<'_>,
+    workspace_id: String,
+    template_id: String,
+    source: Option<String>,
+    blocks: Option<Vec<String>>,
+    ports: Option<std::collections::BTreeMap<String, u32>>,
+    params: Option<std::collections::BTreeMap<String, String>>,
+    selected: Option<Vec<String>>,
+    base_hash: String,
+) -> Result<YamlSaveOut, IpcError> {
+    require_current_workspace(&state, &workspace_id)?;
+    let source = match source.as_deref() {
+        None | Some("builtin") => template::TemplateSourceKind::Builtin,
+        Some("local") => template::TemplateSourceKind::Local,
+        Some(other) => {
+            return Err(err(
+                ErrorCode::SpecInvalid,
+                format!("未知模板来源: {other}"),
+            ))
+        }
+    };
+    let current = state.spec().map_err(ipc_err)?;
+    let (merged, report) = template::merge_apply(
+        &current,
+        Path::new(&workspace_id),
+        &template_id,
+        source,
+        state::templates_dir().as_deref(),
+        blocks.as_deref(),
+        &ports.unwrap_or_default(),
+        &params.unwrap_or_default(),
+        selected.as_deref(),
+    )
+    .map_err(ipc_err)?;
+    let (spec, hash, save_warnings) = state.save_form(&merged, &base_hash).map_err(ipc_err)?;
+    let mut warnings: Vec<String> = Vec::new();
+    if !report.added_services.is_empty() {
+        warnings.push(format!("已并入服务：{}", report.added_services.join(", ")));
+    }
+    for (id, why) in &report.skipped_services {
+        warnings.push(format!("已跳过 {id}：{why}"));
+    }
+    if !report.files_copied.is_empty() {
+        warnings.push(format!("已复制文件 {} 个", report.files_copied.len()));
+    }
+    if !report.files_skipped.is_empty() {
+        warnings.push(format!(
+            "文件已存在未覆盖 {} 个",
+            report.files_skipped.len()
+        ));
+    }
+    if !report.needs_added.is_empty() {
+        warnings.push(format!("needs 新增：{}", report.needs_added.join(", ")));
+    }
+    if !report.toolchain_added.is_empty() {
+        warnings.push(format!(
+            "toolchain 补齐：{}",
+            report.toolchain_added.join(", ")
+        ));
+    }
+    warnings.extend(warnings_to_strings(&save_warnings));
+    Ok(YamlSaveOut {
+        spec,
+        hash,
+        warnings,
+    })
+}
+
 /// clone 远端仓库为新工作区（长操作，立即返回 operation_id）。
 #[tauri::command(rename = "git.clone")]
 pub fn git_clone(

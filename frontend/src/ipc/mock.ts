@@ -732,7 +732,60 @@ const MOCK_TEMPLATES: TemplateSummary[] = [
       { id: "web", label: "Node 前端", kind: "node", requires: ["backend"], default_port: 5173, services: ["web"] },
     ],
   },
+  // 隧道模板（方向四 M 并入现有工作区的 headline 用例；mock 服务形态对齐真实模板）
+  {
+    id: "tunnel-cloudflared",
+    version: "1",
+    name: "Cloudflare Tunnel（快速隧道）",
+    description: "把本地端口暴露为临时公网 URL（*.trycloudflare.com），免凭证",
+    stacks: ["tunnel"],
+    files: ["supertask.yaml", "README.md"],
+    source: "builtin",
+    invalid: false,
+    invalid_reason: null,
+    params: [{ key: "target_port", label: "目标本地端口（如 5173）", required: true }],
+  },
+  {
+    id: "tunnel-frpc",
+    version: "1",
+    name: "frp 客户端（frpc）",
+    description: "把本地端口经 frps 暴露到远端端口，token 走 .env.frp 引用",
+    stacks: ["tunnel"],
+    files: ["supertask.yaml", "frpc.toml", ".env.frp", "README.md"],
+    source: "builtin",
+    invalid: false,
+    invalid_reason: null,
+    params: [
+      { key: "frp_server_addr", label: "frps 服务器地址", required: true },
+      { key: "frp_server_port", label: "frps 服务器端口", required: true },
+      { key: "frp_remote_port", label: "远端暴露端口", required: true },
+      { key: "target_port", label: "目标本地端口（如 5173）", required: true },
+    ],
+  },
 ];
+
+/** 普通模板 mock 的并入服务（{{key}} 参数在展开时替换；对齐真实模板内容）。 */
+const MOCK_MERGE_SERVICES: Record<string, Record<string, Record<string, unknown>>> = {
+  "tunnel-cloudflared": {
+    tunnel: {
+      kind: "generic",
+      program: "cloudflared",
+      args: ["tunnel", "--url", "http://127.0.0.1:{{target_port}}"],
+      restart: "on-failure",
+      health: { type: "none" },
+    },
+  },
+  "tunnel-frpc": {
+    tunnel: {
+      kind: "generic",
+      program: "frpc",
+      args: ["-c", "frpc.toml"],
+      env_file: [".env.frp"],
+      restart: "on-failure",
+      health: { type: "none" },
+    },
+  },
+};
 
 /** 组合模板 mock 的 services 片段（{{port}} 占位在端口分配时替换）。 */
 const MOCK_BLOCK_SERVICES: Record<string, Record<string, unknown>> = {
@@ -2411,6 +2464,143 @@ export async function mockInvoke(command: string, args?: Record<string, unknown>
     setTimeout(() => emitOperation("templates.create", opId, "running", 0.7, "正在写入 supertask.yaml…", null, null), 900);
     setTimeout(() => emitOperation("templates.create", opId, "succeeded", 1, "创建完成", null, { workspace_id: wsId }), 1400);
     return { operation_id: opId };
+  }
+
+  // -------------------------------------------------------------------------
+  // 方向四 M：模板并入现有工作区（mock 语义对齐 core：id/端口冲突判定 + 跳过不覆盖）
+  // -------------------------------------------------------------------------
+
+  /** mock 并入候选服务：组合模板走块计划，普通模板走内置形态表（参数替换）。 */
+  function mockMergeCandidates(
+    tpl: TemplateSummary,
+    blockIds?: string[],
+    ports?: Record<string, number>,
+    params?: Record<string, string>,
+  ): { services: Record<string, Record<string, unknown>>; files: string[] } {
+    const plan = mockPlanBlocks(tpl, blockIds, ports);
+    if (plan) return { services: plan.services, files: plan.files };
+    const declared = MOCK_MERGE_SERVICES[tpl.id] ?? {
+      [tpl.id]: { kind: tpl.stacks[0] ?? "generic" },
+    };
+    const services: Record<string, Record<string, unknown>> = {};
+    for (const [svcId, fragment] of Object.entries(declared)) {
+      let text = JSON.stringify(fragment);
+      for (const [k, v] of Object.entries(params ?? {})) {
+        text = text.split(`{{${k}}}`).join(v);
+      }
+      services[svcId] = JSON.parse(text);
+    }
+    return {
+      services,
+      files: tpl.files.filter((f) => f !== "supertask.yaml"),
+    };
+  }
+
+  function mockMergePreview(
+    tpl: TemplateSummary,
+    blockIds?: string[],
+    ports?: Record<string, number>,
+    params?: Record<string, string>,
+  ) {
+    const { services, files } = mockMergeCandidates(tpl, blockIds, ports, params);
+    const usedPorts = new Set<number>();
+    for (const s of Object.values(state.spec.services)) {
+      if (s.port != null) usedPorts.add(s.port);
+      for (const p of s.ports ?? []) usedPorts.add(p);
+    }
+    const items = Object.entries(services).map(([svcId, fragment]) => {
+      const port = (fragment.port as number | undefined) ?? null;
+      if (state.spec.services[svcId]) {
+        return { service_id: svcId, block_id: null, status: "id_conflict", port, selected: false, warnings: [`服务 id ${svcId} 已存在，并入时跳过（不覆盖）`] };
+      }
+      if (port != null && usedPorts.has(port)) {
+        return { service_id: svcId, block_id: null, status: "port_conflict", port, selected: false, warnings: [`端口 ${port} 已被本工作区其他服务声明，并入时跳过`] };
+      }
+      return { service_id: svcId, block_id: null, status: "add", port, selected: true, warnings: [] as string[] };
+    });
+    return {
+      template_id: tpl.id,
+      items,
+      files: files.map((f) => ({ path: f, will_copy: true as boolean, reason: null as string | null })),
+      needs_added: [] as string[],
+      toolchain_added: [] as string[],
+      warnings: [] as string[],
+    };
+  }
+
+  if (command === "templates.mergePreview") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    const templateId = args?.templateId as string;
+    const tpl = MOCK_TEMPLATES.find((t) => t.id === templateId);
+    if (!tpl) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `模板不存在: ${templateId}`, retryable: false };
+    }
+    if (tpl.invalid) {
+      throw { protocol: PROTOCOL, code: "TEMPLATE_INVALID", message: tpl.invalid_reason ?? "模板清单损坏", retryable: false };
+    }
+    return mockMergePreview(tpl, args?.blocks as string[] | undefined, args?.ports as Record<string, number> | undefined, args?.params as Record<string, string> | undefined);
+  }
+
+  if (command === "templates.mergeApply") {
+    const workspaceId = (args?.workspaceId as string) ?? "";
+    if (!workspaceId || !state.opened) throw noWorkspaceError();
+    const currentHash = hashOf(toYaml(state.spec));
+    if ((args?.baseHash as string) !== currentHash) {
+      throw { protocol: PROTOCOL, code: "YAML_CONFLICT", message: "supertask.yaml 已被外部修改，请重新加载后重试", retryable: false };
+    }
+    const templateId = args?.templateId as string;
+    const tpl = MOCK_TEMPLATES.find((t) => t.id === templateId);
+    if (!tpl) {
+      throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `模板不存在: ${templateId}`, retryable: false };
+    }
+    if (tpl.invalid) {
+      throw { protocol: PROTOCOL, code: "TEMPLATE_INVALID", message: tpl.invalid_reason ?? "模板清单损坏", retryable: false };
+    }
+    const preview = mockMergePreview(tpl, args?.blocks as string[] | undefined, args?.ports as Record<string, number> | undefined, args?.params as Record<string, string> | undefined);
+    const selected = (args?.selected as string[] | undefined) ?? preview.items.filter((i) => i.selected).map((i) => i.service_id);
+    const warnings: string[] = [];
+    const added: string[] = [];
+    for (const svcId of selected) {
+      const item = preview.items.find((i) => i.service_id === svcId);
+      if (!item) {
+        throw { protocol: PROTOCOL, code: "NOT_FOUND", message: `选择 ${svcId} 不在模板服务内`, retryable: false };
+      }
+      if (item.status !== "add" || state.spec.services[svcId]) {
+        warnings.push(`已跳过 ${svcId}：${item.status === "add" ? "服务 id 已存在，未覆盖" : "冲突未并入"}`);
+        continue;
+      }
+      const fragment = (mockMergeCandidates(tpl, args?.blocks as string[] | undefined, args?.ports as Record<string, number> | undefined, args?.params as Record<string, string> | undefined).services[svcId] ?? { kind: "generic" }) as Record<string, unknown>;
+      state.spec.services[svcId] = {
+        kind: (fragment.kind as string) ?? "generic",
+        enabled: true,
+        labels: { origin: "template-merge", template: tpl.id },
+        env: {},
+        env_file: [],
+        depends_on: [],
+        ports: [],
+        jvm_args: [],
+        ...(fragment as object),
+      };
+      state.services[svcId] = {
+        id: svcId,
+        state: "stopped",
+        pid: null,
+        port: (fragment.port as number | undefined) ?? null,
+        kind: (fragment.kind as string) ?? "generic",
+        health: null,
+        started_at_ms: null,
+        last_exit: null,
+        last_error: null,
+        log_seq: 0,
+        managed: true,
+      };
+      added.push(svcId);
+    }
+    if (added.length) warnings.unshift(`已并入服务：${added.join(", ")}`);
+    else warnings.push("未添加任何服务");
+    const text = toYaml(state.spec);
+    return { spec: state.spec, hash: hashOf(text), warnings };
   }
 
   // -------------------------------------------------------------------------

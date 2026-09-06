@@ -64,6 +64,9 @@ export const cmd = {
   TEMPLATES_PREVIEW: "templates.preview",
   TEMPLATES_IMPORT: "templates.import",
   TEMPLATES_EXPORT: "templates.export",
+  // 模板并入现有工作区（方向四 M，ipc.md §10.1 增补）
+  TEMPLATES_MERGE_PREVIEW: "templates.mergePreview",
+  TEMPLATES_MERGE_APPLY: "templates.mergeApply",
   // 1.5（ipc.md §10.9）：导出包
   WORKSPACE_EXPORT_PACKAGE: "workspace.exportPackage",
   WORKSPACE_IMPORT_PACKAGE: "workspace.importPackage",
@@ -780,6 +783,38 @@ export type TemplateExportOut = { path: string };
 export type TemplatesPreviewOut = {
   services: Record<string, Record<string, unknown>>;
   files: string[];
+  warnings: string[];
+};
+
+/** `templates.mergePreview` 并入项状态：可新增 / id 冲突 / 端口冲突。 */
+export type TemplateMergeStatus = "add" | "id_conflict" | "port_conflict";
+
+/** `templates.mergePreview` 服务条目（默认动作进 selected）。 */
+export type TemplateMergeItem = {
+  service_id: string;
+  /** 组合模板来源块 id；普通模板为 null */
+  block_id: string | null;
+  status: TemplateMergeStatus;
+  port: number | null;
+  selected: boolean;
+  warnings: string[];
+};
+
+/** `templates.mergePreview` 文件条目（supertask.yaml 本身不计入）。 */
+export type TemplateMergeFile = {
+  path: string;
+  will_copy: boolean;
+  /** 跳过原因；will_copy 时为 null */
+  reason: string | null;
+};
+
+/** `templates.mergePreview` 输出：候选服务 + 文件复制计划 + 增量（纯计算）。 */
+export type TemplatesMergePreviewOut = {
+  template_id: string;
+  items: TemplateMergeItem[];
+  files: TemplateMergeFile[];
+  needs_added: string[];
+  toolchain_added: string[];
   warnings: string[];
 };
 
