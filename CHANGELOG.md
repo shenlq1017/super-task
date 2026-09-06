@@ -6,6 +6,18 @@ All notable changes to SuperTask are documented here.
 
 ### Features
 
+#### 模板并入现有工作区（方向四·网络与身份）
+
+- 新增 `templates.mergePreview` / `templates.mergeApply`：模板块（或普通模板全部
+  服务）可直接添加到当前已打开工作区，不要求另建工作区——隧道模板
+  （tunnel-cloudflared / tunnel-frpc）一点即并入，随后统一启停。
+- 只增改所选：id/端口冲突默认不勾，apply 显式勾选同样跳过不覆盖；`needs` 并集、
+  `toolchain` 只补未钉扎键；文件跳过已存在（不覆盖），幂等可重试；并入服务写
+  `labels: { origin: template-merge, template }` 留痕。
+- 模板页详情与粘性操作条新增「并入当前工作区」入口（块/端口/参数 → 预览 →
+  勾选 → 写回，base_hash 乐观锁，无打开工作区时不出现）。
+- 契约进 ipc.md §10.1；core `template::` 5 项离线单测；零新增错误码。
+
 #### 运行中进程原地接管（方向二·纳管任意来源）
 
 - 新增 `workspace.adoptAttach`（`{ workspace_id, service_id }` → `{ service_id, pid,

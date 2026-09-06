@@ -536,9 +536,70 @@ templates.import
 templates.export
   input:  { template_id, source?, target_dir }
   output: { path: string }
+
+templates.mergePreview
+  input:  { workspace_id, template_id, source?, blocks?, ports?, params? }
+  output: { template_id, items: TemplateMergeItem[], files: TemplateMergeFile[],
+            needs_added: string[], toolchain_added: string[], warnings: string[] }
+
+templates.mergeApply
+  input:  { workspace_id, template_id, source?, blocks?, ports?, params?,
+            selected?: string[], base_hash }
+  output: { spec, hash, warnings[] }
+
+TemplateMergeItem = {
+  service_id: string,
+  block_id: string | null,   # 组合模板来源块；普通模板为 null
+  status: "add" | "id_conflict" | "port_conflict",
+  port: number | null,
+  selected: boolean,         # 默认动作：干净 add = true，冲突 = false
+  warnings: string[],
+}
+
+TemplateMergeFile = {
+  path: string,              # supertask.yaml 本身不计入
+  will_copy: boolean,
+  reason: string | null,     # 跳过原因（已存在不覆盖等）
+}
 ```
 
 `directory_name` 必须是单层目录名（禁止 `..`、路径分隔符、UNC）；目标不存在则创建，存在则必须为空，否则 `TARGET_NOT_EMPTY`。operation `succeeded` 的 `result = { workspace_id }`。创建完成后写入含 `templates:` 元数据的 `supertask.yaml`（组合模板的 yaml 由所选块的 services 片段生成，`{{port}}` 占位随端口分配替换）。与 builtin 同 id 的 local 模板在 list 中跳过、create 拒绝（`TEMPLATE_ID_CONFLICT`）。`templates.preview` 是纯计算，无任何落盘副作用；组合校验（依赖闭合 `TEMPLATE_BLOCK_DEP`、端口查重 `TEMPLATE_BLOCK_PORT`）与 create 共用同一实现。参数错误码：`TEMPLATE_PARAM_MISSING` / `TEMPLATE_PARAM_UNKNOWN`。
+
+**模板并入现有工作区（方向四·M，2026-09-06）**：`templates.mergePreview` /
+`templates.mergeApply` 把模板块（或普通模板的全部服务）添加到**当前已打开工作区**，
+不要求另建工作区。与孤儿纳管 / Taskfile / Procfile 同一机制：**preview 纯内存
+（不落盘、不复制文件）、apply 重算、写盘走 `yaml.saveForm`**（base_hash 冲突 →
+`YAML_CONFLICT`）。核心实现 `crates/supertask-core/src/template.rs`
+（`merge_preview` / `merge_apply`），模板页入口（详情与粘性操作条「并入当前工作区」，
+无打开工作区时不出现）。
+
+**合并规则（只增改所选，其余不动）**
+
+- 候选服务：组合模板复用 `plan_blocks`（依赖闭合 + `{{port}}` 占位 + 块内端口查重）；
+  普通模板取其 supertask.yaml 经 params 替换后的 services 段。`selected` 缺省 =
+  预览默认勾选（干净 add 项）。
+- `id_conflict`（id 已存在）/ `port_conflict`（端口被现有服务声明）默认不勾；
+  apply 显式勾选冲突项同样**跳过不覆盖**（记警告），绝不静默改写现有服务。
+- `needs` 并集（只增条目）、`toolchain` 只补当前未钉扎的键（已有钉扎不覆盖）。
+- 文件：组合模板仅复制所选服务归属块的文件，普通模板复制除 supertask.yaml 外全部
+  文件；目标已存在**跳过不覆盖**；父目录按需创建。
+- 来源留痕：并入的服务写 `labels: { origin: template-merge, template: <id> }`
+  （不覆盖模板自带 labels）。
+- 幂等：重复 apply 同一批选择全部落为跳过 + 警告；`YAML_CONFLICT` 时已复制的
+  文件保留，重试自动跳过（文件复制在 saveForm 之前，见下）。
+
+**执行顺序与失败语义**：apply 先重算合并 spec → 复制文件（跳过已存在）→
+`save_form` 校验落盘（含 `apply_spec_slots` 重建新服务槽位）。save 失败时文件
+已复制但 yaml 未动，重试即收敛，不产生半截配置。
+
+**错误码**：零新增。模板不存在 → `NOT_FOUND`；清单损坏 → `TEMPLATE_INVALID`；
+参数缺失/未知 → `TEMPLATE_PARAM_MISSING` / `TEMPLATE_PARAM_UNKNOWN`；
+块不存在/端口问题 → `TEMPLATE_BLOCK_DEP` / `TEMPLATE_BLOCK_PORT`；
+`selected` 含模板外 id → `NOT_FOUND`；`base_hash` 冲突 → `YAML_CONFLICT`。
+
+**测试**：core `template::` 5 项离线单测（隧道模板服务/文件/参数替换与落盘复解析、
+id 冲突跳过不覆盖、组合模板端口冲突 + 所选块文件范围 + 幂等重试、未知 selected、
+needs/toolchain 并集不覆盖）。
 
 **模板分享（方向九）**：`templates.import` 把模板 zip 包装入本地库，`templates.export` 把 local/builtin 模板打包为可分享 zip（包根 = `template.yaml` + 全部模板文件，往返兼容）。安全口径：包内条目路径禁 `..`/`.`/空段/反斜杠/冒号/隐藏段与构建产物目录段；条目数 ≤ 2000、总字节 ≤ 64 MiB；模板 id 只允许字母数字/连字符/下划线（≤ 64，id 即本地库目录名）；清单声明 ⇄ 包内容双向一致（多文件/缺文件均拒）。导入根形态两种：清单在包根，或恰有一个含清单的顶层目录（压缩模板目录的常见形态），含根外条目拒收。与 builtin 同 id（`TEMPLATE_ID_CONFLICT`，内置随应用分发防遮蔽）、与现有本地同 id（同码）拒收；先解包到隐藏 staging 目录再原子改名，失败清理不落半成品。`source` 语义与 create 相同；`target_dir` 必须是已存在目录（`NOT_FOUND`），目标 zip 已存在（`TARGET_NOT_EMPTY`）。损坏包 / 不安全路径 / 超限均为 `TEMPLATE_INVALID`，写失败为 `TEMPLATE_WRITE`。
 

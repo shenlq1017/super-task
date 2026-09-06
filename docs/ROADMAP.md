@@ -197,6 +197,9 @@
 > host 逗号分隔别名组）（进 `CHANGELOG.md` 与 `docs/spec/yaml.md` §7.1）。
 > 已交付移出：**隧道公网 URL 提取**——cloudflared quick tunnel 分配行进日志管道
 > 提取后随快照下发，运行页服务卡片只读展示（进 `CHANGELOG.md` 与 ipc.md §6）。
+> 已交付移出：**模板并入现有工作区**——`templates.mergePreview` / `mergeApply`
+> 把模板块直接添加到当前工作区（隧道模板一点即并入）：只增改所选、冲突与已存在
+> 文件跳过不覆盖、幂等可重试（进 `CHANGELOG.md` 与 `docs/spec/ipc.md` §10.1）。
 > 反代「能通 → 够用」的缺口已闭；剩余两项均为涉及平台权限的高成本项。
 
 ---
