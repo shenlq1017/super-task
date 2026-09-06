@@ -1409,6 +1409,7 @@ const enUS = {
       dependsOn: "depends on {{deps}}",
       noDeps: "No dependencies",
       restartAttempt: "Auto-restart · attempt {{n}}",
+      tunnelUrl: "Tunnel public URL (click to open)",
       externalTitle: "External process: not started by SuperTask, monitor only; stopping taskkills the whole tree",
       externalShort: "External",
       externalMonitor: "External · monitor only",

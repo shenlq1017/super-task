@@ -608,6 +608,8 @@ export type ServiceRuntimeView = {
   exit_reason?: string | null;
   /** 2.2 restart：当前/最近一次自动重启尝试序号（1 起）；手动启动后消失。 */
   restart_attempt?: number | null;
+  /** 方向四：隧道公网 URL（cloudflared quick tunnel 日志提取，粘性至重启）。 */
+  tunnel_url?: string | null;
   last_error?: string | null;
   log_seq: number;
   /** false = 外部进程（端口识别，仅监控；停止走 taskkill） */

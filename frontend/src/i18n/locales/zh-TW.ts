@@ -972,6 +972,7 @@ const zhTW = {
       "dependsOn": "依賴 {{deps}}",
       "noDeps": "無依賴",
       "restartAttempt": "自動重啟 · 第 {{n}} 次",
+      "tunnelUrl": "隧道公網地址（點擊開啟）",
       "externalTitle": "外部程序：非 SuperTask 啟動，僅監控，停止將 taskkill 整棵樹",
       "externalShort": "外部",
       "externalMonitor": "外部 · 僅監控",

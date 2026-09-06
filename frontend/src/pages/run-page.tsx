@@ -406,6 +406,19 @@ function ServiceCard({
   const foot = (
     <span className="flex min-w-0 items-center gap-1 text-[11px] text-[var(--t3)]">
       {restartBadge}
+      {/* 方向四：隧道公网 URL（cloudflared quick tunnel 提取，只读展示） */}
+      {svc.tunnel_url ? (
+        <a
+          href={svc.tunnel_url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="block h-5 max-w-full shrink-0 truncate rounded-full bg-[var(--surface-2)] px-1.5 font-mono text-[10px] leading-5 text-[var(--st-accent)] hover:underline"
+          title={`${t("pages.run.tunnelUrl")} ${svc.tunnel_url}`}
+        >
+          🌐 {svc.tunnel_url.replace(/^https:\/\//, "")}
+        </a>
+      ) : null}
       {svc.last_error ? (
         <span className="block truncate text-[11px] text-[var(--st-danger)]" title={svc.last_error}>⚠ {svc.last_error}</span>
       ) : (
