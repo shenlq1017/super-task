@@ -143,6 +143,11 @@ pub enum ErrorCode {
     // ---- 方向二（纳管任意来源：Procfile 导入，ipc.md §10.19）----
     ProcfileNotFound,
     ProcfileInvalid,
+    // ---- 方向三·E（归档供给执行器，ipc.md §10.17 增补）----
+    ArchiveFetch,
+    ArchiveHash,
+    ArchiveExtract,
+    ArchiveUnavailable,
 }
 
 #[derive(Debug, Error)]
@@ -327,6 +332,11 @@ mod tests {
             (ErrorCode::SnapshotInvalid, "SNAPSHOT_INVALID"),
             (ErrorCode::SnapshotVersion, "SNAPSHOT_VERSION"),
             (ErrorCode::SnapshotBusy, "SNAPSHOT_BUSY"),
+            // 归档供给执行器（§10.17 增补）
+            (ErrorCode::ArchiveFetch, "ARCHIVE_FETCH"),
+            (ErrorCode::ArchiveHash, "ARCHIVE_HASH"),
+            (ErrorCode::ArchiveExtract, "ARCHIVE_EXTRACT"),
+            (ErrorCode::ArchiveUnavailable, "ARCHIVE_UNAVAILABLE"),
         ];
         for (code, expected) in pairs {
             let value = serde_yaml::to_value(code).expect("serialize ErrorCode");

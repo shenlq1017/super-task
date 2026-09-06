@@ -3,6 +3,7 @@
 pub mod adopt;
 pub mod ai;
 pub mod appdata;
+pub mod archive;
 pub mod cloud;
 pub mod discover;
 pub mod docker;

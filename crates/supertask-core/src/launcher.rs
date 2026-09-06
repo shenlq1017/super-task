@@ -706,6 +706,45 @@ pub fn apply_pinned_version_env(
     }
 }
 
+/// 方向三·E：已安装归档的 bin 前插子进程 PATH。仅当工作区 `needs` 声明了对应
+/// 中间件 id 时生效（显式需求才给可见性，不污染无关服务）；顺序在 mise/版本
+/// 钉扎之后（显式钉扎优先），多个归档按 id 排序稳定前插。只影响子进程 env，
+/// 绝不改用户 PATH。
+pub fn apply_archive_bins_env(needs: Option<&Vec<String>>, env: &mut IndexMap<String, String>) {
+    let Some(needs) = needs else { return };
+    let mut wanted: Vec<&str> = Vec::new();
+    for raw in needs {
+        let id = raw.split('@').next().unwrap_or(raw).trim();
+        if !id.is_empty() && !wanted.contains(&id) {
+            wanted.push(id);
+        }
+    }
+    if wanted.is_empty() {
+        return;
+    }
+    let mut bins: Vec<std::path::PathBuf> = Vec::new();
+    for a in crate::archive::installed() {
+        if wanted.contains(&a.id.as_str()) && a.bin_dir.is_dir() && !bins.contains(&a.bin_dir) {
+            bins.push(a.bin_dir);
+        }
+    }
+    if bins.is_empty() {
+        return;
+    }
+    bins.sort();
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let cur = env
+        .get("PATH")
+        .cloned()
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    let prefix = bins
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(sep);
+    env.insert("PATH".into(), format!("{prefix}{sep}{cur}"));
+}
+
 /// Read the conventional project JDK selector used by jenv/mise/SDKMAN
 /// integrations. The workspace root is checked after the service directory so
 /// a nested project can override the repository default.

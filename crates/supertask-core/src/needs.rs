@@ -197,7 +197,8 @@ fn nums_prefix(prefix: &[u64], full: &[u64]) -> bool {
 
 /// 版本要求是否被已装版本满足：req 的数值段是 found 的前缀；
 /// 无要求时「存在即满足」。版本未知（解析不出）视为不满足具体要求。
-fn version_matches(req: Option<&str>, found: Option<&str>) -> bool {
+/// 归档执行器（`archive::`）复用同一前缀语义。
+pub(crate) fn version_matches(req: Option<&str>, found: Option<&str>) -> bool {
     match (req, found) {
         (None, Some(_)) => true,
         (Some(_), None) | (None, None) => false,
@@ -456,6 +457,19 @@ pub fn resolve_with_supply(
     platform: &str,
     supply: &ComposeSupply,
 ) -> NeedsResolveOut {
+    resolve_full(needs, bundle, platform, supply, &[])
+}
+
+/// 全量解析（方向三·E）：外加已安装归档（`archive::scan_installed` 结果）。
+/// 归档已安装且版本匹配 → satisfied（`found_path` = 隔离 bin 目录），
+/// 优先级高于目录可供给性报告。
+pub fn resolve_full(
+    needs: &[String],
+    bundle: &ToolchainProbeBundle,
+    platform: &str,
+    supply: &ComposeSupply,
+    archives: &[crate::archive::InstalledArchive],
+) -> NeedsResolveOut {
     let mut items = Vec::new();
     let mut warnings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -468,7 +482,7 @@ pub fn resolve_with_supply(
             ));
             continue;
         }
-        items.push(resolve_one(raw, bundle, platform, supply));
+        items.push(resolve_one(raw, bundle, platform, supply, archives));
     }
     NeedsResolveOut { items, warnings }
 }
@@ -478,6 +492,7 @@ fn resolve_one(
     bundle: &ToolchainProbeBundle,
     platform: &str,
     supply: &ComposeSupply,
+    archives: &[crate::archive::InstalledArchive],
 ) -> NeedItem {
     let decl = match parse_need(raw) {
         Ok(d) => d,
@@ -526,13 +541,13 @@ fn resolve_one(
             };
         }
         ComposeState::Hint(hint) => {
-            let mut item = resolve_base(raw, decl, bundle, platform);
+            let mut item = resolve_base(raw, decl, bundle, platform, archives);
             item.reason.push_str(&format!("（compose/容器：{hint}）"));
             return item;
         }
         ComposeState::None => {}
     }
-    resolve_base(raw, decl, bundle, platform)
+    resolve_base(raw, decl, bundle, platform, archives)
 }
 
 fn resolve_base(
@@ -540,10 +555,35 @@ fn resolve_base(
     decl: NeedDecl,
     bundle: &ToolchainProbeBundle,
     platform: &str,
+    archives: &[crate::archive::InstalledArchive],
 ) -> NeedItem {
     if let Some(kind) = ToolKind::parse(&decl.id) {
         resolve_tool(raw, decl, kind, bundle)
     } else if ARCHIVE_CATALOG.iter().any(|e| e.id == decl.id) {
+        // 方向三·E：已安装归档优先（版本匹配即 satisfied），否则走目录报告
+        if let Some(hit) = archives.iter().find(|a| {
+            a.id == decl.id && version_matches(decl.version_req.as_deref(), Some(&a.version))
+        }) {
+            return NeedItem {
+                need: raw.to_string(),
+                id: decl.id.clone(),
+                version_req: decl.version_req,
+                status: NeedStatus::Satisfied,
+                found_version: Some(hit.version.clone()),
+                found_path: Some(hit.bin_dir.to_string_lossy().into_owned()),
+                via: None,
+                install_version: None,
+                winget_id: None,
+                archive_version: None,
+                reason: format!(
+                    "归档已安装 {} {}（{}），满足 {}，来源=archive。",
+                    decl.id,
+                    hit.version,
+                    hit.release,
+                    raw.trim()
+                ),
+            };
+        }
         resolve_archive(raw, decl, platform)
     } else {
         let catalog_ids: Vec<&str> = ARCHIVE_CATALOG.iter().map(|e| e.id).collect();
@@ -1435,6 +1475,67 @@ mod tests {
             &s,
         );
         assert_eq!(out.items[0].status, NeedStatus::Unsatisfiable);
+    }
+
+    // ---- 方向三·E：已安装归档优先 ----
+
+    fn installed(id: &str, version: &str) -> crate::archive::InstalledArchive {
+        crate::archive::InstalledArchive {
+            id: id.into(),
+            version: version.into(),
+            release: "test".into(),
+            bin_dir: std::path::PathBuf::from(format!("C:/arch/{id}/{version}")),
+        }
+    }
+
+    #[test]
+    fn archive_installed_satisfies_before_catalog() {
+        let arch = vec![installed("minio", "2024")];
+        let out = resolve_full(
+            &["minio@2024".into()],
+            &bare_bundle(),
+            "windows-x64",
+            &ComposeSupply::default(),
+            &arch,
+        );
+        let item = &out.items[0];
+        assert_eq!(item.status, NeedStatus::Satisfied);
+        assert_eq!(item.found_version.as_deref(), Some("2024"));
+        assert!(item.found_path.as_deref().unwrap_or("").contains("minio"));
+        assert!(item.reason.contains("来源=archive"), "{}", item.reason);
+    }
+
+    #[test]
+    fn archive_installed_version_mismatch_falls_to_catalog() {
+        // 已安装 2023 不满足 @2024 → 回退目录报告（archive）
+        let arch = vec![installed("minio", "2023")];
+        let out = resolve_full(
+            &["minio@2024".into()],
+            &bare_bundle(),
+            "windows-x64",
+            &ComposeSupply::default(),
+            &arch,
+        );
+        assert_eq!(out.items[0].status, NeedStatus::Archive);
+    }
+
+    #[test]
+    fn archive_compose_beats_installed_archive() {
+        // 运行中容器与已安装归档同时命中 → compose 优先（实时运行态更可信）
+        let s = supply_with(
+            vec![cont(
+                "m",
+                "minio-1",
+                "minio/minio:RELEASE.2024-12-18T13-15-44Z",
+                true,
+            )],
+            vec![],
+        );
+        let arch = vec![installed("minio", "2024")];
+        let out = resolve_full(&["minio".into()], &bare_bundle(), "windows-x64", &s, &arch);
+        let item = &out.items[0];
+        assert_eq!(item.status, NeedStatus::Satisfied);
+        assert!(item.reason.contains("来源=compose"), "{}", item.reason);
     }
 
     #[test]

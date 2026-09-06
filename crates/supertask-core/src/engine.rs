@@ -507,11 +507,13 @@ impl Engine {
         let spec = self.spec()?;
         let bundle = self.toolchain_probe(refresh);
         let supply = self.compose_supply();
-        Ok(crate::needs::resolve_with_supply(
+        let archives = crate::archive::installed();
+        Ok(crate::needs::resolve_full(
             spec.needs.as_deref().unwrap_or(&[]),
             &bundle,
             crate::needs::platform_key(),
             &supply,
+            &archives,
         ))
     }
 
@@ -2242,6 +2244,8 @@ impl Engine {
                         );
                     }
                 }
+                // 方向三·E：已安装归档 bin（needs 声明的中间件才可见，钉扎之后）。
+                crate::launcher::apply_archive_bins_env(eff_spec.needs.as_ref(), &mut env);
             }
             // 1.4 §5.1：build_tool 解析（显式优先，缺省按构建文件探测）。
             // 测试 spawner 无真实 fs 上下文：只认显式字段，缺省按 maven。
