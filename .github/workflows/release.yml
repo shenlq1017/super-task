@@ -235,7 +235,7 @@ jobs:
             local name size up upload_url verify_url code
             name=$(basename "$f"); size=$(stat -c%s "$f")
             echo "上传 $name（$size 字节）…"
-            up=$(curl -sf --max-time 120 "${auth[@]}" -H "Content-Type: application/json" \
+            up=$(curl -sf --max-time 120 -X POST "${auth[@]}" -H "Content-Type: application/json" \
               -d "{\"asset_name\":\"$name\",\"size\":$size,\"overwrite\":true}" \
               "$api/$slug/-/releases/$release_id/asset-upload-url")
             upload_url=$(printf '%s' "$up" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"])')
@@ -245,7 +245,7 @@ jobs:
               -X PUT --data-binary @"$f" -H "Content-Type: application/octet-stream" "$upload_url")
             echo "预签名上传 HTTP $code"
             [ "$code" = "200" ] || { echo "上传失败：$name"; exit 1; }
-            curl -sf --max-time 120 "${auth[@]}" "$verify_url" >/dev/null
+            curl -sf --max-time 120 -X POST "${auth[@]}" "$verify_url" >/dev/null
             echo "已确认 $name"
           }
 
