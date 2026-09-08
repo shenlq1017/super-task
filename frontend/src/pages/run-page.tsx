@@ -126,7 +126,8 @@ function serviceCmd(id: string, s: ServiceSpec): string {
   if (s.kind === "node") {
     const dir = s.dir ?? id;
     const script = s.script ?? "dev";
-    return `npm --prefix ${dir} run ${script}`;
+    const pm = s.package_manager ?? "npm";
+    return dir === "." ? `${pm} run ${script}` : `cd ${dir} && ${pm} run ${script}`;
   }
   // 1.7：python / go / generic（仅展示用途）
   if (s.kind === "python") {
