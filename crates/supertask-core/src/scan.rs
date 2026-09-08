@@ -128,6 +128,7 @@ pub fn scan_draft_with_runner(
                 module.clone(),
                 &artifact,
                 &child,
+                module_dir,
             );
         }
 
@@ -150,6 +151,7 @@ pub fn scan_draft_with_runner(
                     ".".into(),
                     &artifact,
                     &parent_text,
+                    module_dir,
                 );
             } else {
                 warnings.push(format!(
@@ -356,6 +358,7 @@ fn insert_spring_with_cwd(
     module_rel: String,
     artifact: &str,
     pom: &str,
+    module_dir: &Path,
 ) {
     let id = unique_id(&sanitize_id(artifact), services);
     // -pl 在 reactor 根执行；reactor 不在工作区根时 cwd 必须指向它
@@ -364,13 +367,15 @@ fn insert_spring_with_cwd(
     } else {
         Some(reactor_rel)
     };
+    let preferred = probe_spring_server_port(module_dir);
+    let assigned = allocate_port(preferred, port, services);
     services.insert(
         id.clone(),
         ServiceSpec {
             kind: "spring-boot".into(),
             module: Some(module_rel),
-            port: Some(*port),
-            health: Some(spring_health(*port, pom)),
+            port: Some(assigned),
+            health: Some(spring_health(assigned, pom)),
             grace_secs: Some(45),
             launch: Some("run".into()),
             cwd,
@@ -378,7 +383,6 @@ fn insert_spring_with_cwd(
         },
     );
     spring_ids.push(id);
-    *port = port.saturating_add(1);
 }
 
 fn spring_health(port: u16, pom: &str) -> HealthSpec {
@@ -641,13 +645,177 @@ pub(crate) fn unique_id(base: &str, existing: &IndexMap<String, ServiceSpec>) ->
     format!("{base}-x")
 }
 
-fn pkg_has_dev_or_start(txt: &str) -> bool {
-    pkg_has_script(txt, "dev") || pkg_has_script(txt, "start")
+/// Ports already claimed by services in this scan draft.
+fn used_ports(services: &IndexMap<String, ServiceSpec>) -> Vec<u16> {
+    services.values().filter_map(|s| s.port).collect()
+}
+
+/// Prefer a project-configured port when free; otherwise increment from that
+/// base (or from the kind's fallback counter). Keeps assignments unique across
+/// the whole scan via `services`.
+fn allocate_port(
+    preferred: Option<u16>,
+    fallback: &mut u16,
+    services: &IndexMap<String, ServiceSpec>,
+) -> u16 {
+    let used = used_ports(services);
+    let mut candidate = preferred.unwrap_or(*fallback);
+    while used.contains(&candidate) {
+        if candidate == u16::MAX {
+            break;
+        }
+        candidate = candidate.saturating_add(1);
+    }
+    if preferred.is_none() {
+        *fallback = candidate.saturating_add(1);
+    } else if *fallback == candidate {
+        *fallback = candidate.saturating_add(1);
+    }
+    candidate
+}
+
+fn pkg_has_runnable_script(txt: &str) -> bool {
+    pkg_has_script(txt, "dev") || pkg_has_script(txt, "serve") || pkg_has_script(txt, "start")
+}
+
+/// Preference among scripts that exist: `dev` → `serve` → `start`.
+/// Returns `(script_name, script_command_body)`. Body is None when missing.
+fn pick_node_script(txt: &str) -> (&'static str, Option<String>) {
+    for name in ["dev", "serve", "start"] {
+        if let Some(cmd) = pkg_script_cmd(txt, name) {
+            return (name, Some(cmd));
+        }
+    }
+    ("dev", None)
+}
+
+fn pkg_script_cmd(txt: &str, name: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(txt).ok()?;
+    value
+        .get("scripts")?
+        .get(name)?
+        .as_str()
+        .map(|s| s.to_owned())
+}
+
+fn port_from_script_args(script: &str) -> Option<u16> {
+    // `--port=4173` / `--port 4173` / `-p 4173` (avoid matching `--host` etc.)
+    let re = regex::Regex::new(r"(?:--port(?:=|\s+)|(?:^|[\s])-p\s+)(\d{2,5})\b").ok()?;
+    let caps = re.captures(script)?;
+    caps.get(1)?.as_str().parse().ok()
+}
+
+fn env_file_u16(text: &str, key: &str) -> Option<u16> {
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let val = rest.trim().trim_matches('"').trim_matches('\'');
+        if let Ok(p) = val.parse::<u16>() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// `.env` / `.env.local` / `.env.development`: prefer `PORT`, then `VITE_PORT`.
+fn port_from_dotenv(dir: &Path) -> Option<u16> {
+    for name in [".env", ".env.local", ".env.development"] {
+        let Ok(text) = fs::read_to_string(dir.join(name)) else {
+            continue;
+        };
+        if let Some(p) = env_file_u16(&text, "PORT").or_else(|| env_file_u16(&text, "VITE_PORT")) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Best-effort `port: 5173` / `port: '5173'` in vite/vue config (no JS eval).
+fn port_from_frontend_config(dir: &Path) -> Option<u16> {
+    const FILES: &[&str] = &[
+        "vite.config.ts",
+        "vite.config.js",
+        "vite.config.mjs",
+        "vite.config.cjs",
+        "vue.config.js",
+        "vue.config.ts",
+        "vue.config.mjs",
+    ];
+    let re = regex::Regex::new(r#"port\s*:\s*['"]?(\d{2,5})['"]?"#).ok()?;
+    for name in FILES {
+        let Ok(text) = fs::read_to_string(dir.join(name)) else {
+            continue;
+        };
+        if let Some(caps) = re.captures(&text) {
+            if let Ok(p) = caps[1].parse::<u16>() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Node configured port: script `--port`/`-p` → dotenv → vite/vue config.
+fn probe_node_port(dir: &Path, script_cmd: Option<&str>) -> Option<u16> {
+    script_cmd
+        .and_then(port_from_script_args)
+        .or_else(|| port_from_dotenv(dir))
+        .or_else(|| port_from_frontend_config(dir))
+}
+
+/// Spring `server.port` from base application.properties / .yml / .yaml.
+fn probe_spring_server_port(module_dir: &Path) -> Option<u16> {
+    crate::spring::inspect("_scan", module_dir, &[".".into()]).server_port
+}
+
+/// Python best-effort: `.env` `PORT=` / common files with `uvicorn --port`.
+/// When nothing is found, callers keep using the kind counter (documented).
+fn probe_python_port(dir: &Path) -> Option<u16> {
+    for name in [".env", ".env.local", ".env.development"] {
+        let Ok(text) = fs::read_to_string(dir.join(name)) else {
+            continue;
+        };
+        if let Some(p) = env_file_u16(&text, "PORT") {
+            return Some(p);
+        }
+    }
+    let re = regex::Regex::new(r"uvicorn\b[^\n]*--port\s+(\d{2,5})\b").ok()?;
+    const CANDIDATES: &[&str] = &[
+        "main.py",
+        "app.py",
+        "server.py",
+        "app/main.py",
+        "run.sh",
+        "start.sh",
+        "Makefile",
+        "Procfile",
+    ];
+    for name in CANDIDATES {
+        let path = dir.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        if let Some(caps) = re.captures(&text) {
+            if let Ok(p) = caps[1].parse::<u16>() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// 递归发现可运行的 Node 服务（≤MAX_DEPTH 层）。
 /// 含 `workspaces` 字段的 package.json 是 monorepo 管理文件，自身不算服务；
-/// 无 dev/start script 的（如纯构建配置包）跳过并提示。
+/// 无 dev/serve/start script 的（如纯构建配置包）仍生成草稿并提示手选。
 fn scan_node_roots(
     root: &Path,
     _reactors: &[Reactor],
@@ -679,21 +847,16 @@ fn scan_node_roots(
             continue;
         }
         // Java 工程里的 "spring" 依赖说明是 spring boot node 工具包误报
-        if txt.contains("\"spring\"") && !pkg_has_dev_or_start(&txt) {
+        if txt.contains("\"spring\"") && !pkg_has_runnable_script(&txt) {
             continue;
         }
-        let script = if pkg_has_script(&txt, "dev") {
-            "dev"
-        } else if pkg_has_script(&txt, "start") {
-            "start"
-        } else {
+        let (script, script_cmd) = pick_node_script(&txt);
+        if script_cmd.is_none() {
             warnings.push(format!(
-                "{}{} 无 dev/start script，生成后需手选",
-                display_rel("."),
-                rel
+                "{} 无 dev/serve/start script，生成后需手选",
+                display_rel(&rel)
             ));
-            "dev"
-        };
+        }
         let pm = detect_pm(root, Path::new(&rel), &txt);
         let id_src = if rel == "." {
             "web".to_string()
@@ -701,10 +864,12 @@ fn scan_node_roots(
             rel.rsplit('/').next().unwrap_or(&rel).to_string()
         };
         let id = unique_id(&sanitize_id(&id_src), services);
+        let preferred = probe_node_port(&dir_path, script_cmd.as_deref());
+        let assigned = allocate_port(preferred, &mut port_node, services);
         let mut spec = ServiceSpec::default_service();
         spec.kind = "node".into();
         spec.dir = Some(rel.clone());
-        spec.port = Some(port_node);
+        spec.port = Some(assigned);
         spec.script = Some(script.into());
         spec.package_manager = Some(pm);
         spec.grace_secs = Some(15);
@@ -717,7 +882,6 @@ fn scan_node_roots(
         });
         spec.depends_on = spring_ids.clone();
         services.insert(id, spec);
-        port_node = port_node.saturating_add(1);
     }
 }
 
@@ -755,6 +919,10 @@ fn collect_pkg_dirs(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>
 }
 
 fn pkg_has_script(txt: &str, name: &str) -> bool {
+    if pkg_script_cmd(txt, name).is_some() {
+        return true;
+    }
+    // Fallback for non-JSON package.json fragments in tests/edge cases
     txt.contains(&format!("\"{name}\"")) && txt.contains("\"scripts\"")
 }
 
@@ -868,15 +1036,17 @@ fn scan_python_roots(
             rel.rsplit('/').next().unwrap_or(&rel).to_string()
         };
         let id = unique_id(&sanitize_id(&id_src), services);
+        // Best-effort PORT= / uvicorn --port; else kind counter (see probe_python_port).
+        let preferred = probe_python_port(&dir_path);
+        let assigned = allocate_port(preferred, port_start, services);
         let mut spec = ServiceSpec::default_service();
         spec.kind = "python".into();
         spec.dir = Some(rel);
         spec.entry = entry;
-        spec.port = Some(*port_start);
+        spec.port = Some(assigned);
         spec.extra_args = extra;
         // grace/health 交给 apply_defaults（python 15 / tcp-with-port）
         services.insert(id, spec);
-        *port_start = port_start.saturating_add(1);
     }
 }
 
@@ -940,14 +1110,14 @@ fn scan_go_roots(
         };
         let id = unique_id(&sanitize_id(&id_src), services);
         let package = guess_go_package(&dir_path, warnings, display_rel(&rel));
+        let assigned = allocate_port(None, port_start, services);
         let mut spec = ServiceSpec::default_service();
         spec.kind = "go".into();
         spec.dir = Some(rel);
         spec.package = Some(package);
-        spec.port = Some(*port_start);
+        spec.port = Some(assigned);
         // grace/health 交给 apply_defaults（go 60 / tcp-with-port）
         services.insert(id, spec);
-        *port_start = port_start.saturating_add(1);
     }
 }
 
@@ -1001,20 +1171,21 @@ fn scan_gradle(
         }
         let id_src = module.rsplit('/').next().unwrap_or(&module).to_string();
         let id = unique_id(&sanitize_id(&id_src), services);
+        let preferred = probe_spring_server_port(&dir);
+        let assigned = allocate_port(preferred, port, services);
         services.insert(
             id,
             ServiceSpec {
                 kind: "spring-boot".into(),
                 module: Some(module.clone()),
                 build_tool: Some("gradle".into()),
-                port: Some(*port),
-                health: Some(spring_health(*port, &build_text)),
+                port: Some(assigned),
+                health: Some(spring_health(assigned, &build_text)),
                 grace_secs: Some(45),
                 launch: Some("run".into()),
                 ..ServiceSpec::default_service()
             },
         );
-        *port = port.saturating_add(1);
     }
 }
 
@@ -1326,6 +1497,86 @@ fn lockfile_manager(dir: &Path) -> Option<PackageManager> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_serve_only_package_picks_serve() {
+        let root = std::env::temp_dir().join(format!("st-scan-serve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"vue-app","scripts":{"serve":"vue-cli-service serve"}}"#,
+        )
+        .unwrap();
+        let (file, warnings) = scan_draft(&root).unwrap();
+        let web = file.services.values().find(|s| s.kind == "node").unwrap();
+        assert_eq!(web.script.as_deref(), Some("serve"));
+        assert!(
+            !warnings.iter().any(|w| w.contains("无 dev/serve/start")),
+            "{warnings:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn node_serve_and_dev_prefers_dev() {
+        let root = std::env::temp_dir().join(format!("st-scan-servedev-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"scripts":{"serve":"vue-cli-service serve","dev":"vite"}}"#,
+        )
+        .unwrap();
+        let (file, _) = scan_draft(&root).unwrap();
+        let web = file.services.values().find(|s| s.kind == "node").unwrap();
+        assert_eq!(web.script.as_deref(), Some("dev"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn node_dotenv_port_preferred() {
+        let root = std::env::temp_dir().join(format!("st-scan-viteport-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+        fs::write(root.join(".env"), "PORT=4173\n").unwrap();
+        let (file, _) = scan_draft(&root).unwrap();
+        let web = file.services.values().find(|s| s.kind == "node").unwrap();
+        assert_eq!(web.port, Some(4173));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spring_application_properties_port() {
+        let root = std::env::temp_dir().join(format!("st-scan-springport-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/main/resources")).unwrap();
+        fs::create_dir_all(root.join("src/main/java/com/demo")).unwrap();
+        fs::write(
+            root.join("pom.xml"),
+            r#"<project>
+  <artifactId>demo-api</artifactId>
+  <build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
+  <dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies>
+</project>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main/java/com/demo/App.java"),
+            "@SpringBootApplication\npublic class App {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main/resources/application.properties"),
+            "server.port=9090\n",
+        )
+        .unwrap();
+        let (file, _) = scan_draft(&root).unwrap();
+        let svc = file.services.get("demo-api").expect("spring service");
+        assert_eq!(svc.port, Some(9090));
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn detects_bun_from_package_manager_or_lockfile() {
