@@ -77,21 +77,20 @@ npm --prefix frontend run build   # 前端构建
 
 - 分支：`feat/<topic>`（如 `feat/grokbot-discover-upgrade`），PR 合并进 main。
 - 提交：conventional commits（`feat:` / `fix:` / `chore:` / `docs:`），UI/引擎混合改动拆开提交。
-- 发版：统一升版（workspace + frontend + tauri.conf），CHANGELOG 补条目，tag 形如 `v0.1.3`。
+- 发版：统一升版（workspace + frontend + tauri.conf），CHANGELOG 补条目，tag 形如 `v0.2.0`。
 
 ## 当前状态速览
 
-- 版本 `0.1.3`；功能注册表（`features.rs`）13 个页面全部 live，无 soon 占位。
+- 版本 `0.2.0`；功能注册表（`features.rs`）14 个页面全部 live，无 soon 占位。
 - 六种服务 kind 全部可启动：spring-boot / node / compose / python / go / generic。
 - **发布状态**：Windows 安装包（NSIS / MSI）随 GitHub Release 发布，自动更新链路已验证可用
   （`release.yml`：tag 触发 → 构建签名 → draft Release → 镜像到 cnb.cool `stable` 滚动 tag；
   应用内「设置 → 检查更新」走 CNB（国内）/ GitHub（海外）双端点）。
-- **平台**：Windows 可用；macOS / Linux **不推荐**——无构建产物、无真机验收；
-  源码编译与测试已有三平台 CI 覆盖。推进事项见 `.workbuddy/local/VERSIONS-AND-PLAN.md`
-  第六节（M2–M6，M1 CI 矩阵已交付）。
+- **平台**：Windows 可用；macOS / Linux **实验性**——DMG / AppImage / deb 随 Release 产出，
+  未签名公证、无真机验收；源码编译与测试已有三平台 CI 覆盖。推进事项见
+  `.workbuddy/local/VERSIONS-AND-PLAN.md` 第六节（M3–M6；M1 CI 矩阵与 M2 产物已交付）。
 - 云端为自托管参考实现（默认 127.0.0.1:8787，SQLite），正式运营端点未定。
 - 下一步方向：见 [docs/ROADMAP.md](docs/ROADMAP.md)。
-  当前优先级最高的三类是 ① 数据已就绪、只差接线的项
-  （崩溃通知、MCP 暴露主机指标、MCP 输出脱敏、隧道纳管、孤儿进程纳管）；
-  ② 编排层欠账（`restart` 策略、log-pattern 就绪判定、compose 导入）；
-  ③ 平台推进的 M2（`release.yml` 补 macOS / Linux 构建产物）。
+  当前优先级最高的三类是 ① 真机与发布欠账（M4 三平台真机冒烟、M3 签名公证）；
+  ② 编排层剩余（钩子 / 级联重启 / 失败保持、compose 导入）；
+  ③ 环境供给后续（MCP 环境供给、kind 智能推断）。

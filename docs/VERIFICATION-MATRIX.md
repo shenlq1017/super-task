@@ -38,7 +38,7 @@ npm --prefix frontend run build   # tsc + vite
 
 ```bash
 $env:CARGO_TARGET_DIR = "target-cli"; cargo build -p supertask-cli
-.\target-cli\debug\supertask.exe --version   # supertask 0.1.3
+.\target-cli\debug\supertask.exe --version   # supertask 0.2.0
 .\target-cli\debug\supertask.exe version     # protocol/engine 版本
 .\target-cli\debug\supertask.exe -w examples\node-demo status  # 真实开 yaml + 快照
 .\target-cli\debug\supertask.exe doctor      # 真机工具链探测摘要（只读）

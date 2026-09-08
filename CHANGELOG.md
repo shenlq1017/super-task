@@ -4,6 +4,10 @@ All notable changes to SuperTask are documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-08
+
+> 本版本包含自 v0.1.3 以来九个能力方向的累积交付：服务监管、任意来源纳管、环境供给、网关与隧道、可观测性、数据备份、AI/MCP、三平台发布、模板生态。
+
 ### Features
 
 #### 归档供给执行器（方向三·环境供给）
