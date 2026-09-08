@@ -165,7 +165,7 @@ jobs:
   # 把发布产物镜像到 cnb.cool（国内更新端点）：
   # 检测/下载走固定滚动 tag `stable`，端点 URL 恒为
   # https://cnb.cool/sweetshuyan/super-task/-/releases/download/stable/latest.json
-  # latest.json 仍由 Windows 构建产出（单平台）；macOS / Linux 产物仅作分发资产镜像。
+  # 上传分两阶段：先 Windows 更新通道（latest.json + 安装包），再其余平台分发包。
   mirror-to-cnb:
     name: Mirror release to CNB
     runs-on: ubuntu-latest
@@ -230,19 +230,37 @@ jobs:
             -d "{\"name\":\"SuperTask $RELEASE_TAG (stable)\",\"body\":\"自动更新稳定通道，同步自 GitHub $RELEASE_TAG\"}" \
             "$api/$slug/-/releases/$release_id" >/dev/null || true
 
-          for f in dist/*; do
+          upload_one() {
+            local f="$1"
+            local name size up upload_url verify_url code
             name=$(basename "$f"); size=$(stat -c%s "$f")
             echo "上传 $name（$size 字节）…"
-            up=$(curl -sf -X POST "${auth[@]}" -H "Content-Type: application/json" \
+            up=$(curl -sf --max-time 120 "${auth[@]}" -H "Content-Type: application/json" \
               -d "{\"asset_name\":\"$name\",\"size\":$size,\"overwrite\":true}" \
               "$api/$slug/-/releases/$release_id/asset-upload-url")
             upload_url=$(printf '%s' "$up" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"])')
             verify_url=$(printf '%s' "$up" | python3 -c 'import json,sys; print(json.load(sys.stdin)["verify_url"])')
             code=$(curl -s -o /dev/null -w "%{http_code}" \
+              --connect-timeout 30 --max-time 1800 --retry 5 --retry-delay 15 --retry-all-errors \
               -X PUT --data-binary @"$f" -H "Content-Type: application/octet-stream" "$upload_url")
             echo "预签名上传 HTTP $code"
             [ "$code" = "200" ] || { echo "上传失败：$name"; exit 1; }
-            curl -sf -X POST "${auth[@]}" "$verify_url" >/dev/null
+            curl -sf --max-time 120 "${auth[@]}" "$verify_url" >/dev/null
             echo "已确认 $name"
+          }
+
+          echo "== 阶段 1/2：Windows 自动更新通道 =="
+          for f in dist/latest.json dist/SuperTask_*_x64*.msi dist/SuperTask_*_x64*.exe; do
+            [ -e "$f" ] || continue
+            upload_one "$f"
+          done
+
+          echo "== 阶段 2/2：其余平台分发包 =="
+          for f in dist/*; do
+            name=$(basename "$f")
+            case "$name" in
+              latest.json|SuperTask_*_x64*.msi|SuperTask_*_x64*.exe) continue ;;
+            esac
+            upload_one "$f"
           done
           echo "国内更新端点：https://cnb.cool/$slug/-/releases/download/stable/latest.json"
