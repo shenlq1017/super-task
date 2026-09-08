@@ -1,0 +1,22 @@
+# Working tree and git objects use LF, even on Windows (overrides core.autocrlf).
+* text=auto eol=lf
+
+# cmd.exe requires CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.wasm binary
