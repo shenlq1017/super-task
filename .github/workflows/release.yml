@@ -4,12 +4,19 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已有 Release tag，仅镜像到 CNB（如 v0.2.0）"
+        required: true
+        default: v0.2.0
 
 permissions:
   contents: write
 
 jobs:
   windows:
+    if: github.event_name == 'push'
     runs-on: windows-latest
     outputs:
       release_id: ${{ steps.build.outputs.releaseId }}
@@ -66,6 +73,7 @@ jobs:
   # 未签名（公证待 M3），因此不写 latest.json（includeUpdaterJson=false），
   # 已验证的 Windows 自动更新链路使用的 latest.json 不受多平台构建影响。
   macos:
+    if: github.event_name == 'push'
     name: macOS (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     needs: windows
@@ -74,11 +82,9 @@ jobs:
       matrix:
         include:
           # Apple Silicon 原生构建（macos-14 起 runner 为 arm64）
+          # ponytail: Intel macOS runner 排队过久会阻塞 CNB 镜像，暂移除 x86_64-apple-darwin
           - target: aarch64-apple-darwin
             os: macos-14
-          # 最后一代 Intel runner
-          - target: x86_64-apple-darwin
-            os: macos-13
     steps:
       - uses: actions/checkout@v5
 
@@ -113,6 +119,7 @@ jobs:
           args: --target ${{ matrix.target }}
 
   linux:
+    if: github.event_name == 'push'
     name: Linux (x86_64)
     runs-on: ubuntu-22.04
     needs: windows
@@ -163,15 +170,25 @@ jobs:
     name: Mirror release to CNB
     runs-on: ubuntu-latest
     needs: [windows, macos, linux]
+    if: |
+      always() && (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          needs.windows.result == 'success' &&
+          needs.macos.result == 'success' &&
+          needs.linux.result == 'success'
+        )
+      )
     env:
       CNB_SLUG: sweetshuyan/super-task
       CNB_API: https://api.cnb.cool
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - name: Download GitHub release assets（draft 也可下载）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download "${{ github.ref_name }}" \
+          gh release download "$RELEASE_TAG" \
             --repo "${{ github.repository }}" --dir dist --clobber
           ls -la dist
 
@@ -210,7 +227,7 @@ jobs:
           echo "CNB release_id=$release_id"
           # 刷新标题/描述，便于在 CNB 页面上看到当前稳定版本
           curl -sf -X PATCH "${auth[@]}" -H "Content-Type: application/json" \
-            -d "{\"name\":\"SuperTask ${{ github.ref_name }} (stable)\",\"body\":\"自动更新稳定通道，同步自 GitHub ${{ github.ref_name }}\"}" \
+            -d "{\"name\":\"SuperTask $RELEASE_TAG (stable)\",\"body\":\"自动更新稳定通道，同步自 GitHub $RELEASE_TAG\"}" \
             "$api/$slug/-/releases/$release_id" >/dev/null || true
 
           for f in dist/*; do
