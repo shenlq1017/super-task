@@ -20,6 +20,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { apiDockerProbe, apiSystemInfo, apiSystemMetrics, apiToolchainProbe } from "../ipc/api";
 import { useRuntime } from "@/providers/runtime-provider";
@@ -32,7 +39,7 @@ import type {
   ToolchainProbeOut,
 } from "../ipc/protocol";
 import { TEMP_MODES } from "../ipc/protocol";
-import { fmtBytes, fmtRate, loadColor, pct, tempColor } from "@/lib/metrics";
+import { fmtBytes, fmtRate, loadColor, loadTone, pct, tempColor, tempTone, type MetricTone } from "@/lib/metrics";
 import { pickTempMode, useTempMode } from "@/lib/temp-mode";
 import { recordHostMetrics, useMetricsHistory } from "@/lib/metrics-history";
 import { downloadTextFile } from "@/lib/download-text";
@@ -176,7 +183,7 @@ function CpuGauge({ value }: { value: number | null }) {
     <svg viewBox="0 0 200 104" className="mx-auto w-full max-w-[230px]" role="img" aria-hidden>
       <defs>
         <linearGradient id="st-monitor-gauge" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="var(--st-ok)" />
+          <stop offset="0%" stopColor="var(--st-accent)" />
           <stop offset="55%" stopColor="var(--st-warn)" />
           <stop offset="100%" stopColor="var(--st-danger)" />
         </linearGradient>
@@ -400,36 +407,45 @@ export function MonitorPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--surface)]/95 px-6 py-2.5 backdrop-blur-sm">
-          <div className="mx-auto flex max-w-6xl flex-wrap items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1)]">
-                  {t("pages.monitor.title")}
-                </h2>
-                <p className="mt-0.5 text-[0.78rem] text-[var(--t3)]">
-                  {t("pages.monitor.subtitle")}
-                  {dialogOpen ? (
-                    <span className="ml-1 text-[var(--st-warn)]">
-                      · {t("pages.monitor.refreshPaused")}
-                    </span>
-                  ) : null}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-[0.66rem] text-[var(--t3)]">
-                  {t("pages.monitor.updatedAt", { time: fmtTime(lastUpdated) })}
+        <div className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--surface)]/95 px-6 py-2 backdrop-blur-sm">
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1)]">
+                {t("pages.monitor.title")}
+              </h2>
+              {dialogOpen ? (
+                <span className="truncate text-[0.72rem] text-[var(--st-warn)]">
+                  {t("pages.monitor.refreshPaused")}
                 </span>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-[0.66rem] text-[var(--t3)]">
+                {t("pages.monitor.updatedAt", { time: fmtTime(lastUpdated) })}
+              </span>
 
-                <label className="flex items-center gap-1.5 text-[11px] text-[var(--t3)]">
-                  <span className="shrink-0">{t("pages.monitor.refreshInterval")}</span>
-                  <select
-                    value={prefs.refreshMs}
-                    onChange={(e) => setRefreshMs(Number(e.target.value) as RefreshMs)}
-                    className="h-7 rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface)] px-1.5 font-mono text-[11px] text-[var(--t1)]"
+              <div className="flex items-center gap-1.5">
+                <span className="shrink-0 text-[11px] text-[var(--t3)]">
+                  {t("pages.monitor.refreshInterval")}
+                </span>
+                <Select
+                  value={String(prefs.refreshMs)}
+                  onValueChange={(v) => setRefreshMs(Number(v) as RefreshMs)}
+                >
+                  <SelectTrigger
+                    size="sm"
                     aria-label={t("pages.monitor.refreshInterval")}
+                    className="h-7 min-w-[5.5rem] rounded-[var(--r-sm)] border-[var(--line-strong)] bg-[var(--surface)] font-mono text-[0.68rem] text-[var(--t2)] shadow-none focus-visible:border-[var(--st-accent)] focus-visible:ring-[2px] focus-visible:ring-[var(--st-accent-tint)]"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent
+                    position="popper"
+                    sideOffset={4}
+                    className="min-w-[6rem] rounded-[var(--r-sm)] py-1 font-mono text-[0.72rem]"
                   >
                     {REFRESH_OPTIONS.map((ms) => (
-                      <option key={ms} value={ms}>
+                      <SelectItem key={ms} value={String(ms)} className="cursor-pointer">
                         {ms === 1000
                           ? t("pages.monitor.refresh1s")
                           : ms === 2000
@@ -437,11 +453,13 @@ export function MonitorPage() {
                             : ms === 3000
                               ? t("pages.monitor.refresh3s")
                               : t("pages.monitor.refresh5s")}
-                      </option>
+                      </SelectItem>
                     ))}
-                  </select>
-                </label>
+                  </SelectContent>
+                </Select>
+              </div>
 
+              {tempSupported ? (
                 <div
                   className="flex overflow-hidden rounded-[var(--r-sm)] border border-[var(--line)]"
                   role="group"
@@ -451,7 +469,6 @@ export function MonitorPage() {
                     <button
                       key={mode}
                       type="button"
-                      disabled={!tempSupported && mode !== "off"}
                       onClick={() => pickTempMode(mode)}
                       title={t(`statusBar.tempModes.${mode}.hint`)}
                       className={cn(
@@ -460,45 +477,43 @@ export function MonitorPage() {
                         tempMode === mode
                           ? "bg-[var(--st-accent-tint)] font-semibold text-[var(--st-accent-hover)]"
                           : "text-[var(--t2)] hover:bg-[var(--surface-2)]",
-                        !tempSupported &&
-                          mode !== "off" &&
-                          "cursor-not-allowed opacity-40 hover:bg-transparent",
                       )}
                     >
                       {t(`statusBar.tempModes.${mode}.label`)}
                     </button>
                   ))}
                 </div>
+              ) : null}
 
-                <span
-                  className={cn(
-                    "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[0.72rem] leading-none",
-                    healthTone === "accent" &&
-                      "border-[color-mix(in_srgb,var(--st-accent)_35%,transparent)] bg-[var(--st-accent-tint)] text-[var(--st-accent)]",
-                    healthTone === "warn" &&
-                      "border-[var(--st-warn-line)] bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
-                    healthTone === "danger" &&
-                      "border-[var(--st-danger-ring)] bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
-                    healthTone === "default" &&
-                      "border-[var(--line-strong)] bg-[var(--surface)] text-[var(--t2)]",
-                  )}
-                  title={t("pages.monitor.chipHealth")}
-                >
-                  <span className="opacity-80">{t("pages.monitor.chipHealth")}</span>
-                  <span className="font-semibold text-[var(--t1)]">{healthLabel}</span>
-                </span>
+              <span
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[0.72rem] leading-none",
+                  healthTone === "accent" &&
+                    "border-[color-mix(in_srgb,var(--st-accent)_35%,transparent)] bg-[var(--st-accent-tint)] text-[var(--st-accent)]",
+                  healthTone === "warn" &&
+                    "border-[var(--st-warn-line)] bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+                  healthTone === "danger" &&
+                    "border-[var(--st-danger-ring)] bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+                  healthTone === "default" &&
+                    "border-[var(--line-strong)] bg-[var(--surface)] text-[var(--t2)]",
+                )}
+                title={t("pages.monitor.chipHealth")}
+              >
+                <span className="opacity-80">{t("pages.monitor.chipHealth")}</span>
+                <span className="font-semibold text-[var(--t1)]">{healthLabel}</span>
+              </span>
 
-                <Button
-                  variant="soft"
-                  size="sm"
-                  onClick={() => void refreshNow()}
-                  disabled={loading && host == null}
-                  className="gap-1"
-                >
-                  <RefreshCw className={cn(loading && host == null && "animate-spin")} />
-                  {t("common.refresh")}
-                </Button>
-              </div>
+              <Button
+                variant="soft"
+                size="sm"
+                onClick={() => void refreshNow()}
+                disabled={loading && host == null}
+                className="gap-1"
+              >
+                <RefreshCw className={cn(loading && host == null && "animate-spin")} />
+                {t("common.refresh")}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -518,6 +533,7 @@ export function MonitorPage() {
               title={t("pages.monitor.cpuLoad")}
               value={cpu == null ? "\u2014" : cpu.toFixed(1) + "%"}
               color={loadColor(cpu)}
+              tone={loadTone(cpu)}
               meter={cpu}
               spark={cpuSeries}
               onClick={() => openDetail("cpu")}
@@ -533,6 +549,7 @@ export function MonitorPage() {
                   : undefined
               }
               color={loadColor(memPct)}
+              tone={loadTone(memPct)}
               meter={memPct}
               spark={memSeries}
               onClick={() => openDetail("memory")}
@@ -548,6 +565,7 @@ export function MonitorPage() {
                   : undefined
               }
               color={loadColor(diskPct)}
+              tone={loadTone(diskPct)}
               meter={diskPct}
               onClick={() => openDetail("disk")}
               hint={t("pages.monitor.openDetail")}
@@ -566,6 +584,7 @@ export function MonitorPage() {
                       : t("pages.monitor.tempWaiting")
               }
               color={tempColor(temp)}
+              tone={tempTone(temp)}
               meter={temp == null ? null : Math.min(100, temp)}
               meterColor={tempColor(temp)}
               onClick={() => openDetail("temp")}
@@ -620,10 +639,10 @@ export function MonitorPage() {
             </div>
           </PageCard>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+          <div className="grid gap-3 md:grid-cols-2">
             <PageCard
               title={t("pages.monitor.network")}
-              className="xl:col-span-2"
+              className="gap-2 p-3.5"
               onClick={() => openDetail("network")}
               action={<Network className="size-3.5 text-[var(--t3)]" aria-hidden />}
             >
@@ -769,36 +788,43 @@ export function MonitorPage() {
             {tempDisplay}
           </div>
           {!tempSupported ? (
-            <p className="text-center text-[12px] text-[var(--t3)]">
+            <p className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-2)]/60 px-3 py-2.5 text-center text-[12px] leading-relaxed text-[var(--t2)]">
               {t("pages.monitor.tempUnsupportedHint")}
             </p>
-          ) : tempMode === "off" && temp == null ? (
-            <p className="text-center text-[12px] text-[var(--t3)]">{t("pages.monitor.tempOffHint")}</p>
-          ) : temp == null ? (
-            <p className="text-center text-[12px] text-[var(--t3)]">{t("pages.monitor.tempWaiting")}</p>
-          ) : null}
-          <div className="flex justify-center">
-            <div className="flex overflow-hidden rounded-[var(--r-sm)] border border-[var(--line)]">
-              {TEMP_MODES.map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  disabled={!tempSupported && mode !== "off"}
-                  onClick={() => pickTempMode(mode)}
-                  className={cn(
-                    "px-2.5 py-1 text-[11px] transition-colors",
-                    "border-l border-[var(--line)] first:border-l-0",
-                    tempMode === mode
-                      ? "bg-[var(--st-accent-tint)] font-semibold text-[var(--st-accent-hover)]"
-                      : "text-[var(--t2)] hover:bg-[var(--surface-2)]",
-                    !tempSupported && mode !== "off" && "cursor-not-allowed opacity-40",
-                  )}
+          ) : (
+            <>
+              {tempMode === "off" && temp == null ? (
+                <p className="text-center text-[12px] text-[var(--t3)]">{t("pages.monitor.tempOffHint")}</p>
+              ) : temp == null ? (
+                <p className="text-center text-[12px] text-[var(--t3)]">{t("pages.monitor.tempWaiting")}</p>
+              ) : null}
+              <div className="flex justify-center">
+                <div
+                  className="flex overflow-hidden rounded-[var(--r-sm)] border border-[var(--line)]"
+                  role="group"
+                  aria-label={t("statusBar.tempModeLabel")}
                 >
-                  {t(`statusBar.tempModes.${mode}.label`)}
-                </button>
-              ))}
-            </div>
-          </div>
+                  {TEMP_MODES.map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => pickTempMode(mode)}
+                      title={t(`statusBar.tempModes.${mode}.hint`)}
+                      className={cn(
+                        "px-2.5 py-1 text-[11px] transition-colors",
+                        "border-l border-[var(--line)] first:border-l-0",
+                        tempMode === mode
+                          ? "bg-[var(--st-accent-tint)] font-semibold text-[var(--st-accent-hover)]"
+                          : "text-[var(--t2)] hover:bg-[var(--surface-2)]",
+                      )}
+                    >
+                      {t(`statusBar.tempModes.${mode}.label`)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -862,6 +888,7 @@ function HeroMetricCard(props: {
   value: string;
   sub?: string;
   color: string;
+  tone?: MetricTone;
   meter: number | null;
   meterColor?: string;
   spark?: number[];
@@ -869,6 +896,7 @@ function HeroMetricCard(props: {
   hint: string;
   muted?: boolean;
 }) {
+  const tone: MetricTone = props.muted ? "muted" : (props.tone ?? "accent");
   return (
     <button
       type="button"
@@ -882,7 +910,15 @@ function HeroMetricCard(props: {
       )}
     >
       <div className="flex items-center gap-2 text-[var(--t3)]">
-        <span className="flex size-7 items-center justify-center rounded-[var(--r-sm)] bg-[var(--surface-2)] text-[var(--t2)]">
+        <span
+          className={cn(
+            "flex size-7 items-center justify-center rounded-[var(--r-sm)]",
+            tone === "accent" && "bg-[var(--st-accent-tint)] text-[var(--st-accent)]",
+            tone === "warn" && "bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+            tone === "danger" && "bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+            tone === "muted" && "bg-[var(--surface-2)] text-[var(--t2)]",
+          )}
+        >
           {props.icon}
         </span>
         <span className="text-[12px] font-semibold text-[var(--t2)]">{props.title}</span>
@@ -935,7 +971,6 @@ function ServiceAttribCard(props: {
   return (
     <PageCard
       title={t("pages.monitor.services")}
-      className="xl:col-span-4"
       action={
         <button
           type="button"
@@ -1159,7 +1194,7 @@ function SystemInfoCard({ onOpen }: { onOpen: () => void }) {
   return (
     <PageCard
       title={t("pages.monitor.sysInfo")}
-      className="xl:col-span-2"
+      className="gap-2 p-3.5"
       onClick={onOpen}
       action={<Info className="size-3.5 text-[var(--t3)]" aria-hidden />}
     >
@@ -1293,7 +1328,7 @@ function DoctorCard({ onOpen }: { onOpen: () => void }) {
   return (
     <PageCard
       title={t("pages.monitor.doctorTitle")}
-      className="xl:col-span-6"
+      className="gap-2 p-3.5"
       action={<Stethoscope className="size-3.5 text-[var(--t3)]" aria-hidden />}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
