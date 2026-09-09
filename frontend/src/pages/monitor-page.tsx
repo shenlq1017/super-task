@@ -78,58 +78,6 @@ function fmtTime(ms: number | null): string {
   });
 }
 
-function loadTone(p: number | null): "default" | "warn" | "danger" | "accent" {
-  if (p == null) return "default";
-  if (p >= 90) return "danger";
-  if (p >= 75) return "warn";
-  return "accent";
-}
-
-function tempTone(c: number | null): "default" | "warn" | "danger" | "accent" {
-  if (c == null) return "default";
-  if (c >= 85) return "danger";
-  if (c >= 70) return "warn";
-  return "accent";
-}
-
-function SummaryChip({
-  label,
-  value,
-  tone = "default",
-  title,
-  onClick,
-}: {
-  label: string;
-  value: number | string;
-  tone?: "default" | "accent" | "warn" | "danger";
-  title?: string;
-  onClick?: () => void;
-}) {
-  const Comp = onClick ? "button" : "span";
-  return (
-    <Comp
-      type={onClick ? "button" : undefined}
-      title={title}
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-6 items-center gap-1.5 rounded-full border px-2.5 text-[0.72rem] leading-none",
-        onClick && "cursor-pointer transition-colors hover:opacity-90 active:scale-95",
-        tone === "accent" &&
-          "border-[color-mix(in_srgb,var(--st-accent)_35%,transparent)] bg-[var(--st-accent-tint)] text-[var(--st-accent)]",
-        tone === "warn" &&
-          "border-[var(--st-warn-line)] bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
-        tone === "danger" &&
-          "border-[var(--st-danger-ring)] bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
-        tone === "default" &&
-          "border-[var(--line-strong)] bg-[var(--surface)] text-[var(--t2)]",
-      )}
-    >
-      <span className="opacity-80">{label}</span>
-      <span className="font-mono font-semibold tabular-nums text-[var(--t1)]">{value}</span>
-    </Comp>
-  );
-}
-
 function PageCard(props: {
   title: string;
   children: React.ReactNode;
@@ -452,9 +400,8 @@ export function MonitorPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--surface)]/95 px-6 py-3 backdrop-blur-sm">
-          <div className="mx-auto flex max-w-6xl flex-col gap-2.5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--surface)]/95 px-6 py-2.5 backdrop-blur-sm">
+          <div className="mx-auto flex max-w-6xl flex-wrap items-start justify-between gap-2">
               <div className="min-w-0">
                 <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1)]">
                   {t("pages.monitor.title")}
@@ -523,6 +470,24 @@ export function MonitorPage() {
                   ))}
                 </div>
 
+                <span
+                  className={cn(
+                    "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[0.72rem] leading-none",
+                    healthTone === "accent" &&
+                      "border-[color-mix(in_srgb,var(--st-accent)_35%,transparent)] bg-[var(--st-accent-tint)] text-[var(--st-accent)]",
+                    healthTone === "warn" &&
+                      "border-[var(--st-warn-line)] bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+                    healthTone === "danger" &&
+                      "border-[var(--st-danger-ring)] bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+                    healthTone === "default" &&
+                      "border-[var(--line-strong)] bg-[var(--surface)] text-[var(--t2)]",
+                  )}
+                  title={t("pages.monitor.chipHealth")}
+                >
+                  <span className="opacity-80">{t("pages.monitor.chipHealth")}</span>
+                  <span className="font-semibold text-[var(--t1)]">{healthLabel}</span>
+                </span>
+
                 <Button
                   variant="soft"
                   size="sm"
@@ -534,49 +499,6 @@ export function MonitorPage() {
                   {t("common.refresh")}
                 </Button>
               </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <SummaryChip
-                label={t("pages.monitor.chipCpu")}
-                value={cpu == null ? "\u2014" : cpu.toFixed(0) + "%"}
-                tone={loadTone(cpu)}
-                onClick={() => openDetail("cpu")}
-                title={t("pages.monitor.chipCpuHint")}
-              />
-              <SummaryChip
-                label={t("pages.monitor.chipMem")}
-                value={memPct == null ? "\u2014" : memPct.toFixed(0) + "%"}
-                tone={loadTone(memPct)}
-                onClick={() => openDetail("memory")}
-                title={t("pages.monitor.chipMemHint")}
-              />
-              <SummaryChip
-                label={t("pages.monitor.chipDisk")}
-                value={diskPct == null ? "\u2014" : diskPct.toFixed(0) + "%"}
-                tone={loadTone(diskPct)}
-                onClick={() => openDetail("disk")}
-                title={t("pages.monitor.chipDiskHint")}
-              />
-              <SummaryChip
-                label={t("pages.monitor.chipTemp")}
-                value={
-                  temp != null
-                    ? temp.toFixed(0) + "\u00b0"
-                    : !tempSupported
-                      ? t("pages.monitor.tempUnsupportedShort")
-                      : "\u2014"
-                }
-                tone={tempTone(temp)}
-                onClick={() => openDetail("temp")}
-                title={t("pages.monitor.chipTempHint")}
-              />
-              <SummaryChip
-                label={t("pages.monitor.chipHealth")}
-                value={healthLabel}
-                tone={healthTone}
-              />
-            </div>
           </div>
         </div>
 
@@ -634,6 +556,15 @@ export function MonitorPage() {
               icon={<Thermometer className="size-4" />}
               title={t("pages.monitor.cpuTemp")}
               value={tempDisplay}
+              sub={
+                temp != null
+                  ? undefined
+                  : !tempSupported
+                    ? t("pages.monitor.tempUnsupportedHint")
+                    : tempMode === "off"
+                      ? t("pages.monitor.tempOffHint")
+                      : t("pages.monitor.tempWaiting")
+              }
               color={tempColor(temp)}
               meter={temp == null ? null : Math.min(100, temp)}
               meterColor={tempColor(temp)}
@@ -665,9 +596,8 @@ export function MonitorPage() {
                   </span>
                 </div>
                 <AreaChart values={cpuSeries} emptyLabel={t("pages.monitor.collecting")} />
-                <div className="mt-1 flex justify-between text-[10px] text-[var(--t3)]">
-                  <span>{t("pages.monitor.thresholdWarn")}</span>
-                  <span>{t("pages.monitor.thresholdDanger")}</span>
+                <div className="mt-1 text-[10px] text-[var(--t3)]">
+                  {t("pages.monitor.thresholdLegend")}
                 </div>
               </div>
               <div>
@@ -683,9 +613,8 @@ export function MonitorPage() {
                   </span>
                 </div>
                 <AreaChart values={memSeries} emptyLabel={t("pages.monitor.collecting")} />
-                <div className="mt-1 flex justify-between text-[10px] text-[var(--t3)]">
-                  <span>{t("pages.monitor.thresholdWarn")}</span>
-                  <span>{t("pages.monitor.thresholdDanger")}</span>
+                <div className="mt-1 text-[10px] text-[var(--t3)]">
+                  {t("pages.monitor.thresholdLegend")}
                 </div>
               </div>
             </div>
@@ -968,14 +897,12 @@ function HeroMetricCard(props: {
         {props.value}
       </div>
       {props.sub ? (
-        <div className="truncate font-mono text-[11px] text-[var(--t3)]">{props.sub}</div>
+        <div className="truncate text-[11px] leading-snug text-[var(--t3)]">{props.sub}</div>
       ) : null}
       <MeterBar ratio={props.meter} color={props.meterColor} />
       {props.spark && props.spark.length >= 2 ? (
         <BarSparkline values={props.spark} />
-      ) : (
-        <div className="h-8" />
-      )}
+      ) : null}
     </button>
   );
 }
