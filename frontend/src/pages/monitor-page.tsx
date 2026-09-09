@@ -1,6 +1,32 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  Activity,
+  Cpu,
+  HardDrive,
+  MemoryStick,
+  Network,
+  RefreshCw,
+  Stethoscope,
+  Thermometer,
+  Info,
+} from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { apiDockerProbe, apiSystemInfo, apiSystemMetrics, apiToolchainProbe } from "../ipc/api";
 import { useRuntime } from "@/providers/runtime-provider";
@@ -12,48 +38,86 @@ import type {
   SystemInfo,
   ToolchainProbeOut,
 } from "../ipc/protocol";
-import { fmtBytes, fmtRate, loadColor } from "@/lib/metrics";
-import { useTempMode } from "@/lib/temp-mode";
+import { TEMP_MODES } from "../ipc/protocol";
+import { fmtBytes, fmtRate, loadColor, loadTone, pct, tempColor, tempTone, type MetricTone } from "@/lib/metrics";
+import { pickTempMode, useTempMode } from "@/lib/temp-mode";
 import { recordHostMetrics, useMetricsHistory } from "@/lib/metrics-history";
 import { downloadTextFile } from "@/lib/download-text";
 
-const POLL_MS = 1000;
+const PREFS_KEY = "st:monitor:prefs";
+const REFRESH_OPTIONS = [1000, 2000, 3000, 5000] as const;
+type RefreshMs = (typeof REFRESH_OPTIONS)[number];
 
-/** Page-level sampling: 1 Hz with the shared temp-mode preference, so this
- *  page never fights the status bar over the backend sampler state. Each
- *  sample also feeds the shared cross-page history store (metrics-history). */
-function useHostMetrics() {
-  const tempMode = useTempMode();
-  const [host, setHost] = useState<HostMetrics | null>(null);
-  const alive = useRef(true);
+type MonitorPrefs = {
+  refreshMs: RefreshMs;
+};
 
-  useEffect(() => {
-    alive.current = true;
-    const tick = async () => {
-      try {
-        const m = await apiSystemMetrics(tempMode);
-        if (!alive.current) return;
-        setHost(m);
-        recordHostMetrics(m);
-      } catch {
-        // Ambient page: a failed sample keeps the previous reading.
-      }
-    };
-    void tick();
-    const id = window.setInterval(() => void tick(), POLL_MS);
-    return () => {
-      alive.current = false;
-      window.clearInterval(id);
-    };
-  }, [tempMode]);
+type DetailKind = "cpu" | "memory" | "disk" | "temp" | "network" | "sysinfo" | "service" | "doctor" | null;
 
-  return { host };
+function loadPrefs(): MonitorPrefs {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return { refreshMs: 1000 };
+    const parsed = JSON.parse(raw) as Partial<MonitorPrefs>;
+    const ms = REFRESH_OPTIONS.includes(parsed.refreshMs as RefreshMs)
+      ? (parsed.refreshMs as RefreshMs)
+      : 1000;
+    return { refreshMs: ms };
+  } catch {
+    return { refreshMs: 1000 };
+  }
 }
 
-function PageCard(props: { title: string; children: React.ReactNode; className?: string }) {
+function savePrefs(prefs: MonitorPrefs) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* ignore */
+  }
+}
+
+function fmtTime(ms: number | null): string {
+  if (ms == null) return "\u2014";
+  return new Date(ms).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function PageCard(props: {
+  title: string;
+  children: React.ReactNode;
+  className?: string;
+  action?: React.ReactNode;
+  onClick?: () => void;
+}) {
   return (
-    <Card className={cn("flex flex-col gap-3 p-4", props.className)}>
-      <h3 className="text-[13px] font-semibold text-[var(--t1)]">{props.title}</h3>
+    <Card
+      className={cn(
+        "flex flex-col gap-3 p-4",
+        props.onClick &&
+          "cursor-pointer transition-colors hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]/40",
+        props.className,
+      )}
+      onClick={props.onClick}
+      role={props.onClick ? "button" : undefined}
+      tabIndex={props.onClick ? 0 : undefined}
+      onKeyDown={
+        props.onClick
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                props.onClick?.();
+              }
+            }
+          : undefined
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-[var(--t1)]">{props.title}</h3>
+        {props.action}
+      </div>
       {props.children}
     </Card>
   );
@@ -70,25 +134,48 @@ function StatCell(props: { label: string; value: React.ReactNode; className?: st
   );
 }
 
-function MeterBar(props: { ratio: number | null; className?: string }) {
+function MeterBar(props: { ratio: number | null; className?: string; color?: string }) {
   return (
-    <div className={cn("h-2.5 overflow-hidden rounded-full bg-[var(--surface-2)]", props.className)}>
+    <div className={cn("h-2 overflow-hidden rounded-full bg-[var(--surface-2)]", props.className)}>
       <div
         className="h-full rounded-full transition-[width] duration-500"
-        style={{ width: (props.ratio ?? 0) + "%", background: loadColor(props.ratio) }}
+        style={{
+          width: (props.ratio ?? 0) + "%",
+          background: props.color ?? loadColor(props.ratio),
+        }}
       />
     </div>
   );
 }
 
-/** Semicircular load gauge: full green→amber→red arc with a needle, like the
- *  classic monitor widget. All colors come from theme tokens. */
+/** Tiny bar sparkline with threshold coloring (status-bar style). */
+function BarSparkline({ values, colorFn }: { values: number[]; colorFn?: (v: number) => string }) {
+  if (values.length < 2) return null;
+  const shown = values.slice(-48);
+  const paint = colorFn ?? loadColor;
+  return (
+    <span className="flex h-8 w-full items-end gap-px" aria-hidden>
+      {shown.map((v, i) => (
+        <span
+          key={i}
+          className="min-w-[2px] flex-1 rounded-sm"
+          style={{
+            height: Math.max(3, Math.round((Math.min(100, Math.max(0, v)) / 100) * 32)) + "px",
+            background: paint(v),
+            opacity: 0.35 + (0.65 * (i + 1)) / shown.length,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** Semicircular load gauge. */
 function CpuGauge({ value }: { value: number | null }) {
   const cx = 100;
   const cy = 96;
   const r = 76;
   const arc = `M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`;
-  // 0% → needle points left (π), 100% → right (0).
   const angle = value == null ? Math.PI : Math.PI * (1 - Math.min(100, Math.max(0, value)) / 100);
   const tipX = cx + 58 * Math.cos(angle);
   const tipY = cy - 58 * Math.sin(angle);
@@ -96,7 +183,7 @@ function CpuGauge({ value }: { value: number | null }) {
     <svg viewBox="0 0 200 104" className="mx-auto w-full max-w-[230px]" role="img" aria-hidden>
       <defs>
         <linearGradient id="st-monitor-gauge" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="var(--st-ok)" />
+          <stop offset="0%" stopColor="var(--st-accent)" />
           <stop offset="55%" stopColor="var(--st-warn)" />
           <stop offset="100%" stopColor="var(--st-danger)" />
         </linearGradient>
@@ -125,23 +212,61 @@ function CpuGauge({ value }: { value: number | null }) {
   );
 }
 
-/** Rolling usage area chart, hand-drawn SVG like the status bar sparkline. */
-function AreaChart({ values }: { values: number[] }) {
+/** Rolling usage area chart with amber/red threshold guides. */
+function AreaChart({
+  values,
+  emptyLabel,
+}: {
+  values: number[];
+  emptyLabel: string;
+}) {
   const W = 300;
-  const H = 80;
-  if (values.length < 2) return null;
+  const H = 88;
+  if (values.length < 2) {
+    return (
+      <div className="flex h-[88px] w-full items-center justify-center text-[11px] text-[var(--t3)]">
+        {emptyLabel}
+      </div>
+    );
+  }
+  const last = values[values.length - 1] ?? 0;
+  const stroke = loadColor(last);
   const pts = values.map((v, i) => {
     const x = (i / (values.length - 1)) * W;
-    const y = H - (Math.min(100, Math.max(0, v)) / 100) * (H - 4) - 2;
+    const y = H - (Math.min(100, Math.max(0, v)) / 100) * (H - 8) - 4;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
+  const y75 = H - (75 / 100) * (H - 8) - 4;
+  const y90 = H - (90 / 100) * (H - 8) - 4;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-[88px] w-full" aria-hidden>
-      <path d={`M${pts.join(" L")} L${W},${H} L0,${H} Z`} fill="var(--st-ok)" opacity={0.22} />
+      <line
+        x1={0}
+        y1={y75}
+        x2={W}
+        y2={y75}
+        stroke="var(--st-warn)"
+        strokeWidth={1}
+        strokeDasharray="3 3"
+        opacity={0.45}
+        vectorEffect="non-scaling-stroke"
+      />
+      <line
+        x1={0}
+        y1={y90}
+        x2={W}
+        y2={y90}
+        stroke="var(--st-danger)"
+        strokeWidth={1}
+        strokeDasharray="3 3"
+        opacity={0.45}
+        vectorEffect="non-scaling-stroke"
+      />
+      <path d={`M${pts.join(" L")} L${W},${H} L0,${H} Z`} fill={stroke} opacity={0.18} />
       <path
         d={`M${pts.join(" L")}`}
         fill="none"
-        stroke="var(--st-ok)"
+        stroke={stroke}
         strokeWidth={1.75}
         vectorEffect="non-scaling-stroke"
       />
@@ -149,38 +274,129 @@ function AreaChart({ values }: { values: number[] }) {
   );
 }
 
+function useHostMetrics(refreshMs: RefreshMs, paused: boolean) {
+  const tempMode = useTempMode();
+  const [host, setHost] = useState<HostMetrics | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const alive = useRef(true);
+
+  const tick = useCallback(async () => {
+    try {
+      const m = await apiSystemMetrics(tempMode);
+      if (!alive.current) return;
+      setHost(m);
+      recordHostMetrics(m);
+      setLastUpdated(m.sampledAtMs > 0 ? m.sampledAtMs : Date.now());
+    } catch {
+      // Ambient page: a failed sample keeps the previous reading.
+    } finally {
+      if (alive.current) setLoading(false);
+    }
+  }, [tempMode]);
+
+  useEffect(() => {
+    alive.current = true;
+    void tick();
+    if (paused) {
+      return () => {
+        alive.current = false;
+      };
+    }
+    const id = window.setInterval(() => void tick(), refreshMs);
+    return () => {
+      alive.current = false;
+      window.clearInterval(id);
+    };
+  }, [tempMode, refreshMs, paused, tick]);
+
+  return { host, lastUpdated, loading, refreshNow: tick };
+}
+
 /**
  * 系统监控：整机 CPU / 内存 / 存储 / 网络的实时面板 + 按服务归因的资源占用。
- * 整机数据来自 `system.metrics`（1 Hz 轮询）；历史曲线仅本页滚动累积，不持久化。
- * 服务归因复用既有 per-service Job 采样（`metrics.snapshot` / st-runtime 载荷，
- * RuntimeProvider 在工作区打开期间全局订阅），本页只做展示与排序，不引入新采样。
- * 静态系统信息来自 `system.info`（一次拉取），与动态采样分列。
- * CPU / 内存压力历史进 metrics-history 环形缓冲：状态栏与监控页双馈源，
- * 跨页面存活、有界约 1 小时，不持久化。
- * 体检报告复用 `toolchain.probe` / `docker.probe` / `system.info` 既有探测，
- * 可导出 Markdown 随求助贴附带。
+ * 整机数据来自 `system.metrics`；历史曲线进 metrics-history 环形缓冲。
+ * 详情用浮动 Dialog，避免撑开布局；详情打开时暂停自动刷新。
  */
 export function MonitorPage() {
   const { t } = useTranslation();
-  const { host } = useHostMetrics();
+  const [prefs, setPrefs] = useState<MonitorPrefs>(() => loadPrefs());
+  const [detail, setDetail] = useState<DetailKind>(null);
+  const [serviceFocus, setServiceFocus] = useState<ServiceRuntimeView | null>(null);
+  const tempMode = useTempMode();
+  const dialogOpen = detail != null;
+  const { host, lastUpdated, loading, refreshNow } = useHostMetrics(prefs.refreshMs, dialogOpen);
   const history = useMetricsHistory();
-  const cpuSeries = history.map((s) => s.cpu).filter((v): v is number => v != null);
-  const memSeries = history.map((s) => s.mem).filter((v): v is number => v != null);
+
+  const cpuSeries = useMemo(
+    () => history.map((s) => s.cpu).filter((v): v is number => v != null),
+    [history],
+  );
+  const memSeries = useMemo(
+    () => history.map((s) => s.mem).filter((v): v is number => v != null),
+    [history],
+  );
   const windowMinutes =
     history.length >= 2
       ? Math.max(1, Math.round((history[history.length - 1].at - history[0].at) / 60000))
       : 0;
 
   const cpu = host?.cpuPercent ?? null;
-  const memPct =
-    host?.memoryUsedBytes != null && host?.memoryTotalBytes
-      ? Math.min(100, Math.max(0, (host.memoryUsedBytes / host.memoryTotalBytes) * 100))
-      : null;
-  const diskPct =
-    host?.diskUsedBytes != null && host?.diskTotalBytes
-      ? Math.min(100, Math.max(0, (host.diskUsedBytes / host.diskTotalBytes) * 100))
-      : null;
+  const memPct = pct(host?.memoryUsedBytes ?? null, host?.memoryTotalBytes ?? null);
+  const diskPct = pct(host?.diskUsedBytes ?? null, host?.diskTotalBytes ?? null);
+  const temp = host?.cpuTempC ?? null;
+  const tempSupported = host?.cpuTempSupported ?? true;
   const swapTotal = host?.swapTotalBytes ?? null;
+
+  const setRefreshMs = (ms: RefreshMs) => {
+    const next = { refreshMs: ms };
+    setPrefs(next);
+    savePrefs(next);
+  };
+
+  const openDetail = (kind: DetailKind, svc?: ServiceRuntimeView) => {
+    setServiceFocus(svc ?? null);
+    setDetail(kind);
+  };
+
+  const closeDetail = () => {
+    setDetail(null);
+    setServiceFocus(null);
+  };
+
+  const healthTone =
+    (cpu != null && cpu >= 90) ||
+    (memPct != null && memPct >= 90) ||
+    (diskPct != null && diskPct >= 90) ||
+    (temp != null && temp >= 85)
+      ? "danger"
+      : (cpu != null && cpu >= 75) ||
+          (memPct != null && memPct >= 75) ||
+          (diskPct != null && diskPct >= 75) ||
+          (temp != null && temp >= 70)
+        ? "warn"
+        : host == null
+          ? "default"
+          : "accent";
+
+  const healthLabel =
+    healthTone === "danger"
+      ? t("pages.monitor.healthHot")
+      : healthTone === "warn"
+        ? t("pages.monitor.healthElevated")
+        : host == null
+          ? t("pages.monitor.healthUnknown")
+          : t("pages.monitor.healthOk");
+
+  const tempDisplay =
+    temp != null
+      ? temp.toFixed(0) + " \u00b0C"
+      : !tempSupported
+        ? t("pages.monitor.tempUnsupported")
+        : tempMode === "off"
+          ? t("pages.monitor.tempOff")
+          : t("pages.monitor.unavailable");
+
   const split = [
     { label: t("pages.monitor.system"), v: host?.cpuSystemPercent ?? null },
     { label: t("pages.monitor.user"), v: host?.cpuUserPercent ?? null },
@@ -190,105 +406,246 @@ export function MonitorPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-auto p-6">
-        <div className="mx-auto flex max-w-5xl flex-col gap-4">
-          <header>
-            <h2 className="text-lg font-semibold text-[var(--t1)]">{t("pages.monitor.title")}</h2>
-            <p className="mt-0.5 text-[0.8rem] text-[var(--t3)]">{t("pages.monitor.subtitle")}</p>
-          </header>
-
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-            {/* CPU 负载 */}
-            <PageCard title={t("pages.monitor.cpuLoad")} className="xl:col-span-3">
-              <div className="-mt-1">
-                <CpuGauge value={cpu} />
-                <div className="mt-1 text-center font-mono text-[26px] font-semibold tabular-nums text-[var(--t1)]">
-                  {cpu == null ? "\u2014" : cpu.toFixed(1) + "%"}
-                </div>
-              </div>
-              <div className="mt-1 grid grid-cols-4 gap-2">
-                {split.map((s) => (
-                  <StatCell
-                    key={s.label}
-                    label={s.label}
-                    value={s.v == null ? "\u2014" : s.v.toFixed(1) + "%"}
-                  />
-                ))}
-              </div>
-            </PageCard>
-
-            {/* 历史趋势：CPU + 内存压力（跨页面存活，应用关闭即清空） */}
-            <PageCard title={t("pages.monitor.historyTitle")} className="xl:col-span-3">
-              <div className="flex flex-col gap-2">
-                <div>
-                  <div className="text-[11px] text-[var(--t3)]">CPU</div>
-                  <div className="flex items-end">
-                    {cpuSeries.length < 2 ? (
-                      <div className="flex h-[64px] w-full items-center justify-center text-[11px] text-[var(--t3)]">
-                        {t("pages.monitor.collecting")}
-                      </div>
-                    ) : (
-                      <AreaChart values={cpuSeries} />
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-[var(--t3)]">{t("pages.monitor.pressure")}</div>
-                  <div className="flex items-end">
-                    {memSeries.length < 2 ? (
-                      <div className="flex h-[64px] w-full items-center justify-center text-[11px] text-[var(--t3)]">
-                        {t("pages.monitor.collecting")}
-                      </div>
-                    ) : (
-                      <AreaChart values={memSeries} />
-                    )}
-                  </div>
-                </div>
-                {windowMinutes > 0 ? (
-                  <p className="text-right text-[11px] text-[var(--t3)]">
-                    {t("pages.monitor.historyWindow", { n: windowMinutes })}
-                  </p>
-                ) : null}
-              </div>
-            </PageCard>
-
-            {/* 内存 */}
-            <PageCard title={t("pages.monitor.memory")} className="xl:col-span-2">
-              <div className="flex items-center justify-between gap-2">
-                <MeterBar ratio={memPct} className="min-w-0 flex-1" />
-                <span className="shrink-0 font-mono text-[12px] tabular-nums text-[var(--t2)]">
-                  {host?.memoryTotalBytes
-                    ? fmtBytes(host.memoryUsedBytes) + " / " + fmtBytes(host.memoryTotalBytes)
-                    : "\u2014"}
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--surface)]/95 px-6 py-2 backdrop-blur-sm">
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="text-[1.05rem] font-bold tracking-tight text-[var(--t1)]">
+                {t("pages.monitor.title")}
+              </h2>
+              {dialogOpen ? (
+                <span className="truncate text-[0.72rem] text-[var(--st-warn)]">
+                  {t("pages.monitor.refreshPaused")}
                 </span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <StatCell
-                  label={t("pages.monitor.pressure")}
-                  value={memPct == null ? "\u2014" : memPct.toFixed(1) + "%"}
-                />
-                <StatCell label={t("pages.monitor.available")} value={fmtBytes(host?.memoryAvailableBytes ?? null)} />
-                <StatCell
-                  label={t("pages.monitor.swap")}
-                  value={swapTotal ? fmtBytes(host?.swapUsedBytes ?? null) : "\u2014"}
-                />
-              </div>
-            </PageCard>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-[0.66rem] text-[var(--t3)]">
+                {t("pages.monitor.updatedAt", { time: fmtTime(lastUpdated) })}
+              </span>
 
-            {/* 存储 */}
-            <PageCard title={t("pages.monitor.storage")} className="xl:col-span-2">
-              <div className="flex items-center justify-between gap-2">
-                <MeterBar ratio={diskPct} className="min-w-0 flex-1" />
-                <span className="shrink-0 font-mono text-[12px] tabular-nums text-[var(--t2)]">
-                  {host?.diskTotalBytes
-                    ? fmtBytes(host.diskUsedBytes) + " / " + fmtBytes(host.diskTotalBytes)
-                    : "\u2014"}
+              <div className="flex items-center gap-1.5">
+                <span className="shrink-0 text-[11px] text-[var(--t3)]">
+                  {t("pages.monitor.refreshInterval")}
                 </span>
+                <Select
+                  value={String(prefs.refreshMs)}
+                  onValueChange={(v) => setRefreshMs(Number(v) as RefreshMs)}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    aria-label={t("pages.monitor.refreshInterval")}
+                    className="h-7 min-w-[5.5rem] rounded-[var(--r-sm)] border-[var(--line-strong)] bg-[var(--surface)] font-mono text-[0.68rem] text-[var(--t2)] shadow-none focus-visible:border-[var(--st-accent)] focus-visible:ring-[2px] focus-visible:ring-[var(--st-accent-tint)]"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent
+                    position="popper"
+                    sideOffset={4}
+                    className="min-w-[6rem] rounded-[var(--r-sm)] py-1 font-mono text-[0.72rem]"
+                  >
+                    {REFRESH_OPTIONS.map((ms) => (
+                      <SelectItem key={ms} value={String(ms)} className="cursor-pointer">
+                        {ms === 1000
+                          ? t("pages.monitor.refresh1s")
+                          : ms === 2000
+                            ? t("pages.monitor.refresh2s")
+                            : ms === 3000
+                              ? t("pages.monitor.refresh3s")
+                              : t("pages.monitor.refresh5s")}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-            </PageCard>
 
-            {/* 网络 */}
-            <PageCard title={t("pages.monitor.network")} className="xl:col-span-2">
+              {tempSupported ? (
+                <div
+                  className="flex overflow-hidden rounded-[var(--r-sm)] border border-[var(--line)]"
+                  role="group"
+                  aria-label={t("statusBar.tempModeLabel")}
+                >
+                  {TEMP_MODES.map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => pickTempMode(mode)}
+                      title={t(`statusBar.tempModes.${mode}.hint`)}
+                      className={cn(
+                        "px-2 py-0.5 text-[11px] transition-colors duration-150",
+                        "border-l border-[var(--line)] first:border-l-0",
+                        tempMode === mode
+                          ? "bg-[var(--st-accent-tint)] font-semibold text-[var(--st-accent-hover)]"
+                          : "text-[var(--t2)] hover:bg-[var(--surface-2)]",
+                      )}
+                    >
+                      {t(`statusBar.tempModes.${mode}.label`)}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              <span
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[0.72rem] leading-none",
+                  healthTone === "accent" &&
+                    "border-[color-mix(in_srgb,var(--st-accent)_35%,transparent)] bg-[var(--st-accent-tint)] text-[var(--st-accent)]",
+                  healthTone === "warn" &&
+                    "border-[var(--st-warn-line)] bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+                  healthTone === "danger" &&
+                    "border-[var(--st-danger-ring)] bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+                  healthTone === "default" &&
+                    "border-[var(--line-strong)] bg-[var(--surface)] text-[var(--t2)]",
+                )}
+                title={t("pages.monitor.chipHealth")}
+              >
+                <span className="opacity-80">{t("pages.monitor.chipHealth")}</span>
+                <span className="font-semibold text-[var(--t1)]">{healthLabel}</span>
+              </span>
+
+              <Button
+                variant="soft"
+                size="sm"
+                onClick={() => void refreshNow()}
+                disabled={loading && host == null}
+                className="gap-1"
+              >
+                <RefreshCw className={cn(loading && host == null && "animate-spin")} />
+                {t("common.refresh")}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className="mx-auto flex max-w-6xl flex-col gap-4 p-6">
+          {loading && host == null ? (
+            <div
+              className="flex h-40 items-center justify-center rounded-[var(--r-md)] border border-dashed border-[var(--line-strong)] text-[0.8rem] text-[var(--t3)]"
+              role="status"
+            >
+              {t("pages.monitor.loading")}
+            </div>
+          ) : null}
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <HeroMetricCard
+              icon={<Cpu className="size-4" />}
+              title={t("pages.monitor.cpuLoad")}
+              value={cpu == null ? "\u2014" : cpu.toFixed(1) + "%"}
+              color={loadColor(cpu)}
+              tone={loadTone(cpu)}
+              meter={cpu}
+              spark={cpuSeries}
+              onClick={() => openDetail("cpu")}
+              hint={t("pages.monitor.openDetail")}
+            />
+            <HeroMetricCard
+              icon={<MemoryStick className="size-4" />}
+              title={t("pages.monitor.memory")}
+              value={memPct == null ? "\u2014" : memPct.toFixed(1) + "%"}
+              sub={
+                host?.memoryTotalBytes
+                  ? fmtBytes(host.memoryUsedBytes) + " / " + fmtBytes(host.memoryTotalBytes)
+                  : undefined
+              }
+              color={loadColor(memPct)}
+              tone={loadTone(memPct)}
+              meter={memPct}
+              spark={memSeries}
+              onClick={() => openDetail("memory")}
+              hint={t("pages.monitor.openDetail")}
+            />
+            <HeroMetricCard
+              icon={<HardDrive className="size-4" />}
+              title={t("pages.monitor.storage")}
+              value={diskPct == null ? "\u2014" : diskPct.toFixed(1) + "%"}
+              sub={
+                host?.diskTotalBytes
+                  ? fmtBytes(host.diskUsedBytes) + " / " + fmtBytes(host.diskTotalBytes)
+                  : undefined
+              }
+              color={loadColor(diskPct)}
+              tone={loadTone(diskPct)}
+              meter={diskPct}
+              onClick={() => openDetail("disk")}
+              hint={t("pages.monitor.openDetail")}
+            />
+            <HeroMetricCard
+              icon={<Thermometer className="size-4" />}
+              title={t("pages.monitor.cpuTemp")}
+              value={tempDisplay}
+              sub={
+                temp != null
+                  ? undefined
+                  : !tempSupported
+                    ? t("pages.monitor.tempUnsupportedHint")
+                    : tempMode === "off"
+                      ? t("pages.monitor.tempOffHint")
+                      : t("pages.monitor.tempWaiting")
+              }
+              color={tempColor(temp)}
+              tone={tempTone(temp)}
+              meter={temp == null ? null : Math.min(100, temp)}
+              meterColor={tempColor(temp)}
+              onClick={() => openDetail("temp")}
+              hint={t("pages.monitor.openDetail")}
+              muted={temp == null}
+            />
+          </div>
+
+          <PageCard
+            title={t("pages.monitor.historyTitle")}
+            action={
+              windowMinutes > 0 ? (
+                <span className="text-[11px] text-[var(--t3)]">
+                  {t("pages.monitor.historyWindow", { n: windowMinutes })}
+                </span>
+              ) : null
+            }
+          >
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-[var(--t2)]">CPU</span>
+                  <span
+                    className="font-mono text-[11px] tabular-nums"
+                    style={{ color: loadColor(cpu) }}
+                  >
+                    {cpu == null ? "\u2014" : cpu.toFixed(1) + "%"}
+                  </span>
+                </div>
+                <AreaChart values={cpuSeries} emptyLabel={t("pages.monitor.collecting")} />
+                <div className="mt-1 text-[10px] text-[var(--t3)]">
+                  {t("pages.monitor.thresholdLegend")}
+                </div>
+              </div>
+              <div>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-[var(--t2)]">
+                    {t("pages.monitor.pressure")}
+                  </span>
+                  <span
+                    className="font-mono text-[11px] tabular-nums"
+                    style={{ color: loadColor(memPct) }}
+                  >
+                    {memPct == null ? "\u2014" : memPct.toFixed(1) + "%"}
+                  </span>
+                </div>
+                <AreaChart values={memSeries} emptyLabel={t("pages.monitor.collecting")} />
+                <div className="mt-1 text-[10px] text-[var(--t3)]">
+                  {t("pages.monitor.thresholdLegend")}
+                </div>
+              </div>
+            </div>
+          </PageCard>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <PageCard
+              title={t("pages.monitor.network")}
+              className="gap-2 p-3.5"
+              onClick={() => openDetail("network")}
+              action={<Network className="size-3.5 text-[var(--t3)]" aria-hidden />}
+            >
               <div className="grid grid-cols-3 gap-2">
                 <StatCell label={t("pages.monitor.localIp")} value={host?.netLocalIp ?? "\u2014"} />
                 <StatCell
@@ -304,31 +661,294 @@ export function MonitorPage() {
               </div>
             </PageCard>
 
-            {/* 静态系统信息 */}
-            <SystemInfoCard />
+            <SystemInfoCard onOpen={() => openDetail("sysinfo")} />
 
-            {/* 按服务归因的资源占用 */}
-            <ServiceAttribCard />
+            <ServiceAttribCard
+              onOpenService={(svc) => openDetail("service", svc)}
+              onOpenList={() => openDetail("service")}
+            />
 
-            {/* 一键体检报告（doctor 可视化导出） */}
-            <DoctorCard />
+            <DoctorCard onOpen={() => openDetail("doctor")} />
           </div>
         </div>
       </div>
+
+      <Dialog open={detail === "cpu"} onOpenChange={(o) => !o && closeDetail()}>
+        <DialogContent className="sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>{t("pages.monitor.cpuLoad")}</DialogTitle>
+            <DialogDescription>{t("pages.monitor.detailCpuDesc")}</DialogDescription>
+          </DialogHeader>
+          <div className="-mt-1">
+            <CpuGauge value={cpu} />
+            <div
+              className="mt-1 text-center font-mono text-[26px] font-semibold tabular-nums"
+              style={{ color: loadColor(cpu) }}
+            >
+              {cpu == null ? "\u2014" : cpu.toFixed(1) + "%"}
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {split.map((s) => (
+              <StatCell
+                key={s.label}
+                label={s.label}
+                value={s.v == null ? "\u2014" : s.v.toFixed(1) + "%"}
+              />
+            ))}
+          </div>
+          {cpuSeries.length >= 2 ? (
+            <div>
+              <div className="mb-1 text-[11px] text-[var(--t3)]">{t("pages.monitor.historyTitle")}</div>
+              <BarSparkline values={cpuSeries} />
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detail === "memory"} onOpenChange={(o) => !o && closeDetail()}>
+        <DialogContent className="sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>{t("pages.monitor.memory")}</DialogTitle>
+            <DialogDescription>{t("pages.monitor.detailMemDesc")}</DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-between gap-2">
+            <MeterBar ratio={memPct} className="min-w-0 flex-1" />
+            <span
+              className="shrink-0 font-mono text-[14px] font-semibold tabular-nums"
+              style={{ color: loadColor(memPct) }}
+            >
+              {memPct == null ? "\u2014" : memPct.toFixed(1) + "%"}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <StatCell label={t("pages.monitor.used")} value={fmtBytes(host?.memoryUsedBytes ?? null)} />
+            <StatCell label={t("pages.monitor.total")} value={fmtBytes(host?.memoryTotalBytes ?? null)} />
+            <StatCell label={t("pages.monitor.available")} value={fmtBytes(host?.memoryAvailableBytes ?? null)} />
+            <StatCell
+              label={t("pages.monitor.swap")}
+              value={
+                swapTotal
+                  ? fmtBytes(host?.swapUsedBytes ?? null) + " / " + fmtBytes(swapTotal)
+                  : "\u2014"
+              }
+            />
+          </div>
+          {memSeries.length >= 2 ? (
+            <div>
+              <div className="mb-1 text-[11px] text-[var(--t3)]">{t("pages.monitor.pressure")}</div>
+              <BarSparkline values={memSeries} />
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detail === "disk"} onOpenChange={(o) => !o && closeDetail()}>
+        <DialogContent className="sm:max-w-sm" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>{t("pages.monitor.storage")}</DialogTitle>
+            <DialogDescription>{t("pages.monitor.detailDiskDesc")}</DialogDescription>
+          </DialogHeader>
+          {host?.diskTotalBytes == null ? (
+            <p className="text-[13px] text-[var(--t3)]">{t("pages.monitor.unavailableLong")}</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <MeterBar ratio={diskPct} className="min-w-0 flex-1" />
+                <span
+                  className="shrink-0 font-mono text-[14px] font-semibold tabular-nums"
+                  style={{ color: loadColor(diskPct) }}
+                >
+                  {diskPct == null ? "\u2014" : diskPct.toFixed(1) + "%"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <StatCell label={t("pages.monitor.used")} value={fmtBytes(host.diskUsedBytes)} />
+                <StatCell label={t("pages.monitor.total")} value={fmtBytes(host.diskTotalBytes)} />
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detail === "temp"} onOpenChange={(o) => !o && closeDetail()}>
+        <DialogContent className="sm:max-w-sm" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>{t("pages.monitor.cpuTemp")}</DialogTitle>
+            <DialogDescription>
+              {tempSupported
+                ? t(`statusBar.tempModes.${tempMode}.hint`)
+                : t("statusBar.tempUnsupportedHint")}
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            className="text-center font-mono text-[32px] font-semibold tabular-nums"
+            style={{ color: tempColor(temp) }}
+          >
+            {tempDisplay}
+          </div>
+          {!tempSupported ? (
+            <p className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-2)]/60 px-3 py-2.5 text-center text-[12px] leading-relaxed text-[var(--t2)]">
+              {t("pages.monitor.tempUnsupportedHint")}
+            </p>
+          ) : (
+            <>
+              {tempMode === "off" && temp == null ? (
+                <p className="text-center text-[12px] text-[var(--t3)]">{t("pages.monitor.tempOffHint")}</p>
+              ) : temp == null ? (
+                <p className="text-center text-[12px] text-[var(--t3)]">{t("pages.monitor.tempWaiting")}</p>
+              ) : null}
+              <div className="flex justify-center">
+                <div
+                  className="flex overflow-hidden rounded-[var(--r-sm)] border border-[var(--line)]"
+                  role="group"
+                  aria-label={t("statusBar.tempModeLabel")}
+                >
+                  {TEMP_MODES.map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => pickTempMode(mode)}
+                      title={t(`statusBar.tempModes.${mode}.hint`)}
+                      className={cn(
+                        "px-2.5 py-1 text-[11px] transition-colors",
+                        "border-l border-[var(--line)] first:border-l-0",
+                        tempMode === mode
+                          ? "bg-[var(--st-accent-tint)] font-semibold text-[var(--st-accent-hover)]"
+                          : "text-[var(--t2)] hover:bg-[var(--surface-2)]",
+                      )}
+                    >
+                      {t(`statusBar.tempModes.${mode}.label`)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detail === "network"} onOpenChange={(o) => !o && closeDetail()}>
+        <DialogContent className="sm:max-w-sm" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>{t("pages.monitor.network")}</DialogTitle>
+            <DialogDescription>{t("pages.monitor.detailNetDesc")}</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <StatCell label={t("pages.monitor.localIp")} value={host?.netLocalIp ?? "\u2014"} />
+            <StatCell label={t("pages.monitor.upload")} value={fmtRate(host?.netUploadBps ?? null)} />
+            <StatCell label={t("pages.monitor.download")} value={fmtRate(host?.netDownloadBps ?? null)} />
+            {host?.netUploadBps == null && host?.netDownloadBps == null ? (
+              <p className="text-[12px] text-[var(--t3)]">{t("pages.monitor.netWaiting")}</p>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detail === "sysinfo"} onOpenChange={(o) => !o && closeDetail()}>
+        <DialogContent className="sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>{t("pages.monitor.sysInfo")}</DialogTitle>
+            <DialogDescription>{t("pages.monitor.detailSysDesc")}</DialogDescription>
+          </DialogHeader>
+          <SystemInfoBody />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detail === "service"} onOpenChange={(o) => !o && closeDetail()}>
+        <DialogContent className="sm:max-w-lg" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>
+              {serviceFocus
+                ? t("pages.monitor.serviceDetailTitle", { id: serviceFocus.id })
+                : t("pages.monitor.services")}
+            </DialogTitle>
+            <DialogDescription>{t("pages.monitor.detailSvcDesc")}</DialogDescription>
+          </DialogHeader>
+          <ServiceAttribBody focusId={serviceFocus?.id ?? null} />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detail === "doctor"} onOpenChange={(o) => !o && closeDetail()}>
+        <DialogContent className="sm:max-w-2xl" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>{t("pages.monitor.doctorTitle")}</DialogTitle>
+            <DialogDescription>{t("pages.monitor.doctorHint")}</DialogDescription>
+          </DialogHeader>
+          <DoctorBody />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-/** 一行归因：服务 id + 状态 + 该服务进程树的 CPU / 内存 / 进程数。 */
+function HeroMetricCard(props: {
+  icon: React.ReactNode;
+  title: string;
+  value: string;
+  sub?: string;
+  color: string;
+  tone?: MetricTone;
+  meter: number | null;
+  meterColor?: string;
+  spark?: number[];
+  onClick: () => void;
+  hint: string;
+  muted?: boolean;
+}) {
+  const tone: MetricTone = props.muted ? "muted" : (props.tone ?? "accent");
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      title={props.hint}
+      className={cn(
+        "flex flex-col gap-2.5 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface)] p-4 text-left",
+        "shadow-[var(--shadow-1)] transition-colors duration-150",
+        "hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]/50",
+        "focus-visible:outline-2 focus-visible:outline-[var(--st-accent)] focus-visible:outline-offset-2",
+      )}
+    >
+      <div className="flex items-center gap-2 text-[var(--t3)]">
+        <span
+          className={cn(
+            "flex size-7 items-center justify-center rounded-[var(--r-sm)]",
+            tone === "accent" && "bg-[var(--st-accent-tint)] text-[var(--st-accent)]",
+            tone === "warn" && "bg-[var(--st-warn-tint)] text-[var(--st-warn)]",
+            tone === "danger" && "bg-[var(--st-danger-tint)] text-[var(--st-danger)]",
+            tone === "muted" && "bg-[var(--surface-2)] text-[var(--t2)]",
+          )}
+        >
+          {props.icon}
+        </span>
+        <span className="text-[12px] font-semibold text-[var(--t2)]">{props.title}</span>
+      </div>
+      <div
+        className={cn(
+          "font-mono text-[22px] font-semibold tabular-nums leading-none",
+          props.muted && "text-[var(--t3)]",
+        )}
+        style={props.muted ? undefined : { color: props.color }}
+      >
+        {props.value}
+      </div>
+      {props.sub ? (
+        <div className="truncate text-[11px] leading-snug text-[var(--t3)]">{props.sub}</div>
+      ) : null}
+      <MeterBar ratio={props.meter} color={props.meterColor} />
+      {props.spark && props.spark.length >= 2 ? (
+        <BarSparkline values={props.spark} />
+      ) : null}
+    </button>
+  );
+}
+
 type AttribRow = { svc: ServiceRuntimeView; metric: ServiceMetrics | null };
 
-function ServiceAttribCard() {
-  const { t } = useTranslation();
+function useAttribRows(): AttribRow[] {
   const rt = useRuntime();
-  const rows: AttribRow[] = Object.values(rt.state.services)
+  return Object.values(rt.state.services)
     .map((svc) => ({ svc, metric: rt.state.metrics[svc.id] ?? null }))
-    // 内存降序（「哪个服务在吃内存」一眼可答）；无指标的（已停止 / compose / 外部纳管）沉底，
-    // 组内保持快照顺序。null 显示「—」，不伪造 0。
     .sort((a, b) => {
       const am = a.metric?.memory_bytes;
       const bm = b.metric?.memory_bytes;
@@ -337,16 +957,30 @@ function ServiceAttribCard() {
       if (bm != null) return 1;
       return 0;
     });
+}
 
-  const rowTitle = (r: AttribRow): string | undefined => {
-    if (r.metric != null) return undefined;
-    if (r.svc.managed === false) return t("pages.run.metricsEmptyHint", { id: r.svc.id });
-    if (r.svc.kind === "compose") return t("pages.run.metricsComposeHint");
-    return undefined;
-  };
+function ServiceAttribCard(props: {
+  onOpenService: (svc: ServiceRuntimeView) => void;
+  onOpenList: () => void;
+}) {
+  const { t } = useTranslation();
+  const rt = useRuntime();
+  const rows = useAttribRows();
+  const preview = rows.slice(0, 5);
 
   return (
-    <PageCard title={t("pages.monitor.services")} className="xl:col-span-4">
+    <PageCard
+      title={t("pages.monitor.services")}
+      action={
+        <button
+          type="button"
+          onClick={props.onOpenList}
+          className="text-[11px] font-medium text-[var(--st-accent)] hover:underline"
+        >
+          {t("pages.monitor.viewAll")}
+        </button>
+      }
+    >
       {rt.state.snapshot == null ? (
         <p className="text-[11px] text-[var(--t3)]">{t("pages.monitor.servicesNoWs")}</p>
       ) : rows.length === 0 ? (
@@ -359,11 +993,12 @@ function ServiceAttribCard() {
             <div className="text-right">{t("pages.monitor.servicesColMemory")}</div>
             <div className="text-right">{t("pages.monitor.servicesColProc")}</div>
           </div>
-          {rows.map((r) => (
-            <div
+          {preview.map((r) => (
+            <button
               key={r.svc.id}
-              title={rowTitle(r)}
-              className="grid grid-cols-[minmax(0,1fr)_5rem_5rem_3.5rem] items-center gap-2"
+              type="button"
+              onClick={() => props.onOpenService(r.svc)}
+              className="grid grid-cols-[minmax(0,1fr)_5rem_5rem_3.5rem] items-center gap-2 rounded-[var(--r-sm)] px-1 py-0.5 text-left hover:bg-[var(--surface-2)]"
             >
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate font-mono text-[12px] text-[var(--t1)]">{r.svc.id}</span>
@@ -378,35 +1013,122 @@ function ServiceAttribCard() {
               <span className="text-right font-mono text-[12px] tabular-nums text-[var(--t2)]">
                 {r.metric?.process_count ?? "\u2014"}
               </span>
-            </div>
+            </button>
           ))}
+          {rows.length > preview.length ? (
+            <button
+              type="button"
+              onClick={props.onOpenList}
+              className="mt-1 text-left text-[11px] text-[var(--t3)] hover:text-[var(--st-accent)]"
+            >
+              {t("pages.monitor.moreServices", { n: rows.length - preview.length })}
+            </button>
+          ) : null}
         </div>
       )}
     </PageCard>
   );
 }
 
-/** 系统信息一行：左侧标签、右侧等宽值（超长截断并以 title 兜底）。 */
+function ServiceAttribBody({ focusId }: { focusId: string | null }) {
+  const { t } = useTranslation();
+  const rt = useRuntime();
+  const rows = useAttribRows();
+  const focused = focusId ? rows.find((r) => r.svc.id === focusId) : null;
+
+  if (rt.state.snapshot == null) {
+    return <p className="text-[13px] text-[var(--t3)]">{t("pages.monitor.servicesNoWs")}</p>;
+  }
+  if (rows.length === 0) {
+    return <p className="text-[13px] text-[var(--t3)]">{t("pages.monitor.servicesEmpty")}</p>;
+  }
+
+  return (
+    <div className="flex max-h-[60vh] flex-col gap-3 overflow-auto">
+      {focused ? (
+        <div className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-2)]/50 p-3">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[13px] font-semibold text-[var(--t1)]">{focused.svc.id}</span>
+            <StatusChip state={focused.svc.state} />
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <StatCell
+              label="CPU"
+              value={
+                focused.metric?.cpu_percent == null
+                  ? "\u2014"
+                  : focused.metric.cpu_percent.toFixed(1) + "%"
+              }
+            />
+            <StatCell
+              label={t("pages.monitor.servicesColMemory")}
+              value={fmtBytes(focused.metric?.memory_bytes ?? null)}
+            />
+            <StatCell
+              label={t("pages.monitor.servicesColProc")}
+              value={focused.metric?.process_count ?? "\u2014"}
+            />
+          </div>
+          {focused.metric == null ? (
+            <p className="mt-2 text-[11px] text-[var(--t3)]">
+              {focused.svc.managed === false
+                ? t("pages.run.metricsEmptyHint", { id: focused.svc.id })
+                : focused.svc.kind === "compose"
+                  ? t("pages.run.metricsComposeHint")
+                  : t("pages.monitor.metricsUnavailable")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="flex flex-col gap-1">
+        <div className="grid grid-cols-[minmax(0,1fr)_5rem_5rem_3.5rem] gap-2 pb-0.5 text-[11px] text-[var(--t3)]">
+          <div>{t("pages.monitor.servicesColService")}</div>
+          <div className="text-right">CPU</div>
+          <div className="text-right">{t("pages.monitor.servicesColMemory")}</div>
+          <div className="text-right">{t("pages.monitor.servicesColProc")}</div>
+        </div>
+        {rows.map((r) => (
+          <div
+            key={r.svc.id}
+            className={cn(
+              "grid grid-cols-[minmax(0,1fr)_5rem_5rem_3.5rem] items-center gap-2 rounded-[var(--r-sm)] px-1 py-0.5",
+              focusId === r.svc.id && "bg-[var(--st-accent-tint)]",
+            )}
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate font-mono text-[12px] text-[var(--t1)]">{r.svc.id}</span>
+              <StatusChip state={r.svc.state} className="shrink-0" />
+            </div>
+            <span className="text-right font-mono text-[12px] tabular-nums text-[var(--t2)]">
+              {r.metric?.cpu_percent == null ? "\u2014" : r.metric.cpu_percent.toFixed(1) + "%"}
+            </span>
+            <span className="text-right font-mono text-[12px] tabular-nums text-[var(--t2)]">
+              {fmtBytes(r.metric?.memory_bytes ?? null)}
+            </span>
+            <span className="text-right font-mono text-[12px] tabular-nums text-[var(--t2)]">
+              {r.metric?.process_count ?? "\u2014"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SysInfoRow(props: { label: string; value: string }) {
   return (
     <div className="flex min-w-0 items-baseline justify-between gap-2">
       <span className="shrink-0 text-[11px] text-[var(--t3)]">{props.label}</span>
-      <span
-        className="truncate font-mono text-[12px] tabular-nums text-[var(--t2)]"
-        title={props.value}
-      >
+      <span className="truncate font-mono text-[12px] tabular-nums text-[var(--t2)]" title={props.value}>
         {props.value}
       </span>
     </div>
   );
 }
 
-/** 静态系统信息：一次拉取、不轮询。与整机动态采样（system.metrics）分列；
- *  取不到的字段显示「—」，不伪造为 0。 */
-function SystemInfoCard() {
-  const { t } = useTranslation();
+function useSystemInfo() {
   const [info, setInfo] = useState<SystemInfo | null>(null);
-
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let alive = true;
     void apiSystemInfo()
@@ -414,16 +1136,29 @@ function SystemInfoCard() {
         if (alive) setInfo(v);
       })
       .catch(() => {
-        // Ambient page: 环境不可用时留空展示「—」。
+        if (alive) setFailed(true);
       });
     return () => {
       alive = false;
     };
   }, []);
+  return { info, failed };
+}
+
+function SystemInfoBody() {
+  const { t } = useTranslation();
+  const { info, failed } = useSystemInfo();
+
+  if (failed && info == null) {
+    return <p className="text-[13px] text-[var(--t3)]">{t("pages.monitor.unavailableLong")}</p>;
+  }
+  if (info == null) {
+    return <p className="text-[13px] text-[var(--t3)]">{t("common.loading")}</p>;
+  }
 
   const cpuValue =
-    info?.cpuLogicalCores == null
-      ? (info?.arch ?? "\u2014")
+    info.cpuLogicalCores == null
+      ? (info.arch ?? "\u2014")
       : [
           info.arch,
           info.cpuPhysicalCores == null
@@ -433,29 +1168,52 @@ function SystemInfoCard() {
                 physical: info.cpuPhysicalCores,
               }),
         ].join(" · ");
-  const osValue =
-    info == null ? "\u2014" : [info.osName, info.osVersion].filter(Boolean).join(" · ") || "\u2014";
+  const osValue = [info.osName, info.osVersion].filter(Boolean).join(" · ") || "\u2014";
+  const platformValue = info.platform
+    ? info.platform.charAt(0).toUpperCase() + info.platform.slice(1)
+    : "\u2014";
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <SysInfoRow label={t("pages.monitor.sysInfoPlatform")} value={platformValue} />
+      <SysInfoRow label={t("pages.monitor.sysInfoOs")} value={osValue} />
+      <SysInfoRow label={t("pages.monitor.sysInfoCpu")} value={cpuValue} />
+      <SysInfoRow label={t("pages.monitor.sysInfoMemory")} value={fmtBytes(info.totalMemoryBytes ?? null)} />
+      <SysInfoRow label={t("pages.monitor.sysInfoAppVersion")} value={info.appVersion ?? "\u2014"} />
+    </div>
+  );
+}
+
+function SystemInfoCard({ onOpen }: { onOpen: () => void }) {
+  const { t } = useTranslation();
+  const { info } = useSystemInfo();
   const platformValue = info?.platform
     ? info.platform.charAt(0).toUpperCase() + info.platform.slice(1)
     : "\u2014";
 
   return (
-    <PageCard title={t("pages.monitor.sysInfo")} className="xl:col-span-2">
-      <div className="flex flex-col gap-1.5">
-        <SysInfoRow label={t("pages.monitor.sysInfoPlatform")} value={platformValue} />
-        <SysInfoRow label={t("pages.monitor.sysInfoOs")} value={osValue} />
-        <SysInfoRow label={t("pages.monitor.sysInfoCpu")} value={cpuValue} />
-        <SysInfoRow
-          label={t("pages.monitor.sysInfoMemory")}
-          value={fmtBytes(info?.totalMemoryBytes ?? null)}
-        />
-        <SysInfoRow label={t("pages.monitor.sysInfoAppVersion")} value={info?.appVersion ?? "\u2014"} />
-      </div>
+    <PageCard
+      title={t("pages.monitor.sysInfo")}
+      className="gap-2 p-3.5"
+      onClick={onOpen}
+      action={<Info className="size-3.5 text-[var(--t3)]" aria-hidden />}
+    >
+      {info == null ? (
+        <p className="text-[11px] text-[var(--t3)]">{t("common.loading")}</p>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          <SysInfoRow label={t("pages.monitor.sysInfoPlatform")} value={platformValue} />
+          <SysInfoRow
+            label={t("pages.monitor.sysInfoOs")}
+            value={[info.osName, info.osVersion].filter(Boolean).join(" · ") || "\u2014"}
+          />
+          <SysInfoRow label={t("pages.monitor.sysInfoAppVersion")} value={info.appVersion ?? "\u2014"} />
+        </div>
+      )}
     </PageCard>
   );
 }
 
-/** 体检结果：一次探测的系统信息 + 工具链（含网关引擎）+ Docker。 */
 type DoctorResult = {
   info: SystemInfo;
   tools: ToolchainProbeOut;
@@ -465,7 +1223,6 @@ type DoctorResult = {
 
 type DoctorProbe = { found: boolean; version: string | null; path: string | null };
 
-/** 体检一行：工具名 + 版本（悬浮显示路径）；未找到灰显，缺省字段显示「—」。 */
 function DoctorRow(props: { name: string; probe?: DoctorProbe }) {
   const { t } = useTranslation();
   return (
@@ -474,10 +1231,7 @@ function DoctorRow(props: { name: string; probe?: DoctorProbe }) {
       {props.probe == null ? (
         <span className="font-mono text-[var(--t3)]">{"\u2014"}</span>
       ) : props.probe.found ? (
-        <span
-          className="truncate font-mono text-[var(--t1)]"
-          title={props.probe.path ?? undefined}
-        >
+        <span className="truncate font-mono text-[var(--t1)]" title={props.probe.path ?? undefined}>
           {props.probe.version ?? "?"}
         </span>
       ) : (
@@ -486,7 +1240,6 @@ function DoctorRow(props: { name: string; probe?: DoctorProbe }) {
     </div>
   );
 }
-
 /** Markdown 报告组装：与 CLI `supertask doctor` 同口径（工具名/版本/路径），附系统信息。 */
 function buildDoctorReport(t: (key: string) => string, r: DoctorResult): string {
   const nf = t("pages.monitor.doctorNotFound");
@@ -535,15 +1288,11 @@ function doctorStamp(ms: number): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
-
-/** 一键体检：工具链 + 网关引擎 + Docker 三节只读探测（复用既有 IPC，零新采样面），
- *  可导出 Markdown 报告随求助贴附带。口径与 CLI `supertask doctor` 一致：含工具路径，
- *  无环境变量值/密钥/IP。探测失败保留上次结果。 */
-function DoctorCard() {
-  const { t } = useTranslation();
+function useDoctor() {
   const [result, setResult] = useState<DoctorResult | null>(null);
   const [probing, setProbing] = useState(false);
   const [saved, setSaved] = useState<"saved" | "failed" | null>(null);
+  const { t } = useTranslation();
 
   const run = async () => {
     setProbing(true);
@@ -551,12 +1300,12 @@ function DoctorCard() {
     try {
       const [info, tools, docker] = await Promise.all([
         apiSystemInfo(),
-        apiToolchainProbe(true), // 体检要新鲜探测：强制刷新会话缓存
+        apiToolchainProbe(true),
         apiDockerProbe(true),
       ]);
       setResult({ info, tools, docker, atMs: Date.now() });
     } catch {
-      // Ambient card: 失败保留上次结果。
+      // Ambient: keep last result.
     } finally {
       setProbing(false);
     }
@@ -571,11 +1320,36 @@ function DoctorCard() {
     setSaved(out === "cancelled" ? null : out);
   };
 
+  return { result, probing, saved, run, exportReport };
+}
+
+function DoctorCard({ onOpen }: { onOpen: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <PageCard
+      title={t("pages.monitor.doctorTitle")}
+      className="gap-2 p-3.5"
+      action={<Stethoscope className="size-3.5 text-[var(--t3)]" aria-hidden />}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="min-w-0 flex-1 text-[11px] text-[var(--t3)]">{t("pages.monitor.doctorHint")}</p>
+        <Button variant="soft" size="sm" onClick={onOpen} className="gap-1">
+          <Activity className="size-3.5" />
+          {t("pages.monitor.doctorOpen")}
+        </Button>
+      </div>
+    </PageCard>
+  );
+}
+
+function DoctorBody() {
+  const { t } = useTranslation();
+  const { result, probing, saved, run, exportReport } = useDoctor();
   const btn =
     "h-7 cursor-pointer rounded-[var(--r-sm)] border border-[var(--line)] px-2.5 text-[11px] font-medium text-[var(--t1)] transition-colors duration-150 hover:bg-[var(--surface-2)] disabled:cursor-default disabled:opacity-50";
 
   return (
-    <PageCard title={t("pages.monitor.doctorTitle")} className="xl:col-span-6">
+    <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="min-w-0 flex-1 truncate text-[11px] text-[var(--t3)]">
           {result
@@ -656,6 +1430,12 @@ function DoctorCard() {
           </div>
         </div>
       ) : null}
-    </PageCard>
+
+      {!result ? (
+        <div className="flex h-24 items-center justify-center rounded-[var(--r-sm)] border border-dashed border-[var(--line)] text-[12px] text-[var(--t3)]">
+          {t("pages.monitor.doctorEmpty")}
+        </div>
+      ) : null}
+    </div>
   );
 }

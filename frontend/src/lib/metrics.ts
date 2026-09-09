@@ -32,17 +32,34 @@ export function pct(used: number | null, total: number | null): number | null {
   return Math.min(100, Math.max(0, (used / total) * 100));
 }
 
-/** Amber above 75%, red above 90% - same status language as services. */
+/** Warn above 75%, danger above 90%; healthy load uses theme accent. */
 export function loadColor(p: number | null): string {
   if (p == null) return "var(--t3)";
   if (p >= 90) return "var(--st-danger)";
   if (p >= 75) return "var(--st-warn)";
-  return "var(--st-ok)";
+  return "var(--st-accent)";
 }
 
 export function tempColor(c: number | null): string {
   if (c == null) return "var(--t3)";
   if (c >= 85) return "var(--st-danger)";
   if (c >= 70) return "var(--st-warn)";
-  return "var(--st-ok)";
+  return "var(--st-accent)";
+}
+
+/** Threshold tone for meter icon chips / badges (matches loadColor bands). */
+export type MetricTone = "accent" | "warn" | "danger" | "muted";
+
+export function loadTone(p: number | null): MetricTone {
+  if (p == null) return "muted";
+  if (p >= 90) return "danger";
+  if (p >= 75) return "warn";
+  return "accent";
+}
+
+export function tempTone(c: number | null): MetricTone {
+  if (c == null) return "muted";
+  if (c >= 85) return "danger";
+  if (c >= 70) return "warn";
+  return "accent";
 }
