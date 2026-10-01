@@ -36,7 +36,7 @@ portable-pty = "0.9"
 # 实现期核查后决定加 feature 或回退受限 ACL（spec §5 允许回退+文档标注）。
 ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 argon2 = "0.5"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 # OS 熵（RustCrypto 全系既有传递依赖，显式声明供 vault salt/nonce）
 getrandom = "0.2"
 
